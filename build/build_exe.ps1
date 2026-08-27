@@ -83,15 +83,23 @@ Copy-Item (Join-Path $Root "README.md") $portable -Force -ErrorAction SilentlyCo
 Copy-Item (Join-Path $Root "LICENSE") $portable -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Root "NOTICE") $portable -Force -ErrorAction SilentlyContinue
 
-# Authenticode sign as publisher "dlnraja" (self-signed or MAGIC_CODESIGN_PFX)
+# Authenticode sign as publisher "dlnraja"
+# Prefers MAGIC_CODESIGN_PFX (+ MAGIC_CODESIGN_PASSWORD) for SmartScreen-ready CA certs.
 $exe = Join-Path $dist "Win11MagicUpgrade.exe"
+$prep = Join-Path $Root "build\ci_prepare_codesign.ps1"
+if (Test-Path $prep) {
+    powershell -NoProfile -ExecutionPolicy Bypass -File $prep | Out-Host
+}
 $signScript = Join-Path $Root "build\sign_exe.ps1"
 if (Test-Path $signScript) {
-    Write-Host "Signing EXE as dlnraja..." -ForegroundColor Cyan
+    Write-Host "Signing EXE as dlnraja (PFX if MAGIC_CODESIGN_PFX set)..." -ForegroundColor Cyan
     powershell -NoProfile -ExecutionPolicy Bypass -File $signScript -ExePath $exe -Publisher "dlnraja"
+    if ($LASTEXITCODE -ne 0) { throw "sign_exe.ps1 failed" }
     Copy-Item $exe (Join-Path $portable "Win11MagicUpgrade.exe") -Force
-    $pub = Join-Path $dist "PUBLISHER.txt"
-    if (Test-Path $pub) { Copy-Item $pub $portable -Force }
+    foreach ($n in @("PUBLISHER.txt", "PUBLISHER.json")) {
+        $p = Join-Path $dist $n
+        if (Test-Path $p) { Copy-Item $p $portable -Force }
+    }
 }
 
 # ZIP + SHA256 (Chrome prefers ZIP over naked EXE downloads)

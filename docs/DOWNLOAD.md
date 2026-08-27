@@ -40,8 +40,16 @@ Unblock-File .\Win11MagicUpgrade.exe
 
 ## SmartScreen: “Windows protected your PC”
 
-**More info** → **Run anyway**.  
-A paid **OV/EV Authenticode certificate** (repo secrets `CODESIGN_PFX_BASE64`) removes most of these prompts as reputation accumulates.
+**More info** → **Run anyway**.
+
+For a **known publisher** signature (real fix), configure a trusted OV/EV `.pfx`:
+
+```powershell
+$env:MAGIC_CODESIGN_PFX = "C:\path\to\codesign.pfx"
+$env:MAGIC_CODESIGN_PASSWORD = "your-password"
+```
+
+Full guide: [CODESIGN.md](CODESIGN.md) (`setup_codesign.ps1`, GitHub secrets `CODESIGN_PFX_BASE64`).
 
 ## Verify integrity
 

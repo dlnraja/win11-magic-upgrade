@@ -26,7 +26,7 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 2. Extract, then run as Administrator: `Win11MagicUpgrade.exe` or `Win11MagicUpgrade.cmd`
 3. Click **ONE-CLICK — Full migration** (that’s it).
 
-Chrome / SmartScreen warning? → **[Download help](docs/DOWNLOAD.md)** (Keep anyway, Unblock-File, SHA256, report FP).
+Chrome / SmartScreen warning? → **[Download help](docs/DOWNLOAD.md)** · **[Trusted code-signing PFX](docs/CODESIGN.md)** (`MAGIC_CODESIGN_PFX`)
 
 ```text
 Win11MagicUpgrade.exe --cli --oneclick

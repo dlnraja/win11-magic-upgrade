@@ -53,15 +53,15 @@ If Kaspersky still quarantines the EXE:
 
 - Version resource / LegalCopyright / CompanyName: **dlnraja**
 - Authenticode is **automated in GitHub Actions** (Release + CI smoke):
-  1. `build/ci_prepare_codesign.ps1` loads secrets or falls back to self-signed `CN=dlnraja`
-  2. `build/sign_exe.ps1` signs the EXE (timestamped when possible)
-  3. `build/verify_signature.ps1` gates the Release job
-- Repo secrets (Settings → Secrets → Actions), optional but recommended for SmartScreen:
-  - `CODESIGN_PFX_BASE64` — base64 of your `.pfx` (`[Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx'))`)
-  - `CODESIGN_PASSWORD` — PFX password
-  - Aliases: `MAGIC_CODESIGN_PFX_BASE64` / `MAGIC_CODESIGN_PASSWORD`
-  - `VIRUSTOTAL_API_KEY` (or `MAGIC_VT_API_KEY`) — Release workflow submits the EXE + votes harmless
-- Local: `MAGIC_CODESIGN_PFX` + `MAGIC_CODESIGN_PASSWORD`, or self-signed via `build/sign_exe.ps1`
+  1. `build/ci_prepare_codesign.ps1` loads `MAGIC_CODESIGN_PFX` path or `CODESIGN_PFX_BASE64`
+  2. `build/sign_exe.ps1` signs the EXE (timestamped when possible) and reports `smartscreen_ready`
+  3. `build/verify_signature.ps1` gates the Release job (`Valid` required when a trusted PFX secret is present)
+- **SmartScreen (trusted cert)** — see [docs/CODESIGN.md](docs/CODESIGN.md):
+  - Local: `MAGIC_CODESIGN_PFX` = path to `.pfx`, `MAGIC_CODESIGN_PASSWORD` = password
+  - Helper: `build/setup_codesign.ps1 -PfxPath ... -Password ... -ExportBase64`
+  - CI secrets: `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD` (aliases `MAGIC_CODESIGN_*`)
+  - Optional hard gate: `MAGIC_REQUIRE_TRUSTED_CODESIGN=1`
+- Without a CA-issued OV/EV PFX, CI falls back to self-signed `CN=dlnraja` (signed, but SmartScreen still warns)
 - Portable package includes `PUBLISHER.txt` / `PUBLISHER.json` / ZIP / `SHA256SUMS.txt`
 - **Chrome tip:** download the **ZIP** from Releases, not the raw EXE — see [docs/DOWNLOAD.md](docs/DOWNLOAD.md)
 

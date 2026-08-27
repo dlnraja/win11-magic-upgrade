@@ -63,12 +63,20 @@ jobs:
           MAGIC_CODESIGN_PASSWORD: ${{ secrets.MAGIC_CODESIGN_PASSWORD }}
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File .\build\ci_prepare_codesign.ps1
+          # If a real PFX secret is present, require SmartScreen-ready Valid signature
+          if ($env:CODESIGN_PFX_BASE64 -and $env:CODESIGN_PFX_BASE64.Trim().Length -gt 80) {
+            Add-Content -LiteralPath $env:GITHUB_ENV -Value 'MAGIC_REQUIRE_TRUSTED_CODESIGN=1'
+            Write-Host 'Trusted PFX secret detected -> MAGIC_REQUIRE_TRUSTED_CODESIGN=1'
+          } elseif ($env:MAGIC_CODESIGN_PFX_BASE64 -and $env:MAGIC_CODESIGN_PFX_BASE64.Trim().Length -gt 80) {
+            Add-Content -LiteralPath $env:GITHUB_ENV -Value 'MAGIC_REQUIRE_TRUSTED_CODESIGN=1'
+            Write-Host 'Trusted PFX secret detected -> MAGIC_REQUIRE_TRUSTED_CODESIGN=1'
+          }
 
       - name: Build + sign portable package
         shell: powershell
         env:
           MAGIC_REQUIRE_CODESIGN: "1"
-          # MAGIC_CODESIGN_* injected into GITHUB_ENV by prepare step
+          # MAGIC_CODESIGN_* / MAGIC_REQUIRE_TRUSTED_CODESIGN injected by prepare step
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File .\build\build_exe.ps1
 
@@ -79,6 +87,7 @@ jobs:
             -ExePath .\dist\Win11MagicUpgrade.exe `
             -ExpectPublisher dlnraja
           if (Test-Path .\dist\PUBLISHER.txt) { Get-Content .\dist\PUBLISHER.txt }
+          if (Test-Path .\dist\PUBLISHER.json) { Get-Content .\dist\PUBLISHER.json }
           if (Test-Path .\dist\SHA256SUMS.txt) { Get-Content .\dist\SHA256SUMS.txt }
           Get-ChildItem .\dist\*.zip | ForEach-Object { $_.FullName; $_.Length }
 
@@ -132,7 +141,8 @@ jobs:
             ## Publisher
 
             Authenticode: **dlnraja** (Release workflow).
-            For SmartScreen reputation, add a trusted OV/EV PFX via secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`.
+            SmartScreen: set secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD` (real OV/EV .pfx).
+            Local: `MAGIC_CODESIGN_PFX` + `MAGIC_CODESIGN_PASSWORD` - see [docs/CODESIGN.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN.md).
             Optional VirusTotal submit: secret `VIRUSTOTAL_API_KEY`.
 
             Not malware - open source MIT. See SECURITY.md.
