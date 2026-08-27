@@ -467,18 +467,32 @@ def restore_boot_partition_files(*, generation: Path | None = None) -> dict[str,
             return out
 
         dst = Path(f"{mounted.rstrip(':')}:\\")
-        # Use the richest backup (most files) matching role
-        best = None
-        best_files = -1
+        # Prefer matching role: ESP on UEFI, SRP on BIOS — never apply wrong-role WIM onto ESP
+        want_role = "ESP" if _firmware() == "UEFI" else "SRP"
+        candidates: list[tuple[int, Path, str]] = []
         for pd in part_dirs:
+            role = "BOOTISH"
+            try:
+                role = str(json.loads((pd / "partition.json").read_text(encoding="utf-8")).get("Role") or "BOOTISH")
+            except Exception:
+                pass
             files_root = pd / "files"
             wim = pd / "partition.wim"
             count = sum(1 for _ in files_root.rglob("*") if _.is_file()) if files_root.is_dir() else 0
             if wim.is_file():
-                count += 100000  # prefer WIM
-            if count > best_files:
-                best_files = count
-                best = pd
+                count += 100000
+            # Strongly prefer matching role
+            score = count + (1_000_000 if role == want_role else 0)
+            # Deprioritize obvious cross-role (SRP WIM onto UEFI ESP)
+            if want_role == "ESP" and role == "SRP":
+                score -= 500_000
+            if want_role == "SRP" and role == "ESP":
+                score -= 500_000
+            candidates.append((score, pd, role))
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        best = candidates[0][1] if candidates and candidates[0][0] > 0 else None
+        if best:
+            out["actions"].append(f"restore_role:{candidates[0][2]}")
         if not best:
             out["actions"].append("no_part_payload")
             return out
@@ -576,7 +590,24 @@ def dynamic_regenerate_boot_partition(
         out["mode"] = "restore_existing"
         return out
 
-    # 2) Create new partition (PS Storage preferred)
+    # Refuse blank create without a backup generation (safety)
+    if not gen:
+        out["actions"].append("regenerate_refused_no_backup")
+        log("Dynamic regenerate refused — no partition backup available", "ERROR")
+        return out
+
+    # Session cap on new ESP creation
+    try:
+        cap = BACKUP_ROOT / "regen-create-count.txt"
+        ncreate = int(cap.read_text(encoding="utf-8").strip() or "0") if cap.exists() else 0
+        if ncreate >= 2:
+            out["actions"].append("regenerate_session_cap")
+            log("Dynamic regenerate create skipped — session cap", "WARN")
+            return out
+    except Exception:
+        ncreate = 0
+
+    # 2) Create new partition WITHOUT bcdboot first (apply payload, then bcdboot)
     out["actions"].append("need_new_partition")
     letter = None
     try:
@@ -586,9 +617,10 @@ def dynamic_regenerate_boot_partition(
             size_mb=max(100, target_size // (1024 * 1024)),
             system_disk=disk_n,
             prefer_uefi=uefi,
+            run_bcdboot=False,
         )
         out["actions"].extend(ps.get("actions") or [])
-        if ps.get("ok") and ps.get("letter"):
+        if ps.get("created") and ps.get("letter"):
             letter = f"{ps['letter']}:"
             out["letter"] = letter
             out["mode"] = "ps_storage_new"
@@ -618,6 +650,12 @@ def dynamic_regenerate_boot_partition(
         out["actions"].append("regenerate_create_failed")
         log("Dynamic regenerate: could not create boot partition", "ERROR")
         return out
+
+    try:
+        BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+        (BACKUP_ROOT / "regen-create-count.txt").write_text(str(ncreate + 1), encoding="utf-8")
+    except Exception:
+        pass
 
     # 4) Apply backup payload onto new partition
     if gen:
@@ -711,13 +749,17 @@ def ensure_partition_backup_then_repair(
             from .boot_safe import rewrite_boot_files_from_windows
 
             uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
-            if rewrite_boot_files_from_windows(prefer_uefi=uefi):
+            bcd_ok = rewrite_boot_files_from_windows(prefer_uefi=uefi)
+            if bcd_ok:
                 summary["actions"].append("bcdboot_after_restore")
-                summary["ok"] = True
             else:
-                summary["ok"] = True  # files restored anyway
+                summary["actions"].append("bcdboot_after_restore_failed")
+            # Files restored counts as partial success; full ok needs bcdboot
+            summary["ok"] = bool(bcd_ok)
+            summary["files_restored"] = True
         except Exception:
-            summary["ok"] = True
+            summary["ok"] = False
+            summary["files_restored"] = True
     try:
         (BACKUP_ROOT / "last-repair.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     except Exception:

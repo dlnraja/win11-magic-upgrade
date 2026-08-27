@@ -523,18 +523,25 @@ def stage_temporary_winre_ramdisk_boot(*, one_shot: bool = True) -> dict[str, An
 def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int | None = None) -> dict[str, Any]:
     """
     Full intelligent fallback ladder after ESP/MBR errors:
-      BCD import → ESP snapshot → bcdboot → bcdedit heal → bootrec →
-      deep verify → emergency regenerate → PS Storage (non-diskpart) →
-      WinRE / WinPE ramdisk → FreeDOS media stage
+      partition restore/regen → BCD import → ESP critical files → bcdboot →
+      bcdedit heal → bootrec → deep verify → emergency (no double-restore) →
+      WinRE or WinPE one-shot (only if still not bootable / forced)
     """
     uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
     log("=" * 60, "STEP")
     log("INTELLIGENT BOOT REPAIR — multi-tool fallbacks", "STEP")
-    summary: dict[str, Any] = {"actions": [], "uefi": uefi, "system_disk": system_disk}
+    summary: dict[str, Any] = {
+        "actions": [],
+        "uefi": uefi,
+        "system_disk": system_disk,
+        "winre_stage": {},
+        "winpe_stage": {},
+    }
+    force_winre = os.environ.get("MAGIC_WINRE_BOOT", "").strip().lower() in ("1", "true", "yes")
+    force_pe = os.environ.get("MAGIC_WINPE_BOOT", "").strip().lower() in ("1", "true", "yes")
 
-    if restore_bcd_from_last():
-        summary["actions"].append("bcd_import")
-    # Full partition restore / dynamic regenerate before thin critical-file restore
+    # 1) Partition files/WIM restore (+ dynamic regenerate if needed) BEFORE BCD import
+    part_done = False
     try:
         from .boot_partition_backup import ensure_partition_backup_then_repair
 
@@ -546,17 +553,21 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
             "actions": (part_fix.get("actions") or [])[-12:],
         }
         summary["actions"].extend(part_fix.get("actions") or [])
+        part_done = True
         if part_fix.get("ok"):
             summary["actions"].append("partition_backup_restore_ok")
     except Exception as e:
         summary["actions"].append(f"partition_repair_skip:{type(e).__name__}")
         log(f"Partition backup/restore: {e}", "WARN")
+
+    # 2) BCD import after files are back on the volume
+    if restore_bcd_from_last():
+        summary["actions"].append("bcd_import")
     if restore_esp_critical_files():
         summary["actions"].append("esp_files_restored")
     if rewrite_boot_files_from_windows(prefer_uefi=uefi):
         summary["actions"].append("bcdboot_rewrite")
 
-    # Extra bcdboot ALL pass
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     if bcdboot.exists():
@@ -570,7 +581,6 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
     summary["actions"].extend(try_bootrec_repair())
     summary["actions"].extend(try_bootrec_fixmbr_if_bios())
 
-    # Deep checks + emergency suite (non-diskpart, PE/DOS) when still uncertain
     try:
         from .boot_emergency import (
             deep_boot_verification,
@@ -592,6 +602,7 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
                 prefer_uefi=uefi,
                 system_disk=system_disk,
                 try_ps_storage_expand=True,
+                skip_partition_restore=part_done,
             )
             summary["emergency"] = {
                 k: emerg.get(k)
@@ -599,7 +610,6 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
             }
             summary["actions"].extend(emerg.get("actions") or [])
             winre_stage = emerg.get("winre") or {}
-            # Normalize winre_stage shape for guarantee_bootable
             if isinstance(winre_stage, dict) and "staged" in winre_stage:
                 summary["winre_stage"] = {
                     "staged": winre_stage.get("staged"),
@@ -608,34 +618,41 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
                 }
             summary["winpe_stage"] = emerg.get("winpe") or {}
         else:
-            # Still stage WinRE/WinPE as soft safety net when MAGIC_WINRE_BOOT / MAGIC_WINPE_BOOT
-            winre_stage = stage_temporary_winre_ramdisk_boot(one_shot=True)
-            summary["winre_stage"] = winre_stage
-            summary["actions"].extend(winre_stage.get("actions") or [])
-            force_pe = os.environ.get("MAGIC_WINPE_BOOT", "").strip().lower() in ("1", "true", "yes")
-            if force_pe or os.environ.get("MAGIC_WINRE_BOOT", "").strip().lower() in ("1", "true", "yes"):
+            # Deep OK — only stage PE when explicitly forced (never hijack a healthy Windows reboot)
+            if force_winre:
+                winre_stage = stage_temporary_winre_ramdisk_boot(one_shot=True)
+                summary["winre_stage"] = winre_stage
+                summary["actions"].extend(winre_stage.get("actions") or [])
+            if force_pe and not (summary.get("winre_stage") or {}).get("staged"):
                 pe = stage_temporary_winpe_ramdisk(one_shot=True, prefer_uefi=uefi)
                 summary["winpe_stage"] = pe
                 summary["actions"].extend(pe.get("actions") or [])
     except Exception as e:
         log(f"Emergency suite skipped: {e}", "WARN")
         summary["actions"].append(f"emergency_skip:{type(e).__name__}")
-        winre_stage = stage_temporary_winre_ramdisk_boot(one_shot=True)
-        summary["winre_stage"] = winre_stage
-        summary["actions"].extend(winre_stage.get("actions") or [])
 
-    if "winre_stage" not in summary:
-        winre_stage = stage_temporary_winre_ramdisk_boot(one_shot=True)
-        summary["winre_stage"] = winre_stage
-        summary["actions"].extend(winre_stage.get("actions") or [])
-    else:
-        winre_stage = summary.get("winre_stage") or {}
-
+    # If still not bootable after ladder, stage ONE recovery path
     post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
     summary["postflight"] = post
     summary["bootable"] = bool(post.get("ok") or post.get("bcd_bootmgr"))
+    winre_stage = summary.get("winre_stage") or {}
     pe_staged = bool((summary.get("winpe_stage") or {}).get("staged"))
-    # If still flaky but WinRE/WinPE staged, mark recoverable
+
+    if not summary["bootable"] and not winre_stage.get("staged") and not pe_staged:
+        winre_stage = stage_temporary_winre_ramdisk_boot(one_shot=True)
+        summary["winre_stage"] = winre_stage
+        summary["actions"].extend(winre_stage.get("actions") or [])
+        if not winre_stage.get("staged"):
+            try:
+                from .boot_emergency import stage_temporary_winpe_ramdisk
+
+                pe = stage_temporary_winpe_ramdisk(one_shot=True, prefer_uefi=uefi)
+                summary["winpe_stage"] = pe
+                summary["actions"].extend(pe.get("actions") or [])
+                pe_staged = bool(pe.get("staged"))
+            except Exception:
+                pass
+
     if not summary["bootable"] and (winre_stage.get("staged") or pe_staged):
         summary["recoverable_via_winre"] = bool(winre_stage.get("staged"))
         summary["recoverable_via_winpe"] = pe_staged
@@ -696,15 +713,23 @@ def guarantee_bootable(
         deep_verify = repair.get("deep_verify") or {}
 
     bootable = bool(post.get("ok") or post.get("bcd_bootmgr"))
-    # One-shot WinRE / WinPE / emergency suite counts as safe temporary path
-    emerg_safe = bool((repair.get("emergency") or {}).get("safe_reboot_path"))
+    # Safe path = verified Windows OR a confirmed one-shot PE (not emerg loose score)
     safe_reboot_path = bool(
-        bootable
-        or winre_stage.get("staged")
-        or winpe_stage.get("staged")
-        or emerg_safe
+        bootable or winre_stage.get("staged") or winpe_stage.get("staged")
     )
 
+    restore_prefixes = (
+        "bcd_import",
+        "esp_files_restored",
+        "files_restored",
+        "wim_applied",
+        "wim_on_new",
+        "files_on_new",
+        "partition_backup_restore",
+        "removed_tiny_bcd",
+        "bcdboot_rewrite",
+        "bcdboot_after_restore",
+    )
     out = {
         "bootable": bootable,
         "safe_reboot_path": safe_reboot_path,
@@ -714,25 +739,8 @@ def guarantee_bootable(
         "winpe_stage": winpe_stage,
         "deep_verify": deep_verify,
         "restored": any(
-            a.startswith(p)
-            for a in actions
-            for p in (
-                "bcd_import",
-                "esp_files",
-                "bcdboot",
-                "bcdedit",
-                "bootrec",
-                "reagentc",
-                "boottore",
-                "set_",
-                "deep_verify",
-                "ps_create",
-                "create_osloader",
-                "bootsequence",
-                "removed_tiny",
-            )
-        )
-        or bool(actions),
+            any(str(a).startswith(p) or p in str(a) for p in restore_prefixes) for a in actions
+        ),
     }
     if bootable:
         log("PC is bootable (verified) — safe to reboot", "OK")

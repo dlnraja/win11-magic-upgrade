@@ -258,16 +258,35 @@ def ps_storage_create_esp(
     size_mb: int = 512,
     system_disk: int | None = None,
     prefer_uefi: bool = True,
+    run_bcdboot: bool = True,
 ) -> dict[str, Any]:
     """
     Create a new ESP (or MBR system) partition using Storage cmdlets — no diskpart.
     Shrinks C: only if supported size allows; never touches other disks.
+    Set run_bcdboot=False when caller will restore WIM/files first, then bcdboot.
     """
-    result: dict[str, Any] = {"ok": False, "actions": [], "letter": None, "method": "ps_storage"}
+    result: dict[str, Any] = {
+        "ok": False,
+        "created": False,
+        "actions": [],
+        "letter": None,
+        "method": "ps_storage",
+    }
     allow = os.environ.get("MAGIC_PS_STORAGE_FALLBACK", "1").strip().lower()
     if allow in ("0", "false", "no"):
         result["actions"].append("ps_storage_disabled")
         return result
+
+    # Session cap — avoid multi-shrink / multi-ESP on retries
+    try:
+        cap_path = STATE_DIR / "ps-esp-create-count.txt"
+        count = int(cap_path.read_text(encoding="utf-8").strip() or "0") if cap_path.exists() else 0
+        if count >= 2:
+            result["actions"].append("ps_storage_session_cap")
+            log("PS Storage ESP create skipped — session cap (max 2)", "WARN")
+            return result
+    except Exception:
+        count = 0
 
     disk_filter = ""
     if system_disk is not None and int(system_disk) >= 0:
@@ -279,7 +298,6 @@ def ps_storage_create_esp(
         )
 
     gpt_type = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}"  # EFI System
-    # For MBR we create IFS/FAT32 primary — Storage uses -MbrType 0x0C for FAT32 LBA
     size_bytes = int(size_mb) * 1024 * 1024
 
     script = f"""
@@ -320,7 +338,17 @@ Write-Output ("OK|" + $letter + "|" + $partStyle + "|" + $diskN)
         result["letter"] = letter
         result["partition_style"] = m.group(2)
         result["disk"] = int(m.group(3))
-        # bcdboot onto new partition
+        result["created"] = True
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            (STATE_DIR / "ps-esp-create-count.txt").write_text(str(count + 1), encoding="utf-8")
+        except Exception:
+            pass
+        if not run_bcdboot:
+            result["ok"] = True  # created+formatted; caller applies payload then bcdboot
+            result["actions"].append("bcdboot_deferred")
+            log(f"PS Storage partition {letter}: created (bcdboot deferred)", "OK")
+            return result
         sys_root = os.environ.get("SystemRoot", r"C:\Windows")
         bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
         mode = "UEFI" if prefer_uefi or m.group(2).upper() == "GPT" else "BIOS"
@@ -334,7 +362,8 @@ Write-Output ("OK|" + $letter + "|" + $partStyle + "|" + $diskN)
             else:
                 result["ok"] = True
         else:
-            result["ok"] = True  # partition created; caller may bcdboot later
+            result["ok"] = False
+            result["actions"].append("bcdboot_missing")
         log(
             f"PS Storage new boot partition {letter}: style={m.group(2)} ok={result['ok']}",
             "OK" if result["ok"] else "WARN",
@@ -521,12 +550,22 @@ def stage_temporary_winpe_ramdisk(
     Create a TEMPORARY BCD osloader that boots Winre.wim (or boot.wim) as WinPE ramdisk.
     Uses bcdedit /bootsequence for one-shot next reboot — then Windows again.
     Falls back gracefully if boot.sdi / WIM missing.
+    staged=True ONLY when one-shot /bootsequence succeeds.
     """
-    result: dict[str, Any] = {"staged": False, "mode": None, "actions": [], "guid": None}
+    result: dict[str, Any] = {
+        "staged": False,
+        "menu_entry": False,
+        "mode": None,
+        "actions": [],
+        "guid": None,
+    }
     allow = os.environ.get("MAGIC_WINPE_FALLBACK", "1").strip().lower()
     if allow in ("0", "false", "no"):
         result["actions"].append("winpe_fallback_disabled")
         return result
+
+    # Replace any previous temp entry first
+    result["actions"].extend(cleanup_temporary_winpe_bcd())
 
     uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
     wim = _find_winre_wim() or _find_install_boot_wim()
@@ -603,11 +642,13 @@ def stage_temporary_winpe_ramdisk(
             log("Temporary WinPE ramdisk one-shot staged via bcdedit /bootsequence", "OK")
         else:
             log(f"/bootsequence failed: {(o3 or '')[:160]}", "WARN")
-            # Still leave entry in menu as soft fallback
-            result["staged"] = True
+            # Menu entry only — NOT a safe one-shot reboot path
+            result["staged"] = False
+            result["menu_entry"] = True
             result["mode"] = "bcd_winpe_ramdisk_menu"
     else:
-        result["staged"] = True
+        result["staged"] = False
+        result["menu_entry"] = True
         result["mode"] = "bcd_winpe_ramdisk_menu"
 
     # Persist guid for cleanup later
@@ -748,10 +789,12 @@ def run_emergency_repair_suite(
     prefer_uefi: bool | None = None,
     system_disk: int | None = None,
     try_ps_storage_expand: bool = False,
+    skip_partition_restore: bool = False,
 ) -> dict[str, Any]:
     """
     Full automated emergency path when diskpart / normal repair is insufficient:
-      deep verify → regenerate BCD → PS Storage ESP (optional) → WinPE temp → FreeDOS stage
+      (optional partition restore) → regenerate BCD → PS Storage → WinRE then WinPE → FreeDOS
+    Prefer a single one-shot PE path (WinRE first; WinPE only if WinRE failed).
     """
     uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
     log("=" * 60, "STEP")
@@ -765,17 +808,23 @@ def run_emergency_repair_suite(
         "issues": before.get("issues"),
     }
 
-    # Partition backup restore / dynamic regenerate first
-    try:
-        from .boot_partition_backup import ensure_partition_backup_then_repair
+    # Avoid re-applying stale backup over a repair already done this pass
+    if not skip_partition_restore:
+        try:
+            from .boot_partition_backup import ensure_partition_backup_then_repair
 
-        part = ensure_partition_backup_then_repair(
-            prefer_uefi=uefi, system_disk=system_disk, force_backup=False
-        )
-        summary["partition_repair"] = {"ok": part.get("ok"), "actions": (part.get("actions") or [])[-10:]}
-        summary["actions"].extend(part.get("actions") or [])
-    except Exception as e:
-        summary["actions"].append(f"partition_repair_skip:{type(e).__name__}")
+            part = ensure_partition_backup_then_repair(
+                prefer_uefi=uefi, system_disk=system_disk, force_backup=False
+            )
+            summary["partition_repair"] = {
+                "ok": part.get("ok"),
+                "actions": (part.get("actions") or [])[-10:],
+            }
+            summary["actions"].extend(part.get("actions") or [])
+        except Exception as e:
+            summary["actions"].append(f"partition_repair_skip:{type(e).__name__}")
+    else:
+        summary["actions"].append("partition_restore_skipped_already_done")
 
     regen = emergency_regenerate_bcd(prefer_uefi=uefi)
     summary["regenerate"] = {k: regen.get(k) for k in ("ok", "actions")}
@@ -786,18 +835,24 @@ def run_emergency_repair_suite(
         summary["ps_storage"] = {k: ps.get(k) for k in ("ok", "letter", "actions")}
         summary["actions"].extend(ps.get("actions") or [])
 
-    # Temporary lite environments
     from .boot_safe import stage_temporary_winre_ramdisk_boot
+
+    # Clear stale WinPE before staging anything new
+    summary["actions"].extend(cleanup_temporary_winpe_bcd())
 
     winre = stage_temporary_winre_ramdisk_boot(one_shot=True)
     summary["winre"] = {k: winre.get(k) for k in ("staged", "mode")}
     summary["actions"].extend(winre.get("actions") or [])
 
-    winpe = stage_temporary_winpe_ramdisk(one_shot=True, prefer_uefi=uefi)
+    winpe: dict[str, Any] = {"staged": False, "mode": None, "guid": None}
+    # Only one one-shot: WinPE if WinRE failed (avoid /boottore vs /bootsequence fight)
+    if not winre.get("staged"):
+        winpe = stage_temporary_winpe_ramdisk(one_shot=True, prefer_uefi=uefi)
+        summary["actions"].extend(winpe.get("actions") or [])
+    else:
+        summary["actions"].append("winpe_skipped_winre_oneshot_active")
     summary["winpe"] = {k: winpe.get(k) for k in ("staged", "mode", "guid")}
-    summary["actions"].extend(winpe.get("actions") or [])
 
-    # Only stage FreeDOS if both WinRE and WinPE failed to stage
     if not winre.get("staged") and not winpe.get("staged"):
         dos = stage_freedos_rescue_media(reason="winre_and_winpe_unavailable")
         summary["freedos"] = {k: dos.get(k) for k in ("staged", "iso")}
@@ -811,11 +866,10 @@ def run_emergency_repair_suite(
         "score": after.get("score"),
         "issues": after.get("issues"),
     }
-    summary["bootable"] = bool(after.get("ok") or after.get("score", 0) >= 5)
+    # bootable only from real verify — not a loose score that authorizes blind reboot
+    summary["bootable"] = bool(after.get("ok"))
     summary["safe_reboot_path"] = bool(
-        summary["bootable"]
-        or winre.get("staged")
-        or winpe.get("staged")
+        summary["bootable"] or winre.get("staged") or winpe.get("staged")
     )
 
     try:

@@ -248,7 +248,7 @@ def _execute_step(
                     extra={"step": step.as_dict() if hasattr(step, "as_dict") else str(step)},
                 )
             hint = _links_hint(links if isinstance(links, dict) else {})
-            bootable = res.get("bootable", True)
+            bootable = res.get("bootable", False)
             if not bootable:
                 log("ESP/SRP failed AND bootability unverified — refusing to continue", "ERROR")
             if os.environ.get("MAGIC_SRP_CONTINUE", "").strip().lower() in ("1", "true", "yes"):
@@ -302,7 +302,7 @@ def _execute_step(
                 )
             if meta.get("autodiag"):
                 log(f"Autodiag: {meta['autodiag']}", "INFO")
-            bootable = (meta.get("guarantee") or {}).get("bootable", True)
+            bootable = (meta.get("guarantee") or {}).get("bootable", False)
             if not bootable:
                 raise RuntimeError(
                     f"MBR→GPT failed ({msg}) — bootability NOT verified; fix WinRE before reboot"
@@ -311,7 +311,7 @@ def _execute_step(
                 f"MBR→GPT failed ({msg}) — PC kept bootable via restore; stop autonomous chain"
             )
         # Only reboot when conversion OK and bootable
-        if not (meta.get("guarantee") or {}).get("bootable", True):
+        if not (meta.get("guarantee") or {}).get("bootable", False):
             raise RuntimeError("MBR→GPT reported OK but bootability check failed — reboot refused")
         save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code, "BootMeta": meta.get("postflight")})
         from .boot_safe import safe_reboot_after_boot_op

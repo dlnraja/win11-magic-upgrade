@@ -137,9 +137,10 @@ Boot layout changes use `engine/boot_safe.py`:
 3. **Retries** — failed ESP/SRP expands re-run after restore
 4. **Guarantee bootable** — on success *or* failure intelligent ladder:
    **partition restore / dynamic regenerate** → BCD import → ESP file restore → `bcdboot` →
-   `bcdedit` heal → `bootrec` → deep verification → emergency BCD regenerate →
-   PowerShell Storage → WinRE / WinPE ramdisk → FreeDOS + GParted packages.
-   Reboot only if Windows is verified **or** a temporary PE one-shot is staged.
+   `bcdedit` heal → `bootrec` → deep verification → emergency (no double-restore) →
+   **one** temporary PE path (WinRE first, else WinPE one-shot) → FreeDOS + GParted packages.
+   Reboot only if Windows is verified **or** a confirmed one-shot PE is staged
+   (`/boottore` or `/bootsequence` rc=0 — menu-only does not count).
 5. **Postflight** — ESP boot files + `{bootmgr}` + deep scorecard
 6. **Fallback** — stage **GParted Live** + **FreeDOS** media + guides (never auto-flash / auto-boot)
 7. **Autodiag** — on persistent failure, sanitized GitHub Issue (+ optional PR) with restore facts only (no PII)

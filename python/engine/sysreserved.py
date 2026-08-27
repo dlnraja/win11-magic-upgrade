@@ -341,7 +341,8 @@ def create_larger_esp(
         log(f"bcdboot ALL -> {code2}: {bout2[:300]}")
         if code2 != 0:
             log("bcdboot failed on new ESP - old ESP still present, boot should remain OK", "WARN")
-            return root
+            # Do NOT report success — caller must not mark expand ok
+            return None
 
     log(f"New ESP ready at {root} with boot files", "OK")
     return root
@@ -403,7 +404,7 @@ def create_larger_system_reserved_mbr(
     log(f"bcdboot BIOS -> {code}: {bout[:300]}")
     if code != 0 and "successfully" not in bout.lower():
         log("bcdboot BIOS failed — leaving new partition without active flag (old SRP intact)", "WARN")
-        return root
+        return None
 
     # Mark active only after bcdboot OK — select by volume index (never letter-after-dismount)
     vol = find_volume_by_letter(letter)
@@ -663,8 +664,9 @@ def inspect_and_fix_system_reserved(
                     system_disk=disk_n,
                 )
                 if result.get("expanded") and result["postflight"] and not result["postflight"].get("ok"):
-                    log("Postflight warned after expand — BCD backup kept for rollback", "WARN")
-                    result["actions"].append("postflight_warn")
+                    log("Postflight failed after expand — marking not OK (BCD backup kept)", "WARN")
+                    result["actions"].append("postflight_fail")
+                    result["ok"] = False
             except Exception as e:
                 log(f"boot postflight skipped: {e}", "WARN")
 
