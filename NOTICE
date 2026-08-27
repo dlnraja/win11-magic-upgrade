@@ -5,11 +5,10 @@
 - Project: https://github.com/pbatard/Fido
 - Author: Pete Batard / Rufus project
 - License: GPLv3 (see upstream repository)
-- Bundled file: `vendor/Fido.ps1`
-- Purpose: Obtain official Microsoft Windows retail ISO download URLs
-
-Fido is included as a vendored script. Modifications, if any, are noted in
-git history. When redistributing this project, retain Fido's license obligations.
+- Optional vendored file: `vendor/Fido.ps1` (reference only)
+- **Runtime:** ISO download is reimplemented in pure Python (`python/engine/iso.py`)
+  using the same Microsoft software-download connector API. The portable EXE
+  does **not** execute Fido.ps1 or PowerShell.
 
 ## Method acknowledgements (not code dependencies)
 

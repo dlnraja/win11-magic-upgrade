@@ -4,7 +4,7 @@ Research notes (Microsoft Support, SetupDiag, FlyOOBE issues, forums) and what t
 
 | Symptom / code | Typical cause | Patch in this project |
 |----------------|---------------|------------------------|
-| FlyOOBE needs .NET 4.0.30319 on Win10 1511 | Modern GUI / framework | Pure PowerShell engine + optional Python EXE |
+| FlyOOBE needs .NET 4.0.30319 on Win10 1511 | Modern GUI / framework | **Pure Python EXE** (no .NET 4.x, no PowerShell) |
 | "This PC can't run Windows 11" on Win10 | Appraiser / MoSetup | LabConfig + MoSetup + HwReqChk + `/product server` |
 | 24H2 still blocks after old registry hacks | HwReqChk | `HwReqChkVars` MULTI_SZ spoof + AppCompat purge |
 | Direct 1511 → Win11 fails | Obsolete servicing stack | Intermediate **Win10 22H2** then Win11 |

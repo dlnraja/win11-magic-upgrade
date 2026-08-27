@@ -5,7 +5,11 @@
 
 Portable **one-click** upgrader: Windows 10 (including **1511** and other obsolete builds) and older Windows 11 → **Windows 11 latest**, keeping **files and apps**.
 
-Inspired by **Flyby11 / FlyOOBE**, but **no FlyOOBE / modern .NET dependency** (common failure on Win10 1511).
+Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller)**:
+
+- **No .NET Framework 4.x** required on the target PC  
+- **No PowerShell** engine (FlyOOBE/.NET failures on 1511 do not apply)  
+- **No FlyOOBE** GUI
 
 > **English** · [Français](docs/README.fr.md)
 

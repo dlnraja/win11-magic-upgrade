@@ -4,16 +4,18 @@
 Win11MagicUpgrade.exe / .cmd
         │
         ▼
-src/Win11MagicUpgrade.ps1          Orchestrator (admin, resume, CLI)
+python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x
         │
-        ├── Logging.ps1            State + logs under %LOCALAPPDATA%\Win11MagicUpgrade
-        ├── SystemDetect.ps1       OS build, disk MBR/GPT, CPU SSE4.2, TPM, firmware
-        ├── BypassChecks.ps1       MoSetup / LabConfig / HwReqChk + /product server args
-        ├── MigrationPatches.ps1   Researched fixes for 0xC1900101, AV, filters, caches…
-        ├── CommonFixes.ps1        Free space, $WINDOWS.~BT cleanup, RunOnce
-        ├── MbrToGpt.ps1           mbr2gpt validate/convert + layout repair
-        ├── IsoDownload.ps1        Fido → Microsoft CDN ISO (BITS)
-        └── UpgradeEngine.ps1      Intermediate Win10 22H2 → Win11 latest pipeline
+        └── python/engine/         Pure Python pipeline (stdlib + Win32)
+              ├── detect.py        winreg + ctypes + diskpart/wmic
+              ├── bypass.py        winreg LabConfig / MoSetup / HwReqChk
+              ├── patches.py       AV/filters/caches / mapped drives
+              ├── mbrgpt.py        mbr2gpt.exe + diskpart
+              ├── iso.py           Microsoft CDN API (Fido-compatible, urllib)
+              ├── virtdisk.py      Mount ISO via virtdisk.dll
+              └── pipeline.py      Orchestration + setup.exe /product server
+
+Legacy PowerShell under src/ is optional/reference only — not required at runtime.
 ```
 
 ## Upgrade decision tree

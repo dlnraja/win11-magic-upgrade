@@ -7,42 +7,39 @@ on:
     branches: [main]
 
 jobs:
-  powershell-syntax:
-    name: PowerShell syntax
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Parse all scripts
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $files = Get-ChildItem -Path src, build -Filter *.ps1 -Recurse
-          $failed = $false
-          foreach ($f in $files) {
-            $errors = $null
-            $null = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors)
-            if ($errors -and $errors.Count -gt 0) {
-              Write-Host "FAIL $($f.FullName)"
-              $errors | ForEach-Object { Write-Host $_ }
-              $failed = $true
-            } else {
-              Write-Host "OK   $($f.Name)"
-            }
-          }
-          # Fido is third-party; skip strict parse failures unless file missing
-          if (-not (Test-Path vendor/Fido.ps1)) { throw 'vendor/Fido.ps1 missing' }
-          if ($failed) { throw 'PowerShell parse errors' }
-
   python-compile:
-    name: Python compile
+    name: Python engine compile
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile
-        run: python -m py_compile python/magic_upgrade.py
+      - name: Compile all engine modules
+        shell: powershell
+        run: |
+          Get-ChildItem python -Filter *.py -Recurse | ForEach-Object {
+            python -m py_compile $_.FullName
+            Write-Host "OK $($_.FullName)"
+          }
+      - name: Import engine
+        run: python -c "import sys; sys.path.insert(0,'python'); from engine import run_diagnose; print('engine ok')"
+
+  powershell-legacy-syntax:
+    name: Legacy PowerShell syntax (optional)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse legacy scripts if present
+        shell: powershell
+        run: |
+          $files = @(Get-ChildItem -Path src, build -Filter *.ps1 -Recurse -ErrorAction SilentlyContinue)
+          foreach ($f in $files) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) { throw "Parse fail $($f.Name)" }
+            Write-Host "OK $($f.Name)"
+          }
 
   i18n-json:
     name: i18n JSON

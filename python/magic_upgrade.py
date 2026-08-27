@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Win11 Magic Upgrade — portable GUI/CLI launcher.
-Delegates the heavy lifting to the PowerShell engine (no FlyOOBE / modern .NET required).
+Win11 Magic Upgrade — portable GUI/CLI.
+Pure Python engine: NO .NET Framework 4.x, NO PowerShell, NO FlyOOBE.
 """
 from __future__ import annotations
 
@@ -9,19 +9,41 @@ import ctypes
 import json
 import locale
 import os
-import subprocess
 import sys
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
 
+# Ensure package import works from source and PyInstaller
+_ROOT_CANDIDATES = []
+
+
+def app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        here = Path(sys.executable).resolve().parent
+        meipass = Path(getattr(sys, "_MEIPASS", here))
+        for candidate in (here, meipass, here / "_internal"):
+            if (candidate / "python" / "engine").exists() or (candidate / "engine").exists():
+                return candidate
+            if (candidate / "i18n" / "strings.json").exists():
+                return candidate
+        return here
+    return Path(__file__).resolve().parents[1]
+
+
+def _ensure_sys_path(root: Path) -> None:
+    for p in (root / "python", root, Path(__file__).resolve().parent):
+        s = str(p)
+        if p.exists() and s not in sys.path:
+            sys.path.insert(0, s)
+
 
 def load_strings(root: Path) -> dict:
     lang = (locale.getdefaultlocale()[0] or "en").lower()
     code = "fr" if lang.startswith("fr") else "en"
     path = root / "i18n" / "strings.json"
-    data = {"en": {}, "fr": {}}
+    data: dict = {"en": {}, "fr": {}}
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -32,19 +54,6 @@ def load_strings(root: Path) -> dict:
     merged = dict(base)
     merged.update(chosen or {})
     return merged
-
-
-def app_root() -> Path:
-    if getattr(sys, "frozen", False):
-        here = Path(sys.executable).resolve().parent
-        meipass = Path(getattr(sys, "_MEIPASS", here))
-        for candidate in (here, meipass, here / "_internal", meipass / "payload"):
-            if (candidate / "src" / "Win11MagicUpgrade.ps1").exists():
-                return candidate
-            if (candidate / "Win11MagicUpgrade.ps1").exists():
-                return candidate
-        return here
-    return Path(__file__).resolve().parents[1]
 
 
 def is_admin() -> bool:
@@ -58,66 +67,21 @@ def relaunch_as_admin(extra_args: list[str] | None = None) -> None:
     args = extra_args or []
     if getattr(sys, "frozen", False):
         params = " ".join(f'"{a}"' if " " in a else a for a in args)
-        ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, params, None, 1
-        )
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
     else:
         script = str(Path(__file__).resolve())
         params = " ".join([f'"{script}"'] + [f'"{a}"' if " " in a else a for a in args])
-        ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, params, None, 1
-        )
-
-
-def find_ps1(root: Path) -> Path:
-    candidates = [
-        root / "src" / "Win11MagicUpgrade.ps1",
-        root / "Win11MagicUpgrade.ps1",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    raise FileNotFoundError(
-        "Win11MagicUpgrade.ps1 introuvable. Gardez le dossier src/ à côté de l'EXE."
-    )
-
-
-def run_powershell(ps1: Path, ps_args: list[str], log_cb) -> int:
-    env = os.environ.copy()
-    env["WMU_NO_PAUSE"] = "1"
-    cmd = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(ps1),
-        *ps_args,
-    ]
-    log_cb(" ".join(cmd) + "\n")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-    )
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        log_cb(line)
-    return proc.wait()
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.root_dir = app_root()
+        _ensure_sys_path(self.root_dir)
         self.t = load_strings(self.root_dir)
         self.title(self.t.get("app_title", "Win11 Magic Upgrade"))
-        self.geometry("760x520")
+        self.geometry("780x540")
         self.minsize(640, 420)
         self.configure(bg="#0f172a")
         self._busy = False
@@ -133,7 +97,7 @@ class App(tk.Tk):
         ).pack(anchor="w")
         tk.Label(
             header,
-            text=self.t.get("app_sub", ""),
+            text=self.t.get("app_sub", "") + "  |  NO .NET 4.x  |  NO PowerShell",
             font=("Segoe UI", 10),
             fg="#94a3b8",
             bg="#0f172a",
@@ -151,7 +115,7 @@ class App(tk.Tk):
             relief="flat",
             padx=14,
             pady=8,
-            command=lambda: self.start(["-OneClick"]),
+            command=lambda: self.start("oneclick"),
         )
         self.btn_go.pack(side="left")
         tk.Button(
@@ -163,7 +127,7 @@ class App(tk.Tk):
             relief="flat",
             padx=12,
             pady=8,
-            command=lambda: self.start(["-DiagnoseOnly"]),
+            command=lambda: self.start("diagnose"),
         ).pack(side="left", padx=(8, 0))
         tk.Button(
             btns,
@@ -174,16 +138,17 @@ class App(tk.Tk):
             relief="flat",
             padx=12,
             pady=8,
-            command=lambda: self.start(["-ApplyBypassOnly"]),
+            command=lambda: self.start("bypass"),
         ).pack(side="left", padx=(8, 0))
 
         tk.Label(
             self,
-            text=self.t.get("note", ""),
+            text=self.t.get("note", "")
+            + " | Moteur Python pur (pas de .NET Framework 4.x / pas de powershell.exe).",
             font=("Segoe UI", 9),
             fg="#64748b",
             bg="#0f172a",
-            wraplength=700,
+            wraplength=720,
             justify="left",
         ).pack(anchor="w", padx=20, pady=(0, 8))
 
@@ -197,27 +162,22 @@ class App(tk.Tk):
         )
         self.log.pack(fill="both", expand=True, padx=20, pady=(0, 20))
         self.append(f"Root: {self.root_dir}\n")
+        self.append("Runtime: pure Python — no .NET 4.x / no PowerShell\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
 
     def append(self, text: str) -> None:
         self.log.insert("end", text)
         self.log.see("end")
 
-    def start(self, ps_args: list[str]) -> None:
+    def start(self, action: str) -> None:
         if self._busy:
             return
         title = self.t.get("app_title", "Win11 Magic Upgrade")
-        if not is_admin():
-            if messagebox.askyesno(title, self.t.get("need_admin", "Admin required?")):
-                relaunch_as_admin(ps_args if getattr(sys, "frozen", False) else None)
+        if action != "diagnose" and not is_admin():
+            if messagebox.askyesno(title, self.t.get("need_admin", "Admin?")):
+                relaunch_as_admin([f"--{action}"] if getattr(sys, "frozen", False) else None)
             return
-        try:
-            ps1 = find_ps1(self.root_dir)
-        except FileNotFoundError as e:
-            messagebox.showerror(title, str(e))
-            return
-
-        if "-OneClick" in ps_args:
+        if action == "oneclick":
             if not messagebox.askyesno(title, self.t.get("confirm_upgrade", "Continue?")):
                 return
 
@@ -226,7 +186,21 @@ class App(tk.Tk):
 
         def worker() -> None:
             try:
-                code = run_powershell(ps1, ps_args, lambda s: self.after(0, self.append, s))
+                from engine import (  # type: ignore
+                    apply_bypass_only,
+                    run_diagnose,
+                    run_pipeline,
+                )
+
+                sink = lambda s: self.after(0, self.append, s)
+                if action == "diagnose":
+                    run_diagnose(sink)
+                    code = 0
+                elif action == "bypass":
+                    apply_bypass_only(sink)
+                    code = 0
+                else:
+                    code = run_pipeline(sink)
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
                 if code == 0:
                     self.after(
@@ -250,21 +224,41 @@ class App(tk.Tk):
 
 
 def main() -> None:
-    # CLI mode: python magic_upgrade.py --oneclick
+    root = app_root()
+    _ensure_sys_path(root)
     argv = [a.lower() for a in sys.argv[1:]]
-    if "--cli" in argv or "--oneclick" in argv or "-oneclick" in argv:
+
+    cli = any(
+        a in argv
+        for a in (
+            "--cli",
+            "--oneclick",
+            "-oneclick",
+            "--diagnose",
+            "--bypass",
+            "--resume",
+            "--mbr",
+        )
+    )
+    if cli:
+        from engine import apply_bypass_only, convert_mbr_only, run_diagnose, run_pipeline
+
+        if "--diagnose" in argv:
+            run_diagnose()
+            return
         if not is_admin():
             relaunch_as_admin(sys.argv[1:])
             return
-        root = app_root()
-        ps1 = find_ps1(root)
-        args = ["-OneClick"]
-        if "--diagnose" in argv:
-            args = ["-DiagnoseOnly"]
-        raise SystemExit(run_powershell(ps1, args, lambda s: print(s, end="")))
+        if "--bypass" in argv:
+            apply_bypass_only()
+            return
+        if "--mbr" in argv:
+            convert_mbr_only()
+            return
+        code = run_pipeline(resume="--resume" in argv)
+        raise SystemExit(code)
 
-    app = App()
-    app.mainloop()
+    App().mainloop()
 
 
 if __name__ == "__main__":
