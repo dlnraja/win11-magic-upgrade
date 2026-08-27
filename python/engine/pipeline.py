@@ -187,13 +187,22 @@ def _execute_step(
     if step.kind == "iso_upgrade":
         arch = step.arch or "x64"
         win = step.win or "11"
+        # Re-apply intelligent compat right before Setup (fresh Appraiser caches)
+        try:
+            from .compat import make_system_win11_compatible
+
+            make_system_win11_compatible(report)
+        except Exception as e:
+            log(f"Pre-Setup compat refresh: {e}", "WARN")
+            apply_hardware_bypass(report)
         if win == "10":
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
         root = mount_iso(iso)
-        # More steps remain after this ISO? Register resume.
-        return _run_setup(root, use_server=bool(step.use_server_product), quiet=quiet)
+        # Win11 always uses /product server + IgnoreWarning; Win10 also IgnoreWarning
+        use_server = bool(step.use_server_product) or win == "11"
+        return _run_setup(root, use_server=use_server, quiet=quiet)
 
     return None
 
@@ -268,10 +277,19 @@ def apply_bypass_only(sink: Callable[[str], None] | None = None) -> None:
     if not is_admin():
         raise PermissionError('Administrator required')
     from .preventive import install_all_preventive_patches
+    from .compat import make_system_win11_compatible
+    from .detect import collect_report
 
     install_all_preventive_patches()
-    apply_hardware_bypass()
-    write_migration_report(extra={'Result': 'BYPASS_AND_PREVENTIVE_INSTALLED'})
+    r = collect_report()
+    summary = make_system_win11_compatible(r)
+    write_migration_report(
+        extra={
+            'Result': 'BYPASS_AND_COMPAT_ENGINE',
+            'CompatStrategy': (summary or {}).get('Assessment', {}).get('strategy'),
+            'Gaps': (summary or {}).get('Assessment', {}).get('gaps'),
+        }
+    )
 
 
 def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:

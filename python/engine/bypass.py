@@ -1,7 +1,10 @@
 """Intelligent registry bypass pack for unsupported Win11 upgrades.
 
+Delegates to compat.make_system_win11_compatible for full LabConfig / MoSetup /
+HwReqChk spoof / CompatData soften / SetupConfig.ini.
+
 All keys are well-known community/Microsoft-documented setup overrides.
-Applied via winreg only (no PowerShell / no .NET). Safe defaults: DWORD=1 or MULTI_SZ spoof.
+Applied via winreg only (no PowerShell / no .NET).
 """
 from __future__ import annotations
 
@@ -9,7 +12,7 @@ import winreg
 
 from .logutil import log
 
-# Canonical pack embedded in the program (do not rely on external .reg files)
+# Canonical pack kept for list_registry_pack() / docs (compat engine applies a superset)
 REGISTRY_PACK: list[dict] = [
     {
         "hive": "HKLM",
@@ -79,8 +82,14 @@ REGISTRY_PACK: list[dict] = [
             "SQ_RamMB=8192",
             "SQ_DiskNVMe=TRUE",
             "SQ_SSD=TRUE",
+            "SQ_DiskGB=256",
+            "SQ_CpuCores=8",
+            "SQ_CpuThreads=16",
+            "SQ_CpuMhz=3000",
+            "SQ_DirectXVersion=12",
+            "SQ_WDDMVersion=3.0",
         ],
-        "why": "24H2+ hardware requirement checklist spoof",
+        "why": "24H2+ hardware requirement checklist spoof (full set)",
     },
     {
         "hive": "HKLM",
@@ -123,78 +132,57 @@ DELETE_TREES = [
 ]
 
 
-def _hive(name: str):
-    return winreg.HKEY_LOCAL_MACHINE if name == "HKLM" else winreg.HKEY_CURRENT_USER
-
-
-def _ensure_key(hive, path: str):
-    cur = hive
-    for p in path.split("\\"):
-        cur = winreg.CreateKeyEx(cur, p, 0, winreg.KEY_ALL_ACCESS)
-    return cur
-
-
-def _set_dword(hive, path: str, name: str, value: int) -> None:
-    key = _ensure_key(hive, path)
-    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(value))
-    winreg.CloseKey(key)
-
-
-def _set_multi(hive, path: str, name: str, values: list[str]) -> None:
-    key = _ensure_key(hive, path)
-    winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, list(values))
-    winreg.CloseKey(key)
-
-
-def _delete_value(hive, path: str, name: str) -> None:
+def apply_hardware_bypass(report=None) -> dict | None:
+    """
+    Intelligent full compatibility pass (LabConfig + HwReqChk + CompatData + SetupConfig).
+    Prefer this over applying REGISTRY_PACK alone.
+    """
+    log("Applying intelligent compatibility bypass pack...", "STEP")
     try:
-        with winreg.OpenKey(hive, path, 0, winreg.KEY_ALL_ACCESS) as k:
-            winreg.DeleteValue(k, name)
-    except OSError:
-        pass
+        from .compat import make_system_win11_compatible
+
+        return make_system_win11_compatible(report)
+    except Exception as e:
+        log(f"Compat engine failed ({e}) — falling back to legacy REGISTRY_PACK", "WARN")
+        return _apply_legacy_pack()
 
 
-def _delete_tree(path: str) -> None:
-    def _del(key_path: str):
-        try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_ALL_ACCESS) as k:
-                while True:
-                    try:
-                        sub = winreg.EnumKey(k, 0)
-                    except OSError:
-                        break
-                    _del(key_path + "\\" + sub)
-            winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, key_path)
-        except OSError:
-            pass
+def _apply_legacy_pack() -> dict:
+    def _hive(name: str):
+        return winreg.HKEY_LOCAL_MACHINE if name == "HKLM" else winreg.HKEY_CURRENT_USER
 
-    _del(path)
+    def _ensure(hive, path: str):
+        cur = hive
+        for p in path.split("\\"):
+            cur = winreg.CreateKeyEx(cur, p, 0, winreg.KEY_ALL_ACCESS)
+        return cur
 
-
-def apply_hardware_bypass() -> None:
-    log("Applying intelligent registry bypass pack...", "STEP")
     applied = 0
     for item in REGISTRY_PACK:
         hive = _hive(item["hive"])
         try:
             if item["type"] == "dword":
-                _set_dword(hive, item["path"], item["name"], item["value"])
+                k = _ensure(hive, item["path"])
+                winreg.SetValueEx(k, item["name"], 0, winreg.REG_DWORD, int(item["value"]))
+                winreg.CloseKey(k)
             elif item["type"] == "multi":
-                _set_multi(hive, item["path"], item["name"], item["value"])
+                k = _ensure(hive, item["path"])
+                winreg.SetValueEx(k, item["name"], 0, winreg.REG_MULTI_SZ, list(item["value"]))
+                winreg.CloseKey(k)
             elif item["type"] == "delete":
-                _delete_value(hive, item["path"], item["name"])
+                try:
+                    with winreg.OpenKey(hive, item["path"], 0, winreg.KEY_ALL_ACCESS) as k:
+                        winreg.DeleteValue(k, item["name"])
+                except OSError:
+                    pass
             else:
                 continue
             applied += 1
-            log(f"REG {item['hive']}\\{item['path']}\\{item['name']} - {item['why']}", "OK")
+            log(f"REG {item['name']} - {item['why']}", "OK")
         except OSError as e:
             log(f"REG skip {item['name']}: {e}", "WARN")
-
-    for p in DELETE_TREES:
-        _delete_tree(p)
-        log(f"Cleared AppCompat tree {p}", "OK")
-
-    log(f"Registry pack applied ({applied} values).", "OK")
+    log(f"Legacy registry pack applied ({applied} values).", "OK")
+    return {"RegistryApplied": applied, "Legacy": True}
 
 
 def list_registry_pack() -> list[dict]:
@@ -202,6 +190,7 @@ def list_registry_pack() -> list[dict]:
 
 
 def setup_bypass_args(quiet: bool = False) -> list[str]:
+    """Always IgnoreWarning + server product path for max soft-compat bypass."""
     args = [
         "/product",
         "server",

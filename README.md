@@ -86,7 +86,7 @@ One-Click is **maximally autonomous**: auto-elevate, install preventives, unload
 
 | Situation | What the app does |
 |-----------|-------------------|
-| Unsupported TPM/CPU/Secure Boot | Full registry pack + `setup /product server` |
+| Unsupported TPM/CPU/Secure Boot | **Intelligent compat engine**: LabConfig + MoSetup + HwReqChk spoof + CompatData soften + `/product server` + `/compat IgnoreWarning` |
 | ESP / System Reserved full | Cleanup + enlarge (new 512 MB boot partition) — `--cli --srp` |
 | MBR disk | Auto `mbr2gpt` (no wipe) + `bcdboot` bootmgr repair; remind UEFI firmware |
 | Win10 1511 / obsolete | Intermediate Win10 22H2 then Win11 |

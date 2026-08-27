@@ -389,11 +389,17 @@ def install_all_preventive_patches() -> dict:
 
     # Also apply full bypass pack for any keys not duplicated (CmdLine delete, etc.)
     try:
-        from .bypass import apply_hardware_bypass
+        from .compat import make_system_win11_compatible
 
-        apply_hardware_bypass()
+        make_system_win11_compatible()
     except Exception as e:
-        log(f"Bypass pack during preventive install: {e}", "WARN")
+        log(f"Compat engine during preventive install: {e}", "WARN")
+        try:
+            from .bypass import apply_hardware_bypass
+
+            apply_hardware_bypass()
+        except Exception as e2:
+            log(f"Bypass pack during preventive install: {e2}", "WARN")
 
     for tree in PREVENTIVE_DELETE_TREES:
         _delete_tree(tree)
@@ -430,7 +436,7 @@ def install_all_preventive_patches() -> dict:
             winreg.HKEY_LOCAL_MACHINE,
             r"SOFTWARE\Win11MagicUpgrade",
             "PreventivePackVersion",
-            150,
+            170,
         )
     except OSError:
         pass

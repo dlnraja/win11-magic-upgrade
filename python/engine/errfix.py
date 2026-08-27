@@ -203,7 +203,13 @@ def scan_compatdata_blockers() -> None:
                 except Exception:
                     pass
     if found:
-        log(f"Found {found} compatibility block hints (0xC1900208) - uninstall listed apps then retry", "WARN")
+        log(f"Found {found} compatibility block hints (0xC1900208) — neutralizing...", "WARN")
+        try:
+            from .compat import neutralize_compatdata_blocks
+
+            neutralize_compatdata_blocks()
+        except Exception as e:
+            log(f"Compat neutralize skipped: {e}", "WARN")
     else:
         log("No CompatData BlockMigration hits in local Panther/appraiser caches", "OK")
 

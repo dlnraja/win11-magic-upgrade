@@ -71,7 +71,20 @@ Win11MagicUpgrade.exe --cli --patch-deep       # + DISM RestoreHealth + SFC
 
 One-Click always installs the preventive pack **then** applies runtime remediations before the ISO chain.
 
-### Autonomous One-Click (v1.6+)
+### Intelligent compatibility engine (v1.7+)
+
+| Layer | Action |
+|-------|--------|
+| **Assess** | Detect TPM / Secure Boot / RAM / SSE4.2 gaps |
+| **LabConfig + MoSetup** | All Bypass* + AllowUpgradesWithUnsupportedTPMOrCPU |
+| **HwReqChkVars** | Full MULTI_SZ spoof (TPM/SB/RAM/NVMe/SSD/CPU/DX/WDDM) tailored to machine |
+| **AppCompat purge** | Delete CompatMarkers / Shared / TargetVersionUpgradeExperienceIndicators |
+| **CompatData** | Rewrite `BlockMigration=True` → False in cached XML (0xC1900208) |
+| **SetupConfig.ini** | `Compat=IgnoreWarning` + DynamicUpdate |
+| **Setup args** | `/product server` + `/compat IgnoreWarning` for Win11 |
+| **Hard limit** | No SSE4.2/POPCNT → chain targets Win10 22H2 keep-apps (cannot spoof CPU ISA) |
+
+Inventory: `%LOCALAPPDATA%\Win11MagicUpgrade\compat-engine.json`
 
 | Behavior | Detail |
 |----------|--------|
