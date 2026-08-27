@@ -95,10 +95,11 @@ function Get-WmuSetupBypassArgs {
     # /product server = Windows Server setup path -> skips TPM/SecureBoot/CPU list checks
     # Still installs client Windows 11 (Home/Pro) from a client ISO.
     $args = @(
-        "/product", "server",
+        "/Product", "Server",
         "/auto", "upgrade",
-        "/compat", "IgnoreWarning",
-        "/dynamicupdate", "disable",
+        "/Compat", "IgnoreWarning",
+        "/MigrateDrivers", "All",
+        "/dynamicupdate", "enable",
         "/eula", "accept",
         "/telemetry", "disable"
     )

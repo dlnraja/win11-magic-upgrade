@@ -80,6 +80,90 @@ def neutralize_appraiser_on_media(root: Path) -> int:
     return n
 
 
+def write_flyby11_unattend(root: Path) -> Path | None:
+    """
+    FlyOOBE IsoHandler.CreateUnattendXml parity:
+    sources\\$OEM$\\$$\\Panther\\unattend.xml with LabConfig + BypassNRO RunSynchronous.
+    Applied on first boot of clean/media installs; harmless for inplace when present.
+    """
+    panther = root / "sources" / "$OEM$" / "$$" / "Panther"
+    try:
+        panther.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log(f"unattend dir skip: {e}", "WARN")
+        return None
+    dest = panther / "unattend.xml"
+    # Minimal unattend matching FlyOOBE LabConfig + BypassNRO commands
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64"
+      publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
+      xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>5</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+  </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+      publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
+      xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <OOBE>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+      </OOBE>
+    </component>
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64"
+      publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+    </component>
+  </settings>
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64"
+      publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
+      xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\MoSetup /v AllowUpgradesWithUnsupportedTPMOrCPU /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+  </settings>
+</unattend>
+"""
+    try:
+        dest.write_text(xml, encoding="utf-8")
+        log(f"FlyOOBE-parity unattend.xml → {dest}", "OK")
+        return dest
+    except OSError as e:
+        log(f"unattend.xml write failed: {e}", "WARN")
+        return None
+
+
 def write_media_setupconfig(root: Path) -> None:
     sources = root / "sources"
     sources.mkdir(parents=True, exist_ok=True)
@@ -90,6 +174,7 @@ def write_media_setupconfig(root: Path) -> None:
             "DynamicUpdate=Enable",
             "ShowOobe=None",
             "Telemetry=Disable",
+            "MigrateDrivers=All",
             "",
         ]
     )
@@ -125,6 +210,7 @@ def stage_writable_setup(iso_root: str | Path, *, force: bool = False) -> Path:
         log(f"Reusing writable Setup stage: {STAGE_DIR}", "OK")
         neutralize_appraiser_on_media(STAGE_DIR)
         write_media_setupconfig(STAGE_DIR)
+        write_flyby11_unattend(STAGE_DIR)
         return STAGE_DIR
 
     log(
@@ -166,8 +252,9 @@ def stage_writable_setup(iso_root: str | Path, *, force: bool = False) -> Path:
 
     n = neutralize_appraiser_on_media(STAGE_DIR)
     write_media_setupconfig(STAGE_DIR)
-    marker.write_text(f"appraiser_neutralized={n}\n", encoding="utf-8")
-    log(f"Writable Setup ready ({n} Appraiser gates neutralized)", "OK")
+    write_flyby11_unattend(STAGE_DIR)
+    marker.write_text(f"appraiser_neutralized={n}\nflyby11_unattend=1\n", encoding="utf-8")
+    log(f"Writable Setup ready ({n} Appraiser gates + FlyOOBE unattend)", "OK")
     return STAGE_DIR
 
 

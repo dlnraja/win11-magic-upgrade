@@ -497,7 +497,7 @@ def make_system_win11_compatible(report=None) -> dict:
             winreg.HKEY_LOCAL_MACHINE,
             r"SOFTWARE\Win11MagicUpgrade",
             "CompatEngineVersion",
-            190,
+            200,
         )
         _set_sz(
             winreg.HKEY_LOCAL_MACHINE,

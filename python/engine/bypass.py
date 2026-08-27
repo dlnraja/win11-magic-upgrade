@@ -189,26 +189,32 @@ def list_registry_pack() -> list[dict]:
     return list(REGISTRY_PACK)
 
 
-def setup_bypass_args(quiet: bool = False) -> list[str]:
-    """Always IgnoreWarning + server product path for max soft-compat bypass.
-
-    Note: some 25H2 channels ignore /product server — media Appraiser neutralize
-    (media_bypass.py) is the complementary path.
+def setup_bypass_args(quiet: bool = False, *, experimental: bool = True) -> list[str]:
     """
+    Flyby11 / FlyOOBE setup argument list (IsoHandler.cs parity).
+
+    Classic Flyby11:  setupprep.exe /Product Server
+    Experimental:     + /Compat IgnoreWarning /MigrateDrivers All
+    We always use experimental + keep-apps upgrade flags.
+    """
+    # Flyby11 uses "/Product Server" (capital P); Setup accepts either case.
     args = [
-        "/product",
-        "server",
+        "/Product",
+        "Server",
         "/auto",
         "upgrade",
-        "/compat",
-        "IgnoreWarning",
-        "/dynamicupdate",
-        "enable",
         "/eula",
         "accept",
         "/telemetry",
         "disable",
     ]
+    if experimental:
+        # FlyOOBE "experimentalEnabled" path
+        args += ["/Compat", "IgnoreWarning", "/MigrateDrivers", "All"]
+    else:
+        args += ["/compat", "IgnoreWarning"]
+    # Dynamic updates: enable helps driver DU; Flyby11 default omitted — keep enable
+    args += ["/dynamicupdate", "enable"]
     if quiet:
         args += ["/quiet", "/showoobe", "none"]
     return args

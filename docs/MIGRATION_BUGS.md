@@ -88,6 +88,21 @@ One-Click always installs the preventive pack **then** applies runtime remediati
 
 Inventory: `%LOCALAPPDATA%\Win11MagicUpgrade\compat-engine.json`
 
+### Flyby11 / FlyOOBE parity
+
+| Flyby11 / FlyOOBE | This project |
+|-------------------|--------------|
+| `setupprep.exe /Product Server` | Same (prefer `setupprep.exe`) |
+| Experimental `/Compat IgnoreWarning /MigrateDrivers All` | Always on for Win11 |
+| Fido ISO download | `iso.py` (urllib, no PowerShell) |
+| LabConfig via unattend on media | `sources\$OEM$\$$\Panther\unattend.xml` |
+| BypassNRO | Registry + unattend specialize |
+| MoSetup AllowUpgrades… | Yes |
+| HwReqChkVars (24H2+) | Expanded set |
+| POPCNT hard limit warning | Chain → Win10 22H2 keep-apps |
+
+Complementary (beyond Flyby11 classic): media Appraiser neutralize, full LabConfig set, CompatData soften, preventive pack, ESP/SRP, MBR→GPT, RunOnce chain, autonomy remediations.
+
 ### Stability hardening (v1.8+)
 
 | Guard | Detail |

@@ -68,25 +68,30 @@ SETUP_OK_CODES = {0, 3010, 3011, -2147021886}
 
 def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     """
-    Launch Setup and return promptly.
-    Waiting on setup.exe for hours freezes the GUI worker — instead we confirm
-    the process started and let Windows Setup manage its own reboot cycle.
+    Launch Setup (Flyby11/FlyOOBE style) and return promptly.
+    Prefer sources\\setupprep.exe + /Product Server like Flyby11 IsoHandler.
     """
     root = Path(setup_root)
     setup = root / "setup.exe"
     prep = root / "sources" / "setupprep.exe"
     if use_server:
         apply_hardware_bypass()
+        # Flyby11: always prefer setupprep.exe when present
         exe = prep if prep.exists() else setup
-        args = setup_bypass_args(quiet=quiet)
-        log(f"Launching {exe.name} /product server (keep apps/files)", "STEP")
+        args = setup_bypass_args(quiet=quiet, experimental=True)
+        log(
+            f"Launching {exe.name} (Flyby11/FlyOOBE: /Product Server + Compat IgnoreWarning + MigrateDrivers All)",
+            "STEP",
+        )
     else:
         exe = setup
         args = [
             "/auto",
             "upgrade",
-            "/compat",
+            "/Compat",
             "IgnoreWarning",
+            "/MigrateDrivers",
+            "All",
             "/dynamicupdate",
             "enable",
             "/eula",
@@ -101,14 +106,12 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
 
     cmd = [str(exe), *args]
     log(" ".join(cmd), "INFO")
-    save_state({"Phase": "SetupRunning", "Cmd": cmd})
+    save_state({"Phase": "SetupRunning", "Cmd": cmd, "Method": "Flyby11Parity"})
     try:
-        # Don't wait forever (GUI freeze). Confirm process starts, then return.
         proc = subprocess.Popen(cmd)
     except OSError as e:
         raise RuntimeError(f"Failed to launch Setup: {e}") from e
 
-    # Brief settle: if process dies instantly, capture exit code as failure
     try:
         code = proc.wait(timeout=8)
         log(f"Setup exited quickly with code {code}", "WARN" if code not in SETUP_OK_CODES else "OK")

@@ -11,6 +11,7 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 - **No .NET Framework 4.x** on the target PC  
 - **No PowerShell** engine  
 - **No FlyOOBE** GUI  
+- **Full Flyby11 bypass parity**: `setupprep /Product Server` + `/Compat IgnoreWarning` + `/MigrateDrivers All` + LabConfig unattend + MoSetup/HwReqChk
 
 > **English** · [Français](docs/README.fr.md)
 
