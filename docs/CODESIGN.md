@@ -75,21 +75,34 @@ Aliases: `MAGIC_CODESIGN_PFX_BASE64` / `MAGIC_CODESIGN_PASSWORD`.
 
 ## B) Free SignPath (recommended if you have no `.pfx`)
 
-1. Open https://signpath.org / https://signpath.io and sign in with **GitHub account `dlnraja`**
-2. Apply for **Open Source / Foundation** tier (approval can take days)
-3. Link repo `dlnraja/win11-magic-upgrade` as a trusted build system
-4. Create a project + signing policy for the Windows EXE
-5. Add to this repo:
+**Application pack (filled for this repo):** [SIGNPATH_APPLICATION.md](SIGNPATH_APPLICATION.md)  
+**Required policy page:** [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)  
+**Artifact XML:** [`.signpath/artifact-configurations/default.xml`](../.signpath/artifact-configurations/default.xml)
+
+1. Open https://signpath.org/apply.html and sign in / apply with **GitHub `dlnraja`**
+2. Paste fields from [SIGNPATH_APPLICATION.md](SIGNPATH_APPLICATION.md) (repo URL, MIT, description)
+3. Wait for **Open Source / Foundation** approval (often days)
+4. In SignPath: create project slug `win11-magic-upgrade`, policy `release-signing`, link GitHub trusted build system + this repo
+5. Create an API token, then push secrets:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build\setup_signpath_github.ps1 `
+  -ApiToken "YOUR_SIGNPATH_API_TOKEN" `
+  -OrganizationId "YOUR-ORG-UUID" `
+  -ProjectSlug "win11-magic-upgrade" `
+  -SigningPolicySlug "release-signing"
+```
 
 | Kind | Name | Source |
 |------|------|--------|
 | Secret | `SIGNPATH_API_TOKEN` | SignPath → API Tokens |
-| Variable | `SIGNPATH_ORGANIZATION_ID` | SignPath org |
-| Variable | `SIGNPATH_PROJECT_SLUG` | Project slug |
-| Variable | `SIGNPATH_SIGNING_POLICY_SLUG` | Policy slug |
+| Variable | `SIGNPATH_ORGANIZATION_ID` | SignPath org (UUID in URL / org settings) |
+| Variable | `SIGNPATH_PROJECT_SLUG` | e.g. `win11-magic-upgrade` |
+| Variable | `SIGNPATH_SIGNING_POLICY_SLUG` | e.g. `release-signing` |
 
 Release workflow will submit `Win11MagicUpgrade.exe` to SignPath after the build (skipped if your own PFX secret is already set).
 
+6. Tag a new `v*` release so CI signs with the Foundation certificate.
 ## What “intelligent” signing does
 
 1. Prefer `MAGIC_CODESIGN_PFX` path if the file exists  

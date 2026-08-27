@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for Win11 Magic Upgrade.
+  Upload / paste as the default artifact configuration in the SignPath project.
+  Product metadata must match build/version_info.txt.
+-->
+<artifactConfiguration xmlns="http://signpath.io/schema/artifact-configuration/2024">
+  <description>Win11MagicUpgrade.exe Authenticode (PE)</description>
+  <pe>
+    <file path="Win11MagicUpgrade.exe">
+      <metadataRestrictions>
+        <productName equals="Win11 Magic Upgrade" />
+        <companyName equals="dlnraja" />
+      </metadataRestrictions>
+    </file>
+  </pe>
+</artifactConfiguration>
