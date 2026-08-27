@@ -1,0 +1,8 @@
+# Require human review for workflow / release surface (CI/CD + AI supply-chain).
+# See SECURITY.md — CI/CD & AI attack surface.
+
+.github/workflows/ @dlnraja
+.github/dependabot.yml @dlnraja
+build/build_exe.ps1 @dlnraja
+build/app.manifest @dlnraja
+SECURITY.md @dlnraja

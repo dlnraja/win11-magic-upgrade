@@ -457,6 +457,26 @@ class App(tk.Tk):
             if not messagebox.askyesno(title, self.t.get("confirm_upgrade", "Continue?")):
                 return
 
+        # UIA / automation / AI-agent guard (defense-in-depth)
+        if action in ("oneclick", "mbr", "srp", "bypass", "install-patches"):
+            try:
+                from engine.uia_guard import require_human_confirm  # type: ignore
+
+                ok_human = require_human_confirm(
+                    lambda t, m: messagebox.askyesno(t, m),
+                    title=title,
+                    message=self.t.get(
+                        "confirm_uia",
+                        "Confirm this upgrade action is started by you (not an automated / AI agent).",
+                    ),
+                    action=action,
+                )
+                if not ok_human:
+                    self.append(self.t.get("uia_blocked", "Blocked by UIA/automation guard.\n"))
+                    return
+            except Exception as e:
+                self.append(f"UIA guard skip: {e}\n")
+
         self._busy = True
         self.btn_go.configure(state="disabled")
         self.phase_var.set(self.t.get("progress_running", "Running…"))
@@ -707,6 +727,12 @@ def main() -> None:
     root = app_root()
     _ensure_sys_path(root)
     try:
+        from engine.uia_guard import mark_app_start  # type: ignore
+
+        mark_app_start()
+    except Exception:
+        pass
+    try:
         from engine.gh_report import install_exception_hooks  # type: ignore
 
         install_exception_hooks()
@@ -795,6 +821,24 @@ def main() -> None:
                 if "--patch" in argv_l:
                     run_patch_enrichment(deep_heal=False)
                     return
+                # Silent one-click via CLI under UIA/AI automation risk → refuse
+                try:
+                    from engine.uia_guard import cli_blocks_silent_oneclick  # type: ignore
+
+                    if cli_blocks_silent_oneclick():
+                        _message_box(
+                            strings.get("app_title", "Win11 Magic Upgrade"),
+                            strings.get(
+                                "uia_blocked",
+                                "Blocked by UIA/automation guard. Set MAGIC_ALLOW_AUTOMATION=1 to override.",
+                            ),
+                            error=True,
+                        )
+                        raise SystemExit(4)
+                except SystemExit:
+                    raise
+                except Exception:
+                    pass
                 code = run_pipeline(resume="--resume" in argv_l)
                 if code in (EXIT_BLOCKED, EXIT_FAILED):
                     kind, detail = _failure_detail(code=code)

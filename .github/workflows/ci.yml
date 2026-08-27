@@ -5,14 +5,26 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Never use pull_request_target — untrusted fork code + secrets = classic CI/CD attack
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   python-compile:
     name: Python engine compile
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - name: Compile all engine modules
@@ -24,12 +36,18 @@ jobs:
           }
       - name: Import engine
         run: python -c "import sys; sys.path.insert(0,'python'); from engine import run_diagnose; print('engine ok')"
+      - name: UIA guard unit smoke
+        run: python -c "import sys; sys.path.insert(0,'python'); from engine.uia_guard import assess_uia_risk; r=assess_uia_risk(); print('uia', r.score, r.reasons)"
 
   powershell-legacy-syntax:
     name: Legacy PowerShell syntax (optional)
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Parse legacy scripts if present
         shell: powershell
         run: |
@@ -44,7 +62,53 @@ jobs:
   i18n-json:
     name: i18n JSON
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Validate strings.json
         run: python -c "import json; d=json.load(open('i18n/strings.json',encoding='utf-8')); assert 'en' in d and 'fr' in d; assert d['en'].keys()==d['fr'].keys()"
+
+  secret-hygiene:
+    name: Secret / token hygiene
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Block committed credentials patterns
+        run: |
+          set -euo pipefail
+          # Fail if high-signal secret material appears in tracked source (not docs examples).
+          if git grep -nI -E '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})' -- \
+              ':!.github/**' ':!SECURITY.md' ':!README.md' ':!docs/**' \
+              && false; then
+            echo "Possible secret material in tree"
+            exit 1
+          fi
+          # Never allow av_keys.json or .env in git
+          if git ls-files | grep -E '(^|/)\.env$|(^|/)av_keys\.json$'; then
+            echo "Forbidden secrets file tracked"
+            exit 1
+          fi
+          echo "secret hygiene OK"
+
+  dependency-review:
+    name: Dependency review (PRs)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Dependency Review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: high

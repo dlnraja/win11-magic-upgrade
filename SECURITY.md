@@ -61,3 +61,40 @@ Set `MAGIC_GH_REPO` to override the target repository (default `dlnraja/win11-ma
 
 Unhandled exceptions (GUI worker, Tk callbacks, CLI, threads) use the same pipeline
 with kind `unhandled-exception` / `gui-*-exception` and labels `autodiag` + `unhandled`.
+
+## UIA / automation / AI-agent guard (app)
+
+The elevated One-Click path is a high-value target for **UI Automation (UIA)**, AutoHotkey,
+RDP-driven bots, and **AI agents** that can click through GUIs.
+
+Defenses (`engine/uia_guard.py`):
+
+- Detect remote desktop, known automation processes, agent/CI environment hints
+- Require an explicit human Yes/No when risk score is high
+- Refuse silent `--cli` / `--oneclick` under automation risk
+- Override only with `MAGIC_ALLOW_AUTOMATION=1` (intentional automation)
+- Optional always-confirm: `MAGIC_CONFIRM=1` or `MAGIC_UIA_STRICT=1`
+
+This is defense-in-depth, not a hard security boundary against a malicious admin.
+
+## CI/CD hardening (supply-chain + AI)
+
+Workflows are hardened against classic and AI-assisted CI/CD attacks:
+
+- **No `pull_request_target`** / issue_comment release triggers (untrusted code + secrets)
+- **Least-privilege** `permissions:` (default `contents: read`; write only on Release publish)
+- **Actions pinned to full commit SHAs** (tags are mutable; Dependabot can bump SHAs)
+- **`persist-credentials: false`** on checkout
+- **Untrusted inputs** only via `env:` (never interpolated raw into `run:`)
+- **Secret hygiene** job blocks committed tokens / `av_keys.json` / `.env`
+- **Dependency review** on pull requests (`fail-on-severity: high`)
+- **CODEOWNERS** on `.github/workflows/` and build scripts
+- **Release** job documents optional GitHub Environment `release` (add required reviewers, then uncomment `environment:` in the workflow)
+- Autodiag issue bodies neutralize common **LLM prompt-injection** prefixes
+
+Recommendations (repo settings → Actions / Branches):
+
+1. Require PR reviews + status checks before merge to `main`
+2. Limit Actions to pinned SHAs / verified creators when available
+3. Do not pipe untrusted PR titles/bodies into AI agents without isolation
+4. Keep secrets out of `workflow_dispatch` inputs and fork PR workflows
