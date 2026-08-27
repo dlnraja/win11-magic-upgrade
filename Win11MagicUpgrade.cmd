@@ -1,5 +1,5 @@
 ﻿@echo off
-:: Win11 Magic Upgrade — fully autonomous One-Click (NO .NET 4.x / NO PowerShell)
+:: Win11 Magic Upgrade — ONE-CLICK full intelligent migration
 setlocal EnableExtensions
 cd /d "%~dp0"
 
@@ -10,11 +10,11 @@ if %errorlevel% neq 0 (
   exit /b
 )
 
-title Win11 Magic Upgrade (autonomous)
+title Win11 Magic Upgrade — ONE-CLICK
 echo.
-echo   Win11 Magic Upgrade — autonomous One-Click
-echo   Preventives + runtime + quiet Setup + RunOnce resume
-echo   No .NET Framework 4.x  ^|  No PowerShell  ^|  No FlyOOBE
+echo   ONE-CLICK full migration:
+echo   diag - preventives - Flyby11 bypass - patches - ISO - Setup - RunOnce
+echo   No .NET Framework 4.x  ^|  No PowerShell
 echo.
 
 if exist "%~dp0Win11MagicUpgrade.exe" (
@@ -50,6 +50,5 @@ where python >nul 2>&1 && (
 )
 
 echo ERROR: Win11MagicUpgrade.exe not found and Python is not installed.
-echo Copy the Portable folder built on another PC (EXE embeds Python — no system .NET needed).
 pause
 exit /b 1
