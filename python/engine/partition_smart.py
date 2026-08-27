@@ -31,6 +31,7 @@ MIN_BOOT_MB = 260
 GROW_EXTRA_MB = 64  # grow "a bit" beyond minimum when free space allows
 MIN_C_FREE_AFTER_MB = 8192  # keep >= 8 GB free on C: after shrink
 MIN_DATA_FREE_AFTER_MB = 4096
+MAX_BOOT_PART_BYTES = 2 * 1024 * 1024 * 1024  # ESP/SRP never multi-GB
 LINUX_EFI_VENDORS = (
     "ubuntu",
     "debian",
@@ -49,6 +50,48 @@ LINUX_EFI_VENDORS = (
     "neon",
     "grub",
 )
+
+
+def _norm_letter(value: str | None) -> str | None:
+    """Normalize 'Y', 'Y:', 'Y:\\' -> 'Y'. Reject empty/invalid."""
+    if value is None:
+        return None
+    s = str(value).strip().upper().replace("/", "\\")
+    s = s.rstrip("\\").rstrip(":")
+    if len(s) != 1 or not ("A" <= s <= "Z"):
+        return None
+    return s
+
+
+def _letter_root(value: str | None) -> str | None:
+    L = _norm_letter(value)
+    return f"{L}:" if L else None
+
+
+def _valid_disk(n: Any) -> int | None:
+    try:
+        i = int(n)
+    except (TypeError, ValueError):
+        return None
+    return i if i >= 0 else None
+
+
+def _valid_part(n: Any) -> int | None:
+    try:
+        i = int(n)
+    except (TypeError, ValueError):
+        return None
+    return i if i >= 1 else None
+
+
+def _valid_mb(n: Any, *, minimum: int = 1, maximum: int = 8192) -> int | None:
+    try:
+        i = int(n)
+    except (TypeError, ValueError):
+        return None
+    if i < minimum or i > maximum:
+        return None
+    return i
 
 
 def _enabled() -> bool:
@@ -100,7 +143,10 @@ def _ps(script: str, timeout: int = 240) -> tuple[int, str]:
 
 def map_system_disk(system_disk: int | None = None) -> dict[str, Any]:
     """Return partition map for the Windows system disk (JSON via Storage cmdlets)."""
-    disk_n = system_disk if system_disk is not None and int(system_disk) >= 0 else get_system_disk_number("C")
+    disk_n = _valid_disk(system_disk)
+    if disk_n is None:
+        disk_n = get_system_disk_number("C")
+        disk_n = _valid_disk(disk_n)
     out: dict[str, Any] = {"ok": False, "disk": disk_n, "partitions": [], "style": None}
     if disk_n is None:
         out["error"] = "system_disk_unknown"
@@ -169,15 +215,23 @@ $obj | ConvertTo-Json -Depth 6 -Compress
         rem = int(p.get("SizeRemaining") or 0)
         gpt = (p.get("GptType") or "").lower()
         ptype = (p.get("Type") or "").lower()
-        is_esp = (
-            "c12a7328" in gpt
-            or ptype == "system"
-            or bool(p.get("IsSystem"))
+        letter = _norm_letter(p.get("DriveLetter")) or ""
+        efi_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" in gpt or gpt.startswith("{c12a7328")
+        # ESP: EFI GUID, or small System/IsSystem partition that is NOT C:
+        is_esp = bool(
+            efi_guid
+            or (
+                (ptype == "system" or bool(p.get("IsSystem")))
+                and 0 < size <= MAX_BOOT_PART_BYTES
+                and letter != "C"
+            )
         )
-        letter = (p.get("DriveLetter") or "").strip().upper()[:1]
+        part_n = _valid_part(p.get("Number"))
+        if part_n is None:
+            continue
         norm.append(
             {
-                "number": int(p.get("Number") or 0),
+                "number": part_n,
                 "offset": int(p.get("Offset") or 0),
                 "size": size,
                 "size_mb": size / (1024 * 1024),
@@ -236,19 +290,29 @@ $obj | ConvertTo-Json -Depth 6 -Compress
 def _find_boot_partition(layout: dict[str, Any], prefer_uefi: bool) -> dict[str, Any] | None:
     parts = layout.get("partitions") or []
     if prefer_uefi:
+        # Prefer real EFI GUID, then small FAT System
         for p in parts:
-            if p.get("is_esp") or "c12a7328" in (p.get("gpt") or "").lower():
+            gpt = (p.get("gpt") or "").lower()
+            if "c12a7328" in gpt:
                 return p
+        for p in parts:
+            if p.get("is_esp") and (p.get("fs") or "") in ("FAT32", "FAT", ""):
+                if p.get("size_mb", 9999) <= 2048:
+                    return p
         for p in parts:
             if p.get("is_system") and (p.get("fs") or "") in ("FAT32", "FAT"):
-                return p
+                if p.get("letter") != "C" and p.get("size_mb", 9999) <= 2048:
+                    return p
     for p in parts:
+        if p.get("letter") == "C":
+            continue
         if p.get("is_active") or (p.get("is_system") and p.get("fs") == "NTFS"):
             if p.get("size_mb", 9999) < 2048:
                 return p
     for p in parts:
-        if p.get("is_esp") or p.get("is_system"):
-            return p
+        if p.get("is_esp") or (p.get("is_system") and p.get("letter") != "C"):
+            if p.get("size_mb", 9999) <= 2048:
+                return p
     return None
 
 
@@ -405,11 +469,20 @@ def try_extend_boot_partition(
 ) -> dict[str, Any]:
     """Grow existing partition into following free space (Resize-Partition / diskpart extend)."""
     result: dict[str, Any] = {"ok": False, "actions": [], "method": None}
-    add_bytes = int(add_mb) * 1024 * 1024
+    disk_n = _valid_disk(disk)
+    part_n = _valid_part(part_number)
+    add = _valid_mb(add_mb, minimum=16, maximum=4096)
+    if disk_n is None or part_n is None or add is None:
+        result["actions"].append(
+            f"bad_params:disk={disk!r},part={part_number!r},add_mb={add_mb!r}"
+        )
+        log("Extend refused: invalid disk/part/add_mb parameters", "ERROR")
+        return result
+    add_bytes = int(add) * 1024 * 1024
     script = f"""
 $ErrorActionPreference = 'Stop'
-$diskN = {int(disk)}
-$pn = {int(part_number)}
+$diskN = {int(disk_n)}
+$pn = {int(part_n)}
 $p = Get-Partition -DiskNumber $diskN -PartitionNumber $pn -EA Stop
 $supp = Get-PartitionSupportedSize -DiskNumber $diskN -PartitionNumber $pn
 $target = [uint64]($p.Size + {add_bytes})
@@ -418,7 +491,7 @@ if ($target -le $p.Size) {{ throw 'No grow room (SizeMax)' }}
 Resize-Partition -DiskNumber $diskN -PartitionNumber $pn -Size $target
 Write-Output ("OK|" + $p.Size + "|" + $target)
 """
-    log(f"Smart extend disk {disk} part {part_number} +~{add_mb} MB", "STEP")
+    log(f"Smart extend disk {disk_n} part {part_n} +~{add} MB", "STEP")
     code, out = _ps(script, timeout=300)
     result["actions"].append(f"ps_extend:{code}")
     result["output_tail"] = (out or "")[-300:]
@@ -431,9 +504,9 @@ Write-Output ("OK|" + $p.Size + "|" + $target)
     from .diskpart_safe import run_diskpart
 
     ok2, dout2 = run_diskpart(
-        f"select disk {int(disk)}\n"
-        f"select partition {int(part_number)}\n"
-        f"extend size={int(add_mb)}\n"
+        f"select disk {int(disk_n)}\n"
+        f"select partition {int(part_n)}\n"
+        f"extend size={int(add)}\n"
         "exit\n"
     )
     result["actions"].append(f"diskpart_extend:{ok2}")
@@ -450,17 +523,20 @@ Write-Output ("OK|" + $p.Size + "|" + $target)
 def detect_linux_efi(esp_root: str | None = None) -> dict[str, Any]:
     """Scan ESP for Linux / GRUB loaders (preserve during Windows boot repair)."""
     info: dict[str, Any] = {"found": False, "vendors": [], "paths": [], "esp": esp_root}
-    root = esp_root
+    root = _letter_root(esp_root) if esp_root else None
     mounted_here = False
     try:
         if not root:
             from .sysreserved import mount_esp
 
-            root = mount_esp()
+            root = _letter_root(mount_esp())
             mounted_here = bool(root)
         if not root:
             return info
-        efi = Path(str(root).rstrip("\\") + "\\EFI")
+        if not Path(root + "\\").exists():
+            info["error"] = "esp_letter_not_mounted"
+            return info
+        efi = Path(root + "\\EFI")
         if not efi.is_dir():
             return info
         for child in efi.iterdir():
@@ -476,6 +552,7 @@ def detect_linux_efi(esp_root: str | None = None) -> dict[str, Any]:
                     if p.is_file():
                         info["paths"].append(str(p))
         info["found"] = bool(info["vendors"] or info["paths"])
+        info["esp"] = root
         if info["found"]:
             log(f"Linux/GRUB EFI detected: {', '.join(info['vendors']) or info['paths']}", "INFO")
     except Exception as e:
@@ -496,63 +573,70 @@ def fix_boot_for_new_layout(
     prefer_uefi: bool = True,
     boot_letter: str | None = None,
     preserve_grub: bool = True,
+    unmount_target: bool = True,
 ) -> dict[str, Any]:
     """
     Rewrite Windows boot files for the (possibly moved/grown) ESP and keep GRUB if present.
+    boot_letter: 'Y' / 'Y:' — must be mounted when provided.
+    unmount_target: if True, dismount letters we mounted (or caller letter if unmount_target).
     """
     out: dict[str, Any] = {"ok": False, "actions": [], "grub": None, "bcdboot": None}
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
+    if not sys_root or not Path(sys_root).is_dir():
+        out["actions"].append("bad_SystemRoot")
+        return out
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
 
-    grub = detect_linux_efi(boot_letter)
+    target = _letter_root(boot_letter)
+    mounted_here = False
+    if target and not Path(target + "\\").exists():
+        out["actions"].append(f"boot_letter_not_mounted:{target}")
+        target = None
+
+    grub = detect_linux_efi(target)
     out["grub"] = grub
     if preserve_grub and grub.get("found"):
         out["actions"].append("grub_detected_preserve")
         _write_grub_repair_scripts(grub)
 
     targets: list[str] = []
-    if boot_letter:
-        targets.append(boot_letter.rstrip(":\\")[:1] + ":")
+    if target:
+        targets.append(target)
     else:
         try:
             from .sysreserved import mount_esp
 
-            m = mount_esp()
+            m = _letter_root(mount_esp())
             if m:
                 targets.append(m)
+                mounted_here = True
         except Exception:
             pass
 
     mode = "UEFI" if prefer_uefi else "BIOS"
-    if bcdboot.exists():
-        if targets:
-            for t in targets:
-                c, o = _run([str(bcdboot), sys_root, "/s", t, "/f", mode], timeout=180)
-                out["actions"].append(f"bcdboot_{mode}_{t}:{c}")
-                out["bcdboot"] = {"code": c, "out": (o or "")[:200]}
-                if c != 0:
-                    c2, o2 = _run([str(bcdboot), sys_root, "/s", t, "/f", "ALL"], timeout=180)
-                    out["actions"].append(f"bcdboot_ALL_{t}:{c2}")
-                    out["ok"] = c2 == 0
-                else:
-                    out["ok"] = True
-                try:
-                    from .sysreserved import unmount_letter
-
-                    unmount_letter(t)
-                except Exception:
-                    pass
-        else:
-            # Default system partition
-            c, o = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
-            out["actions"].append(f"bcdboot_default_{mode}:{c}")
-            out["ok"] = c == 0
-            if not out["ok"]:
-                c2, _ = _run([str(bcdboot), sys_root, "/f", "ALL"], timeout=180)
-                out["actions"].append(f"bcdboot_default_ALL:{c2}")
-                out["ok"] = c2 == 0
-    else:
+    if not bcdboot.is_file():
         out["actions"].append("bcdboot_missing")
+    elif targets:
+        for t in targets:
+            # bcdboot requires "Y:" form (drive + colon, no trailing slash)
+            c, o = _run([str(bcdboot), sys_root, "/s", t, "/f", mode], timeout=180)
+            out["actions"].append(f"bcdboot_{mode}_{t}:{c}")
+            out["bcdboot"] = {"code": c, "out": (o or "")[:200], "target": t, "mode": mode}
+            if c != 0:
+                c2, o2 = _run([str(bcdboot), sys_root, "/s", t, "/f", "ALL"], timeout=180)
+                out["actions"].append(f"bcdboot_ALL_{t}:{c2}")
+                out["ok"] = c2 == 0
+                out["bcdboot"] = {"code": c2, "out": (o2 or "")[:200], "target": t, "mode": "ALL"}
+            else:
+                out["ok"] = True
+    else:
+        c, o = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
+        out["actions"].append(f"bcdboot_default_{mode}:{c}")
+        out["ok"] = c == 0
+        if not out["ok"]:
+            c2, _ = _run([str(bcdboot), sys_root, "/f", "ALL"], timeout=180)
+            out["actions"].append(f"bcdboot_default_ALL:{c2}")
+            out["ok"] = c2 == 0
 
     try:
         from .boot_safe import heal_bcd_store
@@ -561,12 +645,26 @@ def fix_boot_for_new_layout(
     except Exception as e:
         out["actions"].append(f"heal_fail:{type(e).__name__}")
 
-    # NVRAM / firmware boot order tip (cannot safely rewrite EFI vars without elevation quirks)
     if prefer_uefi:
-        c, enum = _run(["bcdedit", "/enum", "firmware"], timeout=60)
+        c, _enum = _run(["bcdedit", "/enum", "firmware"], timeout=60)
         out["actions"].append(f"bcdedit_firmware:{c}")
         if grub.get("found"):
             out["actions"].append("note:keep_grub_firmware_entry")
+
+    # Only unmount ESP we mounted here, or caller letter when asked
+    if unmount_target:
+        to_drop = []
+        if mounted_here:
+            to_drop.extend(targets)
+        elif target and boot_letter:
+            to_drop.append(target)
+        for t in to_drop:
+            try:
+                from .sysreserved import unmount_letter
+
+                unmount_letter(t)
+            except Exception:
+                pass
 
     return out
 
@@ -723,7 +821,7 @@ echo "Then reboot to Windows and run repair_boot_after_gparted.cmd"
     cmd_text = r"""@echo off
 REM Repair Windows + EFI boot after GParted / qparted move/grow
 setlocal
-echo Win11 Magic Upgrade — post-GParted boot repair
+echo Win11 Magic Upgrade - post-GParted boot repair
 echo.
 where Win11MagicUpgrade.exe >nul 2>&1
 if %ERRORLEVEL%==0 (
@@ -848,32 +946,50 @@ def create_boot_in_unallocated(
     disk: int,
     size_mb: int,
     prefer_uefi: bool = True,
+    partition_style: str | None = None,
 ) -> str | None:
     """
     Create a new ESP/system partition in existing unallocated space (no shrink).
     Used after smart shrink of C: or a data volume.
+    partition_style: 'GPT' / 'MBR' — if MBR, never use 'create partition efi'.
     """
     from .diskpart_safe import ensure_select_disk, free_letter, run_diskpart
 
+    disk_n = _valid_disk(disk)
+    size = _valid_mb(size_mb, minimum=100, maximum=2048)
+    if disk_n is None or size is None:
+        log(f"create_boot_in_unallocated bad params disk={disk!r} size_mb={size_mb!r}", "ERROR")
+        return None
+
     letter = free_letter()
     if not letter:
+        log("create_boot_in_unallocated: no free drive letter", "ERROR")
         return None
-    ok_sel, _ = ensure_select_disk(int(disk))
+    letter = _norm_letter(letter)
+    if not letter:
+        return None
+
+    ok_sel, _ = ensure_select_disk(int(disk_n))
     if not ok_sel:
         return None
 
-    if prefer_uefi:
+    style = (partition_style or "").strip().upper()
+    use_efi = bool(prefer_uefi) and style != "MBR"
+    if prefer_uefi and style == "MBR":
+        log("Disk is MBR — creating primary system partition (not EFI)", "INFO")
+
+    if use_efi:
         script = (
-            f"select disk {int(disk)}\n"
-            f"create partition efi size={int(size_mb)}\n"
+            f"select disk {int(disk_n)}\n"
+            f"create partition efi size={int(size)}\n"
             "format fs=fat32 quick label=ESP\n"
             f"assign letter={letter}\n"
             "exit\n"
         )
     else:
         script = (
-            f"select disk {int(disk)}\n"
-            f"create partition primary size={int(size_mb)}\n"
+            f"select disk {int(disk_n)}\n"
+            f"create partition primary size={int(size)}\n"
             "format fs=ntfs quick label=System\n"
             f"assign letter={letter}\n"
             "exit\n"
@@ -882,20 +998,29 @@ def create_boot_in_unallocated(
     log((out or "")[-300:])
     if not ok:
         return None
+    if out and re.search(r"error|failed|denied|échec|echec|erreur", out, re.I):
+        if not re.search(r"successfully|r[eé]ussi|termin[eé]", out, re.I):
+            return None
     root = f"{letter}:"
     if not Path(root + "\\").exists():
         return None
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
-    mode = "UEFI" if prefer_uefi else "BIOS"
-    if bcdboot.exists():
-        c, _ = _run([str(bcdboot), sys_root, "/s", root, "/f", mode], timeout=180)
+    mode = "UEFI" if use_efi else "BIOS"
+    if bcdboot.is_file():
+        c, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", mode], timeout=180)
         if c != 0:
-            c2, _ = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
+            c2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
             if c2 != 0:
-                log("bcdboot failed on unallocated-created boot partition", "WARN")
+                log(
+                    f"bcdboot failed on unallocated-created boot partition: {(bout2 or bout or '')[:160]}",
+                    "WARN",
+                )
                 return None
-    log(f"Boot partition created in unallocated space at {root}", "OK")
+    else:
+        log("bcdboot.exe missing — partition created but not bootable yet", "WARN")
+        return None
+    log(f"Boot partition created in unallocated space at {root} (mode={mode})", "OK")
     return root
 
 
@@ -936,86 +1061,106 @@ def run_smart_partition_magic(
         summary["actions"].append("layout_map_failed")
         return summary
 
-    plan = plan_smart_layout(layout, prefer_uefi=prefer_uefi, target_mb=target_mb)
+    disk = _valid_disk(layout.get("disk"))
+    if disk is None:
+        summary["actions"].append("bad_layout_disk")
+        return summary
+    part_style = str(layout.get("style") or "")
+    # UEFI create only makes sense on GPT
+    prefer_uefi_eff = bool(prefer_uefi) and part_style.upper() != "MBR"
+    if prefer_uefi and part_style.upper() == "MBR":
+        summary["actions"].append("prefer_uefi_forced_off_mbr_disk")
+    target = _valid_mb(target_mb, minimum=100, maximum=2048) or TARGET_BOOT_MB
+
+    plan = plan_smart_layout(layout, prefer_uefi=prefer_uefi_eff, target_mb=target)
     summary["plan"] = {
         "strategy": plan.get("strategy"),
         "reasons": plan.get("reasons"),
         "steps": plan.get("steps"),
         "gparted": plan.get("gparted"),
+        "prefer_uefi_eff": prefer_uefi_eff,
+        "partition_style": part_style,
     }
     summary["actions"].append(f"plan:{plan.get('strategy')}")
-
-    disk = int(layout["disk"])
-    executed = False
 
     try:
         if plan["strategy"] == "noop_space_ok":
             summary["ok"] = True
-            executed = True
             summary["actions"].append("noop")
 
         elif plan["strategy"] == "extend_boot":
-            step = plan["steps"][0]
+            step = (plan.get("steps") or [{}])[0]
             boot = plan.get("boot")
-            if boot:
+            add_mb = _valid_mb(step.get("add_mb"), minimum=16, maximum=4096)
+            part_n = _valid_part((boot or {}).get("number"))
+            if boot and add_mb and part_n:
                 ext = try_extend_boot_partition(
-                    disk=disk, part_number=int(boot["number"]), add_mb=int(step["add_mb"])
+                    disk=disk, part_number=part_n, add_mb=add_mb
                 )
                 summary["extend"] = ext
                 summary["actions"].extend(ext.get("actions") or [])
                 if ext.get("ok"):
-                    executed = True
                     summary["ok"] = True
+            else:
+                summary["actions"].append("extend_skipped_bad_step_params")
 
         elif plan["strategy"] in ("shrink_c_then_create", "shrink_data_then_create", "create_in_free"):
-            from .sysreserved import create_larger_esp, create_larger_system_reserved_mbr
-
             shrunk = plan["strategy"] == "create_in_free"
-            for step in plan["steps"]:
-                if step["op"] == "shrink":
-                    letter = step["letter"]
-                    mb = int(step["mb"])
+            for step in plan.get("steps") or []:
+                op = step.get("op")
+                if op == "shrink":
+                    letter = _norm_letter(step.get("letter"))
+                    mb = _valid_mb(step.get("mb"), minimum=100, maximum=2048)
+                    if not letter or not mb:
+                        summary["actions"].append(f"shrink_bad_params:{step!r}")
+                        break
                     if letter != "C" and not _allow_data_shrink():
                         summary["actions"].append("data_shrink_blocked")
                         break
-                    ok = shrink_volume_letter(letter, mb, max(300, mb - 80))
+                    ok = shrink_volume_letter(letter, mb, max(100, mb - 80))
                     summary["actions"].append(f"shrink_{letter}:{ok}")
                     if not ok:
                         break
                     shrunk = True
-                elif step["op"] == "create_boot":
+                elif op == "create_boot":
+                    size = _valid_mb(step.get("size_mb"), minimum=100, maximum=2048) or target
                     root = None
                     if shrunk or plan["strategy"] == "create_in_free":
                         root = create_boot_in_unallocated(
                             disk=disk,
-                            size_mb=int(step["size_mb"]),
-                            prefer_uefi=prefer_uefi,
+                            size_mb=size,
+                            prefer_uefi=prefer_uefi_eff,
+                            partition_style=part_style,
                         )
-                    if not root:
-                        # Legacy path: shrink C: + create (may double-shrink if we already shrunk C)
-                        if prefer_uefi:
-                            root = create_larger_esp(int(step["size_mb"]), system_disk=disk)
+                    if not root and not shrunk:
+                        # Legacy path only when we did NOT already shrink (avoid double-shrink)
+                        from .sysreserved import (
+                            create_larger_esp,
+                            create_larger_system_reserved_mbr,
+                        )
+
+                        if prefer_uefi_eff:
+                            root = create_larger_esp(size, system_disk=disk)
                             if not root:
-                                root = create_larger_system_reserved_mbr(
-                                    int(step["size_mb"]), system_disk=disk
-                                )
+                                root = create_larger_system_reserved_mbr(size, system_disk=disk)
                         else:
-                            root = create_larger_system_reserved_mbr(
-                                int(step["size_mb"]), system_disk=disk
-                            )
-                            if not root:
-                                root = create_larger_esp(int(step["size_mb"]), system_disk=disk)
+                            root = create_larger_system_reserved_mbr(size, system_disk=disk)
+                            if not root and part_style.upper() == "GPT":
+                                root = create_larger_esp(size, system_disk=disk)
+                    elif not root and shrunk:
+                        # Already shrunk: try opposite partition type in same free space
+                        summary["actions"].append("create_unalloc_retry_flipped")
+                        root = create_boot_in_unallocated(
+                            disk=disk,
+                            size_mb=size,
+                            prefer_uefi=not prefer_uefi_eff,
+                            partition_style=part_style,
+                        )
                     summary["actions"].append(f"create_boot:{bool(root)}")
                     if root:
-                        executed = True
                         summary["ok"] = True
                         summary["boot_letter"] = root
-                        try:
-                            from .sysreserved import unmount_letter
-
-                            unmount_letter(root)
-                        except Exception:
-                            pass
+                        # Keep letter mounted for fix_boot_for_new_layout — unmount after
 
         elif plan["strategy"] == "gparted_move":
             scripts = write_gparted_smart_scripts(
@@ -1023,15 +1168,21 @@ def run_smart_partition_magic(
             )
             summary["fallback"] = scripts
             summary["actions"].append("gparted_smart_scripts")
-            # Also stage ISO via existing helper
+            # Stage ISO + classic guide without re-entering full smart planner loops
             try:
-                from .boot_safe import prepare_partition_fallbacks
+                from .boot_safe import download_gparted_iso, write_gparted_rescue_guide
 
-                summary["fallback_media"] = prepare_partition_fallbacks(
+                guide = write_gparted_rescue_guide(
                     reason="smart_partition_needs_move",
                     system_disk=disk,
-                    mode="EFI" if prefer_uefi else "SystemReserved",
+                    mode="EFI" if prefer_uefi_eff else "SystemReserved",
                 )
+                iso = download_gparted_iso()
+                summary["fallback_media"] = {
+                    "guide": str(guide),
+                    "iso": str(iso) if iso else None,
+                    "smart_gparted": scripts,
+                }
             except Exception as e:
                 summary["actions"].append(f"fallback_media:{type(e).__name__}")
 
@@ -1042,22 +1193,33 @@ def run_smart_partition_magic(
         summary["actions"].append(f"exec_error:{type(e).__name__}")
         summary["ok"] = False
 
-    # Boot fix whenever we mutated successfully
+    # Boot fix whenever we mutated successfully — letter must still be mounted if set
     if summary.get("ok") and plan.get("strategy") not in ("noop_space_ok", "gparted_move", "none"):
         preserve = os.environ.get("MAGIC_GRUB_PRESERVE", "1").strip().lower() not in (
             "0",
             "false",
             "no",
         )
+        bl = summary.get("boot_letter")
         summary["boot_fix"] = fix_boot_for_new_layout(
-            prefer_uefi=prefer_uefi,
-            boot_letter=summary.get("boot_letter"),
+            prefer_uefi=prefer_uefi_eff,
+            boot_letter=bl,
             preserve_grub=preserve,
+            unmount_target=True,
         )
         summary["actions"].extend(summary["boot_fix"].get("actions") or [])
         if summary["boot_fix"].get("ok") is False:
-            # Still may boot via old ESP — mark soft fail
             summary["actions"].append("boot_fix_soft_fail")
+        summary["boot_letter"] = None  # unmounted by fix_boot when provided
+    elif summary.get("boot_letter"):
+        # Failed path: still unmount temporary letter
+        try:
+            from .sysreserved import unmount_letter
+
+            unmount_letter(str(summary["boot_letter"]))
+        except Exception:
+            pass
+        summary["boot_letter"] = None
 
     # Always write GParted smart scripts alongside when not fully ok
     if not summary.get("ok") and plan.get("strategy") != "noop_space_ok":
@@ -1068,19 +1230,22 @@ def run_smart_partition_magic(
         except Exception:
             pass
 
-    # Finish verification
+    # Finish verification — hard-fail only on layout/boot-size regressions
     try:
         summary["finish"] = finish_partition_verification(
-            prefer_uefi=prefer_uefi,
+            prefer_uefi=prefer_uefi_eff,
             system_disk=disk,
-            expect_expanded=bool(summary.get("ok") and plan.get("strategy") != "noop_space_ok"),
+            expect_expanded=bool(
+                summary.get("ok") and plan.get("strategy") not in ("noop_space_ok", None)
+            ),
         )
-        if summary.get("ok") and summary["finish"] and not summary["finish"].get("ok"):
+        issues = set(summary["finish"].get("issues") or [])
+        hard = {"layout_mapped", "boot_partition_found", "boot_size_ge_260mb"}
+        if summary.get("ok") and issues.intersection(hard):
+            summary["ok"] = False
+            summary["actions"].append("finish_checks_failed:" + ",".join(sorted(issues & hard)))
+        elif summary.get("ok") and summary["finish"] and not summary["finish"].get("ok"):
             summary["actions"].append("finish_checks_warn")
-            # Do not flip ok False solely on soft warnings if expand worked
-            if summary["finish"].get("issues"):
-                summary["ok"] = False
-                summary["actions"].append("finish_checks_failed")
     except Exception as e:
         summary["actions"].append(f"finish_error:{type(e).__name__}")
 
