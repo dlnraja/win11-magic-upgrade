@@ -43,6 +43,7 @@ python -m PyInstaller `
     --hidden-import engine.preventive `
     --hidden-import engine.autonomy `
     --hidden-import engine.compat `
+    --hidden-import engine.media_bypass `
     --hidden-import engine.errfix `
     --hidden-import engine.bootmgr `
     --hidden-import engine.hybrid_uefi `

@@ -240,6 +240,14 @@ def _execute_step(
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
         root = mount_iso(iso)
+        # Win11: writable stage + Appraiser neutralize (works when /product server is blocked)
+        if win == "11":
+            try:
+                from .media_bypass import prepare_setup_root
+
+                root = str(prepare_setup_root(root, win11=True))
+            except Exception as e:
+                log(f"Media Appraiser bypass stage skipped: {e}", "WARN")
         # Win11 always uses /product server + IgnoreWarning; Win10 also IgnoreWarning
         use_server = bool(step.use_server_product) or win == "11"
         return _run_setup(root, use_server=use_server, quiet=quiet)

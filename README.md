@@ -68,7 +68,7 @@ Win11MagicUpgrade.exe --cli --diagnose
 
 | Situation | What the app does |
 |-----------|-------------------|
-| Unsupported TPM / CPU / Secure Boot | Compat engine + `/product server` + `/compat IgnoreWarning` |
+| Unsupported TPM / CPU / Secure Boot | Full bypass stack: LabConfig + MoSetup + HwReqChk + CompatData soften + **media Appraiser neutralize** + `/product server` + `/compat IgnoreWarning` |
 | ESP / System Reserved full | Cleanup + enlarge (`--cli --srp`) |
 | MBR disk | Auto `mbr2gpt` (no wipe) + bcdboot |
 | Win10 1511 / obsolete | Intermediate **Win10 22H2** then Win11 (RunOnce) |

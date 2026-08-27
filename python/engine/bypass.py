@@ -190,7 +190,11 @@ def list_registry_pack() -> list[dict]:
 
 
 def setup_bypass_args(quiet: bool = False) -> list[str]:
-    """Always IgnoreWarning + server product path for max soft-compat bypass."""
+    """Always IgnoreWarning + server product path for max soft-compat bypass.
+
+    Note: some 25H2 channels ignore /product server — media Appraiser neutralize
+    (media_bypass.py) is the complementary path.
+    """
     args = [
         "/product",
         "server",

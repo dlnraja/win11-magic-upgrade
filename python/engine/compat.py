@@ -37,6 +37,11 @@ FULL_HWREQCHK_SPOOF = [
     "SQ_CpuMhz=3000",
     "SQ_DirectXVersion=12",
     "SQ_WDDMVersion=3.0",
+    "SQ_VbsEnabled=TRUE",
+    "SQ_HvciEnabled=TRUE",
+    "SQ_CpuFamily=25",
+    "SQ_CpuModel=1",
+    "SQ_CpuStepping=1",
 ]
 
 LABCONFIG_BYPASSES = [
@@ -46,12 +51,18 @@ LABCONFIG_BYPASSES = [
     "BypassStorageCheck",
     "BypassCPUCheck",
     "BypassDiskCheck",
+    # Extra DWORD names used by various community/ISO tools (ignored if unused)
+    "BypassNICCheck",
+    "BypassMemoryCheck",
 ]
 
 COMPAT_DELETE_TREES = [
     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\CompatMarkers",
     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Shared",
     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\TargetVersionUpgradeExperienceIndicators",
+    # Extra SoftBlock / telemetry trees that remember failed HW checks
+    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Appraiser",
+    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\TelemetryController",
 ]
 
 
@@ -204,6 +215,11 @@ def build_intelligent_hwreqchk(report=None) -> list[str]:
         "SQ_CpuMhz=3000",
         "SQ_DirectXVersion=12",
         "SQ_WDDMVersion=3.0",
+        "SQ_VbsEnabled=TRUE",
+        "SQ_HvciEnabled=TRUE",
+        "SQ_CpuFamily=25",
+        "SQ_CpuModel=1",
+        "SQ_CpuStepping=1",
     ]
     if a.gaps:
         log(
@@ -222,14 +238,17 @@ def apply_labconfig_and_mosetup() -> int:
         _set_dword(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\Setup\LabConfig", name, 1)
         log(f"LabConfig {name}=1", "OK")
         n += 1
-    _set_dword(
-        winreg.HKEY_LOCAL_MACHINE,
-        r"SYSTEM\Setup\MoSetup",
-        "AllowUpgradesWithUnsupportedTPMOrCPU",
-        1,
-    )
-    log("MoSetup AllowUpgradesWithUnsupportedTPMOrCPU=1", "OK")
-    n += 1
+    # MoSetup — Microsoft-documented + community extras
+    for name, val in (
+        ("AllowUpgradesWithUnsupportedTPMOrCPU", 1),
+        ("AllowUpgradesWithUnsupportedTPMorCPU", 1),  # typo variant seen in some guides
+    ):
+        try:
+            _set_dword(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\Setup\MoSetup", name, val)
+            log(f"MoSetup {name}={val}", "OK")
+            n += 1
+        except OSError as e:
+            log(f"MoSetup {name} skip: {e}", "WARN")
     # Clear stale CmdLine that can confuse resumes
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\Setup", 0, winreg.KEY_ALL_ACCESS) as k:
@@ -254,28 +273,27 @@ def apply_eligibility_and_wu_policies() -> int:
     n += 1
     _set_dword(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\PCHC", "UpgradeEligibility", 1)
     n += 1
-    # Also machine-wide PCHC if present
     try:
         _set_dword(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\PCHC", "UpgradeEligibility", 1)
         n += 1
     except OSError:
         pass
 
-    _set_dword(
-        winreg.HKEY_LOCAL_MACHINE,
-        r"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate",
-        "DisableWUfBSafeguards",
-        1,
-    )
-    n += 1
-    _set_dword(
-        winreg.HKEY_LOCAL_MACHINE,
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\OSUpgrade",
-        "AllowOSUpgrade",
-        1,
-    )
-    n += 1
-    # Prefer Windows 11 product channel for WU feature path
+    # WUfB / feature update soft holds
+    for path, name, val in (
+        (r"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate", "DisableWUfBSafeguards", 1),
+        (r"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate", "SetDisableUXWUAccess", 0),
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\OSUpgrade", "AllowOSUpgrade", 1),
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\OSUpgrade", "ReservationsAllowed", 1),
+        # OOBE network requirement (post-upgrade friction)
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE", "BypassNRO", 1),
+    ):
+        try:
+            _set_dword(winreg.HKEY_LOCAL_MACHINE, path, name, val)
+            n += 1
+        except OSError as e:
+            log(f"Policy skip {name}: {e}", "INFO")
+
     try:
         _set_dword(
             winreg.HKEY_LOCAL_MACHINE,
@@ -293,6 +311,20 @@ def apply_eligibility_and_wu_policies() -> int:
         log("WU policy: ProductVersion=Windows 11 + TargetReleaseVersion", "OK")
     except OSError as e:
         log(f"WU product policy skip: {e}", "WARN")
+
+    # SoftBlock allow: UpgradeEligibility indicators
+    try:
+        _set_dword(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\UpgradeEligibility",
+            "UpgradeEligible",
+            1,
+        )
+        n += 1
+    except OSError:
+        pass
+
+    log(f"Eligibility / WU / OOBE bypass values applied ({n})", "OK")
     return n
 
 
@@ -465,7 +497,7 @@ def make_system_win11_compatible(report=None) -> dict:
             winreg.HKEY_LOCAL_MACHINE,
             r"SOFTWARE\Win11MagicUpgrade",
             "CompatEngineVersion",
-            170,
+            190,
         )
         _set_sz(
             winreg.HKEY_LOCAL_MACHINE,

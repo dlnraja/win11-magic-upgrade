@@ -76,12 +76,14 @@ One-Click always installs the preventive pack **then** applies runtime remediati
 | Layer | Action |
 |-------|--------|
 | **Assess** | Detect TPM / Secure Boot / RAM / SSE4.2 gaps |
-| **LabConfig + MoSetup** | All Bypass* + AllowUpgradesWithUnsupportedTPMOrCPU |
-| **HwReqChkVars** | Full MULTI_SZ spoof (TPM/SB/RAM/NVMe/SSD/CPU/DX/WDDM) tailored to machine |
-| **AppCompat purge** | Delete CompatMarkers / Shared / TargetVersionUpgradeExperienceIndicators |
+| **LabConfig + MoSetup** | All Bypass* (TPM/SB/RAM/Storage/CPU/Disk/NIC/Memory) + AllowUpgradesWithUnsupportedTPMOrCPU |
+| **HwReqChkVars** | Expanded MULTI_SZ spoof (TPM/SB/RAM/NVMe/SSD/CPU/DX/WDDM/VBS/HVCI…) |
+| **AppCompat purge** | CompatMarkers / Shared / TargetVersion / Appraiser / TelemetryController |
 | **CompatData** | Rewrite `BlockMigration=True` → False in cached XML (0xC1900208) |
-| **SetupConfig.ini** | `Compat=IgnoreWarning` + DynamicUpdate |
+| **Media Appraiser** | Writable Setup stage + neutralize `appraiserres.dll` (Rufus-class; helps when `/product server` is blocked on 25H2) |
+| **SetupConfig.ini** | `Compat=IgnoreWarning` + DynamicUpdate (system + media) |
 | **Setup args** | `/product server` + `/compat IgnoreWarning` for Win11 |
+| **OOBE** | BypassNRO |
 | **Hard limit** | No SSE4.2/POPCNT → chain targets Win10 22H2 keep-apps (cannot spoof CPU ISA) |
 
 Inventory: `%LOCALAPPDATA%\Win11MagicUpgrade\compat-engine.json`

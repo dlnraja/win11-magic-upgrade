@@ -436,7 +436,7 @@ def install_all_preventive_patches() -> dict:
             winreg.HKEY_LOCAL_MACHINE,
             r"SOFTWARE\Win11MagicUpgrade",
             "PreventivePackVersion",
-            170,
+            190,
         )
     except OSError:
         pass
