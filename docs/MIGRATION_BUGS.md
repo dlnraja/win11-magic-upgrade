@@ -34,6 +34,17 @@ Research notes (Microsoft Support, SetupDiag, FlyOOBE issues, forums) and what t
 | Win11 x64 + 32-bit Boot Manager on ESP | Stale `bootia32` / wrong PE after repairs | Detect PE machine of `bootmgfw.efi`; `bcdboot` rewrite + `bootx64.efi` |
 | Win11 on IA32-only UEFI (Atom tablets) | Firmware bitness must match OS for native UEFI | **Hybrid**: CSMWrap IA32 → SeaBIOS → BIOS bootmgr → Win x64 (`--cli --hybrid`) |
 | 32-bit Windows + 64-bit CPU | Architecture change not inplace | Max Win10 22H2 x86 keep-apps; Win11 = clean install x64 (via hybrid if IA32 UEFI) |
+| `0xC1900208` CompatData / Appraiser | Blocking apps `BlockMigration=True` | Parse CompatData/Appraiser XML and list blockers |
+| `DuplicateUserProfileFailure` | Broken/duplicate ProfileList SIDs | Detect missing profile paths + duplicate ProfileImagePath |
+| SafeMode / AuditMode hardblock | SetupDiag | Detect SafeBoot Option + AuditBoot/ImageState |
+| VHDHardblock | OS on VHD | Detect virtual/VHD system volume |
+| `0x80070002` / `0x80240034` / `0x80070422` | WU cache / services | Soft reset SoftwareDistribution + catroot2; start wuauserv/BITS |
+| `0x800F0922` / dirty volume | Disk errors / SRP | Dirty-bit check + schedule `chkdsk /F`; SRP enlarge |
+| Offline Files / CSC | MIG interference | Stop `CscService` during prep |
+| Secondary disks `0x80070002-0x20009` | Extra fixed disks confuse Setup | Warn to disconnect non-system disks |
+| CrowdStrike / more EDR | SafeOS driver rollback | Expand service stop list + software detect |
+| Long Users paths | InstallPathTooLong / MIG | Warn on extreme path lengths |
+| Driver DU during setup | Outdated NIC/storage drivers | Win11 setup uses `/dynamicupdate enable` |
 
 ## Boot Manager / UEFI bitness (smart)
 

@@ -210,7 +210,7 @@ def setup_bypass_args(quiet: bool = False) -> list[str]:
         "/compat",
         "IgnoreWarning",
         "/dynamicupdate",
-        "disable",
+        "enable",
         "/eula",
         "accept",
         "/telemetry",

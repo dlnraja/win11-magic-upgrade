@@ -63,7 +63,7 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
             "/compat",
             "IgnoreWarning",
             "/dynamicupdate",
-            "disable",
+            "enable",
             "/eula",
             "accept",
         ]

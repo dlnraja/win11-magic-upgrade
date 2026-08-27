@@ -25,6 +25,9 @@ BLOCKERS = [
     (r"NordVPN|ExpressVPN|Surfshark|ProtonVPN|OpenVPN|WireGuard|Cisco AnyConnect|GlobalProtect|FortiClient|Pulse Secure|Mullvad", "VPN TAP/WFP filters"),
     (r"VMware Tools|VirtualBox Guest|Hyper-V", "Virtualization guest filters (warn)"),
     (r"Intel.*Rapid Storage|IRST|AMD-RAID|Promise", "Storage RAID filter - update before upgrade"),
+    (r"CrowdStrike|Falcon|Carbon Black|Cylance|Symantec Endpoint", "EDR kernel filters / 0xC1900101-0x20017"),
+    (r"ShadowProtect|StorageCraft|DriveImage|Redo Backup", "Backup filter drivers"),
+    (r"Docker Desktop|Oracle VM VirtualBox|VMware Workstation", "Virtualization / Hypervisor interference"),
 ]
 
 # fltmc names commonly tied to WIM mount / SafeOS failures (forums)
@@ -39,10 +42,11 @@ BAD_FILTER_HINTS = re.compile(
 
 ERROR_PATTERNS = (
     r"0xC1900101|0xC1900208|0xC1900200|0xC1900204|0xC190020E|"
-    r"0xC1900107|0xC190012E|0xC1900216|0x80070070|0x8007001F|"
-    r"0x800F081F|0x80070490|0x800704DB|0xC1420121|0x80070057|"
+    r"0xC1900107|0xC190012E|0xC1900216|0xC1900223|0x80070070|0x8007001F|"
+    r"0x80070002|0x80070003|0x80070422|0x800F081F|0x800F0922|0x80070490|"
+    r"0x800704DB|0xC1420121|0x80070057|0x80240034|0x80246007|"
     r"SECOND_BOOT|SAFE_OS|system reserved partition|partition reserv|"
-    r"Failed to mount WIM|WIMMount|MOSETUP_E_ROLLBACK_PENDING"
+    r"Failed to mount WIM|WIMMount|MOSETUP_E_ROLLBACK_PENDING|BlockMigration"
 )
 
 
@@ -456,6 +460,13 @@ def apply_migration_patches() -> None:
     free_space_helpers()
     clear_appraiser_cache()
     quick_component_health()
+
+    try:
+        from .errfix import apply_extra_error_fixes
+
+        apply_extra_error_fixes()
+    except Exception as e:
+        log(f"Extra error fixes skipped: {e}", "WARN")
 
     free = shutil.disk_usage(os.environ.get("SystemDrive", "C:\\")).free / (1024**3)
     if free < 12:

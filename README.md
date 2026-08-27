@@ -42,6 +42,7 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 | SafeOS / WIM / WinRE / filters | WIMMount repair, WinRE enable, fltmc + VPN/VeraCrypt/AV detection, SetupConfig.ini cleanup |
 | Boot Manager 32↔64 | Detect ESP PE bitness; repair x64 OS + IA32 bootmgr via bcdboot; **hybrid CSMWrap** for IA32-only UEFI |
 | Migration logs | Panther-style `setupact.log` / `setuperr.log` + Desktop `MigrationReport.txt` |
+| Extra SetupDiag errors | CompatData scan, ProfileList, WU reset, Safe/Audit mode, VHD, CSC, dirty disk, EDR |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
 ## Logs (Windows Migration / Setup style)
