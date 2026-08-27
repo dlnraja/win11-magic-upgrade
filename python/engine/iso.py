@@ -435,15 +435,18 @@ def _iter_isos_in_dir(folder: Path, *, recursive: bool = False) -> list[Path]:
 
 def find_local_iso(win: str, arch: str = "x64", out_dir: Path | None = None) -> Path | None:
     """
-    Auto-detect an existing Windows ISO on the PC:
-    cache, Downloads/Téléchargements, Desktop, Documents, common ISO folders, MAGIC_ISO_DIRS.
+    Auto-detect an existing Windows ISO on the PC, then verify like Flyby11+:
+      mount → setupprep/setup → cversion.ini winver → MD5/SHA256
+    Searches: cache, Downloads/Téléchargements, Desktop, Documents, common ISO folders.
     """
+    from .iso_inspect import catalog_lookup, iso_matches_target, verify_iso_for_win
+
     arch = "x86" if arch.lower() in ("x86", "x32", "32", "i386") else "x64"
-    candidates: list[Path] = []
+    named: list[Path] = []
+    unnamed: list[Path] = []
     roots = iso_search_roots(out_dir)
     log(f"Scanning {len(roots)} location(s) for Windows {win} ISO…", "STEP")
     for root in roots:
-        # Downloads / Desktop: also scan one subfolder level
         deep = root.name.lower() in (
             "downloads",
             "téléchargements",
@@ -459,21 +462,64 @@ def find_local_iso(win: str, arch: str = "x64", out_dir: Path | None = None) -> 
                 if p.stat().st_size < MIN_ISO_BYTES:
                     continue
                 if _iso_name_matches(win, arch, p.name):
-                    candidates.append(p)
+                    named.append(p)
+                else:
+                    # Still consider large ISOs — winver comes from cversion, not filename
+                    # Flyby rejects obvious Win10 names when targeting Win11
+                    n = p.name.lower()
+                    if win == "11" and re.search(r"win\s*10|windows\s*10|win10|windows10", n):
+                        continue
+                    if win == "10" and re.search(r"win\s*11|windows\s*11|win11|windows11", n):
+                        continue
+                    unnamed.append(p)
             except OSError:
                 continue
 
-    if not candidates:
-        log(f"No local Windows {win} ISO found in Downloads / cache / common folders", "INFO")
+    def _score(p: Path) -> tuple:
+        cached = catalog_lookup(p)
+        verified_bonus = 2 if cached and iso_matches_target(cached, win, arch) else 0
+        try:
+            st = p.stat()
+            return (verified_bonus, st.st_mtime, st.st_size)
+        except OSError:
+            return (verified_bonus, 0, 0)
+
+    # Prefer name matches, then other large ISOs; catalog-verified first
+    named.sort(key=_score, reverse=True)
+    unnamed.sort(key=_score, reverse=True)
+    ordered = named + unnamed
+
+    if not ordered:
+        log(f"No local Windows {win} ISO candidates found", "INFO")
         return None
 
-    # Prefer newest (mtime), then largest
-    candidates.sort(key=lambda x: (x.stat().st_mtime, x.stat().st_size), reverse=True)
-    best = candidates[0]
-    log(f"Auto-detected local ISO: {best} ({best.stat().st_size/1e9:.2f} GB)", "OK")
-    if len(candidates) > 1:
-        log(f"  ({len(candidates) - 1} other matching ISO(s) ignored)", "INFO")
-    return best
+    log(f"Found {len(ordered)} ISO candidate(s) — verifying winver + MD5 (Flyby-style)…", "STEP")
+    # Cap expensive mount+hash attempts
+    max_try = 8
+    for i, p in enumerate(ordered[:max_try]):
+        report_progress(
+            phase=f"Verify ISO ({i + 1}/{min(len(ordered), max_try)})",
+            percent=None,
+            detail=p.name,
+            indeterminate=True,
+        )
+        # Fast path: catalog already verified for this win
+        cached = catalog_lookup(p)
+        if cached and cached.verified and iso_matches_target(cached, win, arch):
+            if cached.md5 and cached.sha256:
+                log(
+                    f"Reusing verified ISO (catalog): {p.name} | "
+                    f"Win{cached.win_family} {cached.display_version} | MD5={cached.md5}",
+                    "OK",
+                )
+                return p
+        info = verify_iso_for_win(p, win, arch, compute_hash=True)
+        if info is not None:
+            log(f"Auto-detected + verified ISO: {p}", "OK")
+            return p
+
+    log(f"No verified Windows {win} ISO among local candidates — will download", "WARN")
+    return None
 
 
 def get_iso(
@@ -489,17 +535,17 @@ def get_iso(
     report_progress(
         phase=f"ISO {label}",
         percent=None,
-        detail="Searching Downloads / cache / PC for existing ISO…",
+        detail="Searching + verifying local ISOs (winver / MD5)…",
         indeterminate=True,
     )
 
-    # 1) Auto-detect on PC (Downloads, cache, common folders)
+    # 1) Auto-detect + verify on PC
     local = find_local_iso(win, arch=arch, out_dir=out_dir)
     if local is not None:
         report_progress(
             phase=f"ISO {label}",
             percent=100.0,
-            detail=f"Reused local — {local.name}",
+            detail=f"Verified local — {local.name}",
         )
         return local
 
@@ -509,10 +555,25 @@ def get_iso(
     report_progress(
         phase=f"ISO {label}",
         percent=None,
-        detail="No local ISO — resolving official Microsoft CDN URL…",
+        detail="No verified local ISO — resolving official Microsoft CDN URL…",
         indeterminate=True,
     )
     url = resolve_iso_url(win=win, lang_hint=locale, arch=arch)
     m = re.search(r"/([^/?]+\.iso)", url, re.I)
     fname = m.group(1) if m else f"Windows{win}_{arch}_{int(time.time())}.iso"
-    return download_file(url, out_dir / fname)
+    dest = download_file(url, out_dir / fname)
+    # Hash + catalog the freshly downloaded official ISO (skip remount if slow — still hash)
+    try:
+        from .iso_inspect import inspect_iso
+
+        info = inspect_iso(dest, compute_hash=True, remount=True)
+        if info.win_family and info.win_family != win:
+            log(
+                f"Downloaded ISO winver mismatch: expected Win{win}, got Win{info.win_family}",
+                "WARN",
+            )
+        elif info.md5:
+            log(f"Downloaded ISO cataloged MD5={info.md5} winver={info.display_version}", "OK")
+    except Exception as e:
+        log(f"Post-download ISO inspect: {e}", "WARN")
+    return dest

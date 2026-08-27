@@ -103,40 +103,46 @@ def mount_iso(iso_path: str | Path) -> str:
         raise OSError(res, f"AttachVirtualDisk failed: {res}")
 
     _handles[iso_path] = handle
-    # Wait for drive letter
+    # Wait for drive letter — prefer sources\setupprep.exe (Flyby11), else setup.exe
     root = None
     for _ in range(40):
         time.sleep(0.25)
         after = _drives() - before
-        for letter in sorted(after):
-            candidate = f"{letter}:\\"
-            if (Path(candidate) / "setup.exe").exists():
-                root = candidate
-                break
+
+        def _pick(letters) -> str | None:
+            for letter in sorted(letters):
+                candidate = f"{letter}:\\"
+                prep = Path(candidate) / "sources" / "setupprep.exe"
+                setup = Path(candidate) / "setup.exe"
+                if prep.exists() or setup.exists():
+                    return candidate
+            return None
+
+        root = _pick(after)
         if root:
             break
-        # Also scan all drives for setup.exe matching mount time
-        if not root:
-            for letter in string.ascii_uppercase:
-                candidate = f"{letter}:\\"
-                if (Path(candidate) / "setup.exe").exists() and letter not in before:
-                    root = candidate
-                    break
+        # Newly appearing letter not yet in after set — scan all
+        root = _pick(set(string.ascii_uppercase) - before)
         if root:
             break
 
     if not root:
-        # Last resort: any drive with sources\install.wim / esd from this session
         for letter in string.ascii_uppercase:
             candidate = f"{letter}:\\"
-            if (Path(candidate) / "setup.exe").exists():
+            if (Path(candidate) / "sources" / "setupprep.exe").exists() or (
+                Path(candidate) / "setup.exe"
+            ).exists():
                 root = candidate
                 break
 
     if not root:
-        raise RuntimeError("ISO mounted but setup.exe drive letter not found")
+        raise RuntimeError("ISO mounted but setup.exe / setupprep.exe drive letter not found")
 
-    log(f"ISO mounted at {root} (virtdisk.dll, no PowerShell)", "OK")
+    has_prep = (Path(root) / "sources" / "setupprep.exe").exists()
+    log(
+        f"ISO mounted at {root} (virtdisk.dll, setupprep={'yes' if has_prep else 'no'})",
+        "OK",
+    )
     return root
 
 
