@@ -204,13 +204,16 @@ class App(tk.Tk):
             justify="left",
         ).pack(anchor="w", padx=20, pady=(0, 6))
 
-        # --- Progress panel (ISO download + phases) ---
+        # --- Progress panel: overall + step, elapsed / remaining, alive pulse ---
         prog = tk.Frame(self, bg="#0f172a")
         prog.pack(fill="x", padx=20, pady=(0, 8))
         self.phase_var = tk.StringVar(value=self.t.get("progress_idle", "Idle"))
         self.detail_var = tk.StringVar(value="")
-        self.pct_var = tk.StringVar(value="")
-        self.eta_var = tk.StringVar(value="")
+        self.pct_var = tk.StringVar(value="0%")
+        self.step_pct_var = tk.StringVar(value="")
+        self.eta_var = tk.StringVar(value="ETA --:--")
+        self.elapsed_var = tk.StringVar(value="Elapsed 00:00")
+        self.alive_var = tk.StringVar(value="")
         tk.Label(
             prog,
             textvariable=self.phase_var,
@@ -231,8 +234,25 @@ class App(tk.Tk):
             bordercolor="#0f172a",
             lightcolor="#38bdf8",
             darkcolor="#0284c7",
-            thickness=16,
+            thickness=14,
         )
+        style.configure(
+            "MagicStep.Horizontal.TProgressbar",
+            troughcolor="#1e293b",
+            background="#4ade80",
+            bordercolor="#0f172a",
+            lightcolor="#4ade80",
+            darkcolor="#16a34a",
+            thickness=10,
+        )
+        tk.Label(
+            prog,
+            text=self.t.get("progress_overall", "Overall"),
+            font=("Segoe UI", 8),
+            fg="#64748b",
+            bg="#0f172a",
+            anchor="w",
+        ).pack(fill="x")
         self.bar = ttk.Progressbar(
             prog,
             style="Magic.Horizontal.TProgressbar",
@@ -240,7 +260,23 @@ class App(tk.Tk):
             maximum=100,
             value=0,
         )
-        self.bar.pack(fill="x", pady=(4, 2))
+        self.bar.pack(fill="x", pady=(0, 2))
+        tk.Label(
+            prog,
+            text=self.t.get("progress_step", "Current step"),
+            font=("Segoe UI", 8),
+            fg="#64748b",
+            bg="#0f172a",
+            anchor="w",
+        ).pack(fill="x")
+        self.step_bar = ttk.Progressbar(
+            prog,
+            style="MagicStep.Horizontal.TProgressbar",
+            mode="determinate",
+            maximum=100,
+            value=0,
+        )
+        self.step_bar.pack(fill="x", pady=(0, 2))
         meta = tk.Frame(prog, bg="#0f172a")
         meta.pack(fill="x")
         tk.Label(
@@ -251,20 +287,25 @@ class App(tk.Tk):
             bg="#0f172a",
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
-        tk.Label(
-            meta,
-            textvariable=self.pct_var,
-            font=("Consolas", 9),
-            fg="#38bdf8",
-            bg="#0f172a",
-        ).pack(side="right", padx=(8, 0))
-        tk.Label(
-            meta,
-            textvariable=self.eta_var,
-            font=("Consolas", 9),
-            fg="#7dd3fc",
-            bg="#0f172a",
-        ).pack(side="right")
+        right = tk.Frame(meta, bg="#0f172a")
+        right.pack(side="right")
+        tk.Label(right, textvariable=self.alive_var, font=("Consolas", 9), fg="#4ade80", bg="#0f172a").pack(
+            side="right", padx=(6, 0)
+        )
+        tk.Label(right, textvariable=self.pct_var, font=("Consolas", 9), fg="#38bdf8", bg="#0f172a").pack(
+            side="right", padx=(6, 0)
+        )
+        tk.Label(right, textvariable=self.step_pct_var, font=("Consolas", 9), fg="#86efac", bg="#0f172a").pack(
+            side="right", padx=(6, 0)
+        )
+        tk.Label(right, textvariable=self.eta_var, font=("Consolas", 9), fg="#7dd3fc", bg="#0f172a").pack(
+            side="right", padx=(6, 0)
+        )
+        tk.Label(right, textvariable=self.elapsed_var, font=("Consolas", 9), fg="#94a3b8", bg="#0f172a").pack(
+            side="right", padx=(6, 0)
+        )
+        self._progress_job = None
+        self._last_progress: dict = {}
 
         self.log = scrolledtext.ScrolledText(
             self,
@@ -288,37 +329,80 @@ class App(tk.Tk):
         self.log.insert("end", text)
         self.log.see("end")
 
-    def _on_progress(self, info: dict) -> None:
-        def apply() -> None:
-            phase = info.get("phase") or ""
-            detail = info.get("detail") or ""
-            pct = info.get("percent")
-            eta = info.get("eta_seconds")
-            indeterminate = bool(info.get("indeterminate"))
-            if phase:
-                self.phase_var.set(phase)
-            self.detail_var.set(detail)
-            if indeterminate or pct is None:
-                if str(self.bar["mode"]) != "indeterminate":
-                    self.bar.configure(mode="indeterminate")
-                    self.bar.start(12)
-                self.pct_var.set("")
-                self.eta_var.set("")
-            else:
-                if str(self.bar["mode"]) != "determinate":
+    def _apply_progress_ui(self, info: dict) -> None:
+        from engine.progress import format_elapsed, format_eta  # type: ignore
+
+        self._last_progress = dict(info)
+        phase = info.get("phase") or ""
+        detail = info.get("detail") or ""
+        overall = info.get("percent")
+        step = info.get("step_percent")
+        eta = info.get("eta_seconds")
+        elapsed = info.get("elapsed_seconds")
+        indeterminate = bool(info.get("indeterminate"))
+        alive = info.get("alive") or ""
+        stale = float(info.get("stale_seconds") or 0)
+
+        if phase:
+            self.phase_var.set(phase)
+        # Show working pulse when stale so user knows process is alive
+        suffix = ""
+        if self._busy and stale > 2.5:
+            suffix = f"  (working{alive})"
+        self.detail_var.set((detail or "") + suffix)
+
+        if overall is not None:
+            val = max(0.0, min(100.0, float(overall)))
+            if str(self.bar["mode"]) != "determinate":
+                try:
                     self.bar.stop()
-                    self.bar.configure(mode="determinate")
-                val = max(0.0, min(100.0, float(pct)))
-                self.bar["value"] = val
-                self.pct_var.set(f"{val:.1f}%")
-                if eta is not None:
-                    from engine.progress import format_eta  # type: ignore
+                except Exception:
+                    pass
+                self.bar.configure(mode="determinate")
+            self.bar["value"] = val
+            self.pct_var.set(f"{val:.0f}%")
 
-                    self.eta_var.set(f"ETA {format_eta(eta)}")
-                else:
-                    self.eta_var.set("")
+        if indeterminate and (step is None or float(step or 0) <= 0):
+            if str(self.step_bar["mode"]) != "indeterminate":
+                self.step_bar.configure(mode="indeterminate")
+                self.step_bar.start(14)
+            self.step_pct_var.set("…")
+        else:
+            if str(self.step_bar["mode"]) != "determinate":
+                try:
+                    self.step_bar.stop()
+                except Exception:
+                    pass
+                self.step_bar.configure(mode="determinate")
+            svaluable = 35.0 if step is None and indeterminate else float(step or 0)
+            svaluable = max(0.0, min(100.0, svaluable))
+            self.step_bar["value"] = svaluable
+            self.step_pct_var.set(f"step {svaluable:.0f}%")
 
-        self.after(0, apply)
+        if elapsed is not None:
+            self.elapsed_var.set(f"Elapsed {format_elapsed(float(elapsed))}")
+        if eta is not None:
+            self.eta_var.set(f"Left {format_eta(float(eta))}")
+        elif self._busy:
+            self.eta_var.set("Left --:--")
+        self.alive_var.set(alive if self._busy else "")
+
+    def _on_progress(self, info: dict) -> None:
+        self.after(0, self._apply_progress_ui, info)
+
+    def _poll_progress(self) -> None:
+        if not self._busy:
+            self._progress_job = None
+            return
+        try:
+            from engine.progress import heartbeat, snapshot  # type: ignore
+
+            # Soft heartbeat even when engine is quiet (long sc/stop etc.)
+            heartbeat()
+            self._apply_progress_ui(snapshot())
+        except Exception:
+            pass
+        self._progress_job = self.after(500, self._poll_progress)
 
     def start(self, action: str) -> None:
         if self._busy or self._elevating:
@@ -330,16 +414,19 @@ class App(tk.Tk):
             self.append(self.t.get("elevating", "Elevation required — relaunching as Administrator...\n"))
             self.phase_var.set(self.t.get("elevating_phase", "Waiting for UAC…"))
             self.detail_var.set(self.t.get("elevating_detail", "Accept the Windows security prompt"))
-            self.bar.configure(mode="indeterminate")
-            self.bar.start(12)
+            self.step_bar.configure(mode="indeterminate")
+            self.step_bar.start(12)
             ok = relaunch_as_admin(["--auto", action])
             if ok:
                 self.append(self.t.get("elevated_ok", "Elevated window starting — closing this one.\n"))
                 self.after(500, self.destroy)
             else:
                 self._elevating = False
-                self.bar.stop()
-                self.bar.configure(mode="determinate", value=0)
+                try:
+                    self.step_bar.stop()
+                except Exception:
+                    pass
+                self.step_bar.configure(mode="determinate", value=0)
                 self.phase_var.set(self.t.get("progress_idle", "Idle"))
                 self.append(self.t.get("elevated_fail", "UAC cancelled or elevation failed.\n"))
                 messagebox.showerror(
@@ -358,9 +445,15 @@ class App(tk.Tk):
         self._busy = True
         self.btn_go.configure(state="disabled")
         self.phase_var.set(self.t.get("progress_running", "Running…"))
-        self.detail_var.set("")
-        self.pct_var.set("")
-        self.eta_var.set("")
+        self.detail_var.set(self.t.get("progress_starting", "Starting…"))
+        self.pct_var.set("0%")
+        self.step_pct_var.set("…")
+        self.eta_var.set("Left --:--")
+        self.elapsed_var.set("Elapsed 00:00")
+        self.bar.configure(mode="determinate", value=0)
+        self.step_bar.configure(mode="indeterminate")
+        self.step_bar.start(14)
+        self._poll_progress()
 
         def worker() -> None:
             try:
@@ -373,9 +466,10 @@ class App(tk.Tk):
                     run_patch_enrichment,
                     run_pipeline,
                 )
-                from engine.progress import set_progress_callback  # type: ignore
+                from engine.progress import set_progress_callback, start_session  # type: ignore
 
                 set_progress_callback(self._on_progress)
+                start_session(action)
                 sink = lambda s: self.after(0, self.append, s)
                 if action == "diagnose":
                     run_diagnose(sink)
@@ -424,8 +518,9 @@ class App(tk.Tk):
                 self.after(0, lambda: messagebox.showerror(title, str(ex)))
             finally:
                 try:
-                    from engine.progress import set_progress_callback  # type: ignore
+                    from engine.progress import end_session, set_progress_callback  # type: ignore
 
+                    end_session(success=True)
                     set_progress_callback(None)
                 except Exception:
                     pass
@@ -436,13 +531,25 @@ class App(tk.Tk):
     def _done(self) -> None:
         self._busy = False
         self.btn_go.configure(state="normal")
+        if self._progress_job is not None:
+            try:
+                self.after_cancel(self._progress_job)
+            except Exception:
+                pass
+            self._progress_job = None
         try:
-            self.bar.stop()
+            self.step_bar.stop()
         except Exception:
             pass
+        self.step_bar.configure(mode="determinate", value=100)
         self.bar.configure(mode="determinate")
-        if self.bar["value"] < 100:
-            self.phase_var.set(self.t.get("progress_idle", "Idle"))
+        if float(self.bar["value"] or 0) < 100:
+            self.bar["value"] = 100
+        self.pct_var.set("100%")
+        self.step_pct_var.set("step 100%")
+        self.eta_var.set("Left 00:00")
+        self.alive_var.set("")
+        self.phase_var.set(self.t.get("progress_done", "Finished"))
 
 
 def _parse_auto_action(argv: list[str]) -> str | None:

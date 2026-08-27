@@ -98,6 +98,14 @@ def log(msg: str, level: str = "INFO", *, component: str | None = None) -> None:
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{level_u}] {msg}"
     panther = _panther_line(level_u, msg, component)
 
+    # Keep GUI alive on every log line (status bars / ETA)
+    try:
+        from .progress import heartbeat
+
+        heartbeat(msg[:100])
+    except Exception:
+        pass
+
     # Console (ASCII-safe for legacy consoles)
     try:
         print(line, flush=True)

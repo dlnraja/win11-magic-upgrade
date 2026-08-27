@@ -16,7 +16,7 @@ from .iso import get_iso
 from .logutil import STATE_DIR, init_logging, load_state, log, save_state, write_migration_report, get_log_paths
 from .mbrgpt import convert_mbr_to_gpt, repair_boot_manager
 from .patches import AutonomousRebootRequired, apply_migration_patches
-from .progress import report_progress
+from .progress import end_session, report_progress, set_phase, set_step, start_session
 from .sysreserved import inspect_and_fix_system_reserved
 from .virtdisk import mount_iso
 
@@ -516,6 +516,7 @@ def run_pipeline(
     Quiet Setup by default. No extra clicks.
     """
     init_logging(sink)
+    start_session("oneclick")
     log("=" * 60, "STEP")
     log("ONE-CLICK INTELLIGENT MIGRATION — full pipeline", "STEP")
     log("=" * 60, "STEP")
@@ -525,23 +526,25 @@ def run_pipeline(
             raise PermissionError('Administrator required for upgrade pipeline')
 
         # ---- Phase 0: AV trust (Kaspersky / Defender false-positive declarations) ----
-        report_progress(
-            phase="Phase 0/7 — Antivirus trust",
-            percent=2.0,
-            detail="Declaring app as safe (Defender + Kaspersky FP notice)…",
-        )
+        set_phase("av", "Declaring app as safe (Defender + Kaspersky)…")
+        set_step(percent=10, detail="AV trust declarations…", indeterminate=True)
+        log(">>> PHASE 0/7 — Antivirus trust declarations", "STEP")
         try:
             declare_all_av_trust()
+            set_step(percent=100, detail="AV trust done", indeterminate=False)
         except Exception as e:
             log(f"AV trust skipped: {e}", "WARN")
 
         # ---- Phase 1: Diagnose ----
-        report_progress(phase="Phase 1/7 — Diagnose", percent=8.0, detail="Collecting system report…")
+        set_phase("diag", "Collecting system report…")
+        set_step(percent=15, detail="Hardware / disk / boot mode…", indeterminate=True)
         log(">>> PHASE 1/7 — Auto-diagnose", "STEP")
         r = collect_report()
+        set_step(percent=55, detail="Building upgrade plan…", indeterminate=True)
         print_report(r)
         plan = build_plan(r)
         print_plan(plan)
+        set_step(percent=80, detail="Building version chain…", indeterminate=True)
         steps = build_version_chain(r)
         if skip_mbr:
             steps = [s for s in steps if s.id != 'mbr2gpt']
@@ -581,14 +584,11 @@ def run_pipeline(
         else:
             start_index = _next_pending_index(steps, 0, r)
         _persist_chain(steps, start_index)
+        set_step(percent=100, detail=f"Plan ready — {format_chain(steps)}", indeterminate=False)
 
         # ---- Phase 2+3+4: Preventives + bypass + runtime (inside apply_migration_patches) ----
-        report_progress(
-            phase="Phase 2–4/7 — Patches + bypass",
-            percent=18.0,
-            detail="Preventives, Flyby11 bypass, runtime remediations…",
-            indeterminate=True,
-        )
+        set_phase("patch", "Preventives · Flyby11 bypass · runtime remediations…")
+        set_step(percent=5, detail="Installing preventive patches…", indeterminate=True)
         log(">>> PHASE 2/7 — Install preventive patches (persistent)", "STEP")
         log(">>> PHASE 3/7 — Flyby11/FlyOOBE compat + HwReqChk bypass", "STEP")
         log(">>> PHASE 4/7 — Runtime remediations / enrich / SRP prep", "STEP")
@@ -611,7 +611,12 @@ def run_pipeline(
                 }
             )
             log('Exiting for autonomous reboot; RunOnce continues One-Click.', 'OK')
+            set_phase("setup", "Reboot scheduled — RunOnce will continue")
+            set_step(percent=100, detail=ar.reason, indeterminate=False, eta_seconds=0)
+            end_session(success=True)
             return 3010
+
+        set_step(percent=100, detail="Patches + bypass complete", indeterminate=False)
 
         try:
             from .support import write_support_pack
@@ -637,29 +642,23 @@ def run_pipeline(
             write_migration_report(
                 extra={'Result': 'ALREADY_DONE', 'Chain': format_chain(steps), 'Mode': 'ONECLICK'}
             )
+            end_session(success=True)
             return 0
 
         # ---- Phase 5: Prefetch ISOs ----
-        report_progress(
-            phase="Phase 5/7 — ISO download",
-            percent=30.0,
-            detail="Prefetching official Microsoft ISOs (progress below)…",
-        )
+        set_phase("iso", "Searching / verifying / downloading Microsoft ISOs…")
+        set_step(percent=2, detail="Prefetch ISOs for the chain…", indeterminate=True)
         log(">>> PHASE 5/7 — Prefetch / reuse Microsoft ISOs for the whole chain", "STEP")
         iso_cache: dict[str, str] = {}
         if not resume:
             try:
                 iso_cache = _prefetch_chain_isos(steps[start_index:], r, win10_iso, win11_iso)
+                set_step(percent=100, detail=f"{len(iso_cache)} ISO(s) ready", indeterminate=False)
             except Exception as e:
                 log(f'ISO prefetch partial ({e}) — will download on demand per step', 'WARN')
 
         # ---- Phase 6+7: Execute chain ----
-        report_progress(
-            phase="Phase 6–7/7 — Migration chain",
-            percent=70.0,
-            detail="Mount ISO · Setup · RunOnce…",
-            indeterminate=True,
-        )
+        set_phase("chain", "ESP / MBR / hybrid / mount / Setup…")
         log(">>> PHASE 6/7 — Execute migration chain (ESP/MBR/hybrid/ISO/Setup)", "STEP")
         log(">>> PHASE 7/7 — Quiet Setup + RunOnce auto-resume across reboots", "STEP")
 
@@ -668,11 +667,10 @@ def run_pipeline(
         while i < total:
             step = steps[i]
             _persist_chain(steps, i)
-            chain_pct = 70.0 + (25.0 * i / max(total, 1))
-            report_progress(
-                phase=f"Chain {i + 1}/{total}",
-                percent=chain_pct,
-                detail=step.label,
+            step_pct = (100.0 * i / max(total, 1))
+            set_step(
+                percent=step_pct,
+                detail=f"Chain {i + 1}/{total}: {step.label}",
                 indeterminate=True,
             )
             log(f"--- Chain {i + 1}/{total}: {step.label} ---", "STEP")
@@ -725,6 +723,9 @@ def run_pipeline(
                 )
                 save_state({'Phase': 'AutoReboot', 'ChainIndex': i + 1, 'Reason': ar.reason})
                 log('Exiting for autonomous reboot; RunOnce continues One-Click.', 'OK')
+                set_phase("setup", "Reboot scheduled — RunOnce continues")
+                set_step(percent=100, detail=ar.reason, indeterminate=False, eta_seconds=0)
+                end_session(success=True)
                 return 3010
 
             if step.kind == 'iso_upgrade':
@@ -749,6 +750,7 @@ def run_pipeline(
                         }
                     )
                     log(f'Setup failed (exit {code}) — chain index not advanced', 'ERROR')
+                    end_session(success=False)
                     return code
 
                 save_state(
@@ -774,6 +776,9 @@ def run_pipeline(
                         'Mode': 'ONECLICK',
                     }
                 )
+                set_phase("setup", f"Windows Setup launched ({step.label})")
+                set_step(percent=100, detail="Waiting for reboot…", indeterminate=False, eta_seconds=0)
+                end_session(success=True)
                 return code
 
             i += 1
@@ -791,11 +796,16 @@ def run_pipeline(
                 'Mode': 'ONECLICK',
             }
         )
+        end_session(success=True)
         return 0
     except Exception as e:
         log(str(e), 'ERROR')
         try:
             write_migration_report(extra={'Result': 'FAILED', 'Exception': str(e), 'Mode': 'ONECLICK'})
+        except Exception:
+            pass
+        try:
+            end_session(success=False)
         except Exception:
             pass
         raise
