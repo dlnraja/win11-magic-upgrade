@@ -140,7 +140,9 @@ Boot layout changes use `engine/boot_safe.py`:
 
 1. **Preflight** — verify system disk #, firmware, BitLocker, C: free space; export BCD;
    snapshot ESP critical files; **full ESP/SRP partition backup** (file tree + optional WIM + metadata)
-2. **Native tiers** — cleanup → `bcdboot` → verified `diskpart` expand (never invent disk 0)
+2. **Native tiers** — cleanup → **smart partition planner** (in-place grow, smart
+   shrink C:/data, create in free space, GRUB preserve) → `bcdboot` → verified
+   `diskpart` expand (never invent disk 0)
 3. **Retries** — failed ESP/SRP expands re-run after restore
 4. **Guarantee bootable** — on success *or* failure intelligent ladder:
    **partition restore / dynamic regenerate** → BCD import → ESP file restore → `bcdboot` →
@@ -148,13 +150,17 @@ Boot layout changes use `engine/boot_safe.py`:
    **one** temporary PE path (WinRE first, else WinPE one-shot) → FreeDOS + GParted packages.
    Reboot only if Windows is verified **or** a confirmed one-shot PE is staged
    (`/boottore` or `/bootsequence` rc=0 — menu-only does not count).
-5. **Postflight** — ESP boot files + `{bootmgr}` + deep scorecard
-6. **Fallback** — stage **GParted Live** + **FreeDOS** media + guides (never auto-flash / auto-boot)
+5. **Postflight** — ESP boot files + `{bootmgr}` + deep scorecard + smart finish checks
+6. **Fallback** — stage **GParted Live** + smart move/grow scripts + GRUB repair notes +
+   **FreeDOS** media (never auto-flash / auto-boot)
 7. **Autodiag** — on persistent failure, sanitized GitHub Issue (+ optional PR) with restore facts only (no PII)
    - `%LOCALAPPDATA%\\Win11MagicUpgrade\\rescue\\`
    - `%LOCALAPPDATA%\\Win11MagicUpgrade\\partition-backups\\` (generations, LAST.txt)
-   - Desktop `Win11MagicUpgrade-GParted-Rescue.txt` / FreeDOS guide
+   - Desktop `Win11MagicUpgrade-GParted-Rescue.txt` / `GParted-Smart` / FreeDOS / GRUB guides
 8. Env:
+   - `MAGIC_SMART_PARTITION=0` skip intelligent planner
+   - `MAGIC_SMART_SHRINK_DATA=0` never shrink non-C: data volumes
+   - `MAGIC_GRUB_PRESERVE=0` skip Linux GRUB detection scripts
    - `MAGIC_GPARTED_FALLBACK=0` skip GParted ISO download
    - `MAGIC_FREEDOS_FALLBACK=0` skip FreeDOS staging
    - `MAGIC_PS_STORAGE_FALLBACK=0` skip PowerShell Storage expand

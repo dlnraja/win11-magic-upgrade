@@ -1264,6 +1264,18 @@ def prepare_partition_fallbacks(
     guide = write_gparted_rescue_guide(reason=reason, system_disk=system_disk, mode=mode)
     iso = download_gparted_iso()
     freedos = None
+    smart_scripts = None
+    try:
+        from .partition_smart import map_system_disk, plan_smart_layout, write_gparted_smart_scripts
+
+        layout = map_system_disk(system_disk)
+        plan = plan_smart_layout(
+            layout,
+            prefer_uefi=(str(mode).upper() in ("EFI", "UEFI", "GPT")),
+        )
+        smart_scripts = write_gparted_smart_scripts(plan, layout, reason=reason)
+    except Exception as e:
+        log(f"Smart GParted scripts: {e}", "WARN")
     try:
         from .boot_emergency import stage_freedos_rescue_media
 
@@ -1274,7 +1286,9 @@ def prepare_partition_fallbacks(
         "guide": str(guide),
         "iso": str(iso) if iso else None,
         "freedos": freedos,
+        "smart_gparted": smart_scripts,
         "tools": [
+            "smart-partition-planner",
             "partition-backup-restore",
             "dynamic-regenerate",
             "ps-storage",
@@ -1284,6 +1298,8 @@ def prepare_partition_fallbacks(
             "winre-ramdisk",
             "winpe-bcd-ramdisk",
             "gparted-live",
+            "gparted-smart-move-grow",
+            "grub-efi-repair",
             "freedos-live",
             "mbr2gpt",
         ],

@@ -19,7 +19,8 @@ SUPPORT_CHECKLIST = [
     ("Encryption", "Decrypt VeraCrypt system volume; remove leftover SetupConfig.ini."),
     ("Space", "Keep ~20 GB free on C:; ESP/SRP needs ~50 MB free (tool auto-fixes)."),
     ("ESP/MBR safety", "Tool backs up BCD before boot edits; refuses unknown disk # / locked BitLocker."),
-    ("GParted rescue", "If native expand fails: see Desktop Win11MagicUpgrade-GParted-Rescue.txt + %LOCALAPPDATA%\\Win11MagicUpgrade\\rescue\\"),
+    ("GParted rescue", "If native expand fails: Desktop Win11MagicUpgrade-GParted-Smart.txt + rescue\\repair_boot_after_gparted.cmd (never auto-run GParted)"),
+    ("GRUB / dual-boot", "If Linux EFI detected: Desktop Win11MagicUpgrade-GRUB-Repair.txt after partition move"),
     ("Reboot", "If pending reboot / 0xC1900107: reboot once, then rerun."),
     ("Logs", f"Send support: {SETUPERR} + Desktop Win11MagicUpgrade-MigrationReport.txt"),
 ]

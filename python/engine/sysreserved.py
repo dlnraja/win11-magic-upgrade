@@ -6,9 +6,9 @@ Strategy (safe, no third-party Partition Magic GUI required):
   1) Detect EFI (UEFI/GPT) vs System Reserved (BIOS/MBR)
   2) Mount and free space: Boot fonts, OEM firmware dumps, junk
   3) If still too small (< ~50 MB free or partition < 260 MB):
-     create a NEW larger ESP (or system partition) by shrinking C:,
-     run bcdboot to it, leave OS data untouched
-     (Partition-Magic-style outcome without moving mid-disk partitions)
+     intelligent planner (extend in-place / smart shrink / create),
+     then legacy shrink-C + new ESP, PS Storage, regenerate, GParted stage
+     (Partition-Magic-style outcome; GParted never auto-executed)
 """
 from __future__ import annotations
 
@@ -569,87 +569,122 @@ def inspect_and_fix_system_reserved(
         if need_expand:
             log(
                 f"Partition still tight (free={info['free_mb']:.1f} MB, size={info['total_mb']:.1f} MB) "
-                f"- expanding via new larger boot partition on disk #{disk_n}...",
+                f"- smart Partition-Magic planner then legacy expand on disk #{disk_n}...",
                 "WARN",
             )
             unmount_letter(mounted)
             mounted = None
 
-            if result["mode"] == "EFI" or uefi:
-                new_root = create_larger_esp(TARGET_ESP_MB, system_disk=disk_n)
-                if not new_root:
-                    log("EFI create failed - trying primary system partition fallback", "WARN")
-                    new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
-            else:
-                new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
-                if not new_root:
-                    log("MBR system create failed - trying EFI create fallback", "WARN")
+            # 0) Intelligent move/grow/shrink planner (extend in-place, smart shrink, GRUB-aware)
+            try:
+                from .partition_smart import run_smart_partition_magic
+
+                smart = run_smart_partition_magic(
+                    system_disk=disk_n,
+                    prefer_uefi=(result.get("mode") == "EFI" or uefi),
+                    target_mb=TARGET_ESP_MB,
+                )
+                result["smart_partition"] = {
+                    k: smart.get(k)
+                    for k in ("ok", "plan", "actions", "finish", "fallback", "gparted_plan")
+                }
+                result["actions"].extend(smart.get("actions") or [])
+                strat = ((smart.get("plan") or {}).get("strategy") or "")
+                mutated = strat in (
+                    "extend_boot",
+                    "shrink_c_then_create",
+                    "shrink_data_then_create",
+                    "create_in_free",
+                )
+                if smart.get("ok") and mutated:
+                    result["expanded"] = True
+                    result["ok"] = True
+                    result["actions"].append("expand_via_smart_partition")
+                    log(f"Smart partition planner succeeded ({strat})", "OK")
+                elif strat == "gparted_move":
+                    result["actions"].append("smart_needs_gparted_move")
+                    if smart.get("fallback") or smart.get("fallback_media"):
+                        result["fallback"] = smart.get("fallback_media") or smart.get("fallback")
+            except Exception as e:
+                log(f"Smart partition planner failed: {e}", "WARN")
+                result["actions"].append(f"smart_partition_fail:{type(e).__name__}")
+
+            if not result.get("ok"):
+                if result["mode"] == "EFI" or uefi:
                     new_root = create_larger_esp(TARGET_ESP_MB, system_disk=disk_n)
+                    if not new_root:
+                        log("EFI create failed - trying primary system partition fallback", "WARN")
+                        new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
+                else:
+                    new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
+                    if not new_root:
+                        log("MBR system create failed - trying EFI create fallback", "WARN")
+                        new_root = create_larger_esp(TARGET_ESP_MB, system_disk=disk_n)
 
-            if new_root:
-                result["expanded"] = True
-                t, f = _mb(new_root + "\\")
-                result["free_mb"] = f
-                result["total_mb"] = t
-                result["actions"].append(f"Created larger boot partition {new_root} ({t:.0f} MB)")
-                unmount_letter(new_root)
-                log("Larger boot partition created. Reboot once before upgrade if firmware needs refresh.", "OK")
-                result["ok"] = True
-            else:
-                log("Expand failed — trying PowerShell Storage (non-diskpart) then GParted rescue", "ERROR")
-                result["ok"] = False
-                result["actions"].append("expand_failed")
-                # Non-diskpart fallback before GParted
-                try:
-                    from .boot_emergency import ps_storage_create_esp
-
-                    ps = ps_storage_create_esp(
-                        system_disk=disk_n,
-                        prefer_uefi=(result.get("mode") == "EFI" or uefi),
-                    )
-                    result["ps_storage"] = {k: ps.get(k) for k in ("ok", "letter", "actions")}
-                    result["actions"].extend(ps.get("actions") or [])
-                    if ps.get("ok"):
-                        result["expanded"] = True
-                        result["ok"] = True
-                        result["actions"].append("expand_via_ps_storage")
-                        log("ESP/SRP expanded via PowerShell Storage (diskpart bypass)", "OK")
-                except Exception as e:
-                    log(f"PS Storage expand fallback failed: {e}", "WARN")
-                    result["actions"].append(f"ps_storage_fail:{type(e).__name__}")
-
-                if not result.get("ok"):
+                if new_root:
+                    result["expanded"] = True
+                    t, f = _mb(new_root + "\\")
+                    result["free_mb"] = f
+                    result["total_mb"] = t
+                    result["actions"].append(f"Created larger boot partition {new_root} ({t:.0f} MB)")
+                    unmount_letter(new_root)
+                    log("Larger boot partition created. Reboot once before upgrade if firmware needs refresh.", "OK")
+                    result["ok"] = True
+                else:
+                    log("Expand failed — trying PowerShell Storage (non-diskpart) then GParted rescue", "ERROR")
+                    result["ok"] = False
+                    result["actions"].append("expand_failed")
+                    # Non-diskpart fallback before GParted
                     try:
-                        # Dynamic regenerate from last partition backup before GParted
-                        from .boot_partition_backup import dynamic_regenerate_boot_partition
+                        from .boot_emergency import ps_storage_create_esp
 
-                        regen = dynamic_regenerate_boot_partition(
+                        ps = ps_storage_create_esp(
+                            system_disk=disk_n,
                             prefer_uefi=(result.get("mode") == "EFI" or uefi),
-                            system_disk=disk_n,
                         )
-                        result["dynamic_regenerate"] = {
-                            k: regen.get(k) for k in ("ok", "mode", "letter", "actions")
-                        }
-                        result["actions"].extend(regen.get("actions") or [])
-                        if regen.get("ok"):
-                            result["ok"] = True
+                        result["ps_storage"] = {k: ps.get(k) for k in ("ok", "letter", "actions")}
+                        result["actions"].extend(ps.get("actions") or [])
+                        if ps.get("ok"):
                             result["expanded"] = True
-                            result["actions"].append("expand_via_dynamic_regenerate")
-                            log("Boot partition dynamically regenerated from backup", "OK")
+                            result["ok"] = True
+                            result["actions"].append("expand_via_ps_storage")
+                            log("ESP/SRP expanded via PowerShell Storage (diskpart bypass)", "OK")
                     except Exception as e:
-                        log(f"Dynamic regenerate failed: {e}", "WARN")
-                        result["actions"].append(f"dynamic_regen_fail:{type(e).__name__}")
+                        log(f"PS Storage expand fallback failed: {e}", "WARN")
+                        result["actions"].append(f"ps_storage_fail:{type(e).__name__}")
 
-                if not result.get("ok") and _prepare_fallback:
-                    try:
-                        result["fallback"] = _prepare_fallback(
-                            reason="diskpart_and_ps_storage_esp_mbr_expand_failed",
-                            system_disk=disk_n,
-                            mode=str(result.get("mode") or ("EFI" if uefi else "SystemReserved")),
-                        )
-                        result["actions"].append("gparted_rescue_staged")
-                    except Exception as e:
-                        log(f"GParted rescue staging failed: {e}", "WARN")
+                    if not result.get("ok"):
+                        try:
+                            # Dynamic regenerate from last partition backup before GParted
+                            from .boot_partition_backup import dynamic_regenerate_boot_partition
+
+                            regen = dynamic_regenerate_boot_partition(
+                                prefer_uefi=(result.get("mode") == "EFI" or uefi),
+                                system_disk=disk_n,
+                            )
+                            result["dynamic_regenerate"] = {
+                                k: regen.get(k) for k in ("ok", "mode", "letter", "actions")
+                            }
+                            result["actions"].extend(regen.get("actions") or [])
+                            if regen.get("ok"):
+                                result["ok"] = True
+                                result["expanded"] = True
+                                result["actions"].append("expand_via_dynamic_regenerate")
+                                log("Boot partition dynamically regenerated from backup", "OK")
+                        except Exception as e:
+                            log(f"Dynamic regenerate failed: {e}", "WARN")
+                            result["actions"].append(f"dynamic_regen_fail:{type(e).__name__}")
+
+                    if not result.get("ok") and _prepare_fallback:
+                        try:
+                            result["fallback"] = _prepare_fallback(
+                                reason="diskpart_and_ps_storage_esp_mbr_expand_failed",
+                                system_disk=disk_n,
+                                mode=str(result.get("mode") or ("EFI" if uefi else "SystemReserved")),
+                            )
+                            result["actions"].append("gparted_rescue_staged")
+                        except Exception as e:
+                            log(f"GParted rescue staging failed: {e}", "WARN")
         else:
             log(f"ESP/SRP has enough free space ({info['free_mb']:.1f} MB) after cleanup", "OK")
             result["ok"] = True

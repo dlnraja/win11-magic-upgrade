@@ -150,12 +150,18 @@ Windows native UEFI boot requires **firmware bitness == OS bitness**. The app:
 
 Classic setup failure when the EFI System Partition (UEFI) or System Reserved (BIOS/MBR) has too little free space for Windows 11 feature updates.
 
-Safe strategy (no third-party Partition Magic):
+Safe strategy (no third-party Partition Magic GUI auto-run):
 
 1. Mount ESP (`mountvol /s`) or assign a letter to System Reserved  
 2. Free space: `EFI\Microsoft\Boot\Fonts\*.ttf`, OEM firmware folders under `EFI\<OEM>\`, temp/logs  
-3. If still under ~50 MB free or partition under ~260 MB: shrink `C:` slightly, create a **new ~512 MB** ESP (or MBR system partition), run `bcdboot` — OS data kept; old ESP left as fallback  
-4. Runs automatically before each upgrade step; also GUI **Fix ESP/SRP** / `--cli --srp`
+3. If still under ~50 MB free or partition under ~260 MB — **smart planner** (`partition_smart.py`):
+   - Grow ESP/SRP in-place into adjacent free space when possible  
+   - Else smart shrink `C:` (or optional large data NTFS) and create ~512 MB boot partition  
+   - Fix Windows boot (`bcdboot` / BCD heal); preserve Linux GRUB EFI + repair guide  
+   - If free space is not adjacent (true move needed): stage GParted/qparted smart scripts + ISO (never auto-boot)  
+   - Finish scorecard: layout / size / postflight / deep boot checks  
+4. Legacy fallbacks: diskpart create, PS Storage, partition backup regenerate, FreeDOS  
+5. Runs automatically before each upgrade step; also GUI **Fix ESP/SRP** / `--cli --srp`
 
 ## Hard non-bypassable limits
 
