@@ -98,7 +98,10 @@ if (Test-Path $signScript) {
 $pkg = Join-Path $Root "build\package_release.ps1"
 if (Test-Path $pkg) {
     Write-Host "Packaging ZIP + SHA256SUMS for release downloads..." -ForegroundColor Cyan
-    powershell -NoProfile -ExecutionPolicy Bypass -File $pkg -DistDir $dist
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $pkg -DistDir $dist
+    if ($LASTEXITCODE -ne 0) { throw "package_release.ps1 failed with exit $LASTEXITCODE" }
+    $zips = Get-ChildItem -LiteralPath $dist -Filter "*.zip" -ErrorAction SilentlyContinue
+    if (-not $zips) { throw "No ZIP produced in dist - Chrome-friendly package missing" }
 }
 
 Write-Host ""
