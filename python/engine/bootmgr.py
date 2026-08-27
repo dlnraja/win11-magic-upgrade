@@ -26,16 +26,22 @@ IMAGE_FILE_MACHINE_I386 = 0x014C
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
-    r = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return 124, f"TIMEOUT after {timeout}s"
+    except Exception as e:
+        return 1, str(e)
 
 
 def pe_machine(path: Path) -> int | None:

@@ -28,17 +28,24 @@ MIN_SIZE_MB_COMFORTABLE = 260
 LETTER_CANDIDATES = ["Y", "X", "W", "V", "U", "S"]
 
 
-def _run(cmd: list[str], input_text: str | None = None) -> tuple[int, str]:
-    r = subprocess.run(
-        cmd,
-        input=input_text,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+def _run(cmd: list[str], input_text: str | None = None, timeout: int = 300) -> tuple[int, str]:
+    try:
+        r = subprocess.run(
+            cmd,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        log(f"Command timed out ({timeout}s): {cmd[0] if cmd else '?'}", "ERROR")
+        return 124, "TIMEOUT"
+    except Exception as e:
+        return 1, str(e)
 
 
 def _diskpart(script: str) -> str:
@@ -82,6 +89,7 @@ def mount_esp(letter: str | None = None) -> str | None:
     code, out = _run(["mountvol", f"{letter}:", "/s"])
     if code != 0 or not Path(f"{letter}:\\").exists():
         log(f"mountvol {letter}: /s failed: {out}", "WARN")
+        _run(["mountvol", f"{letter}:", "/d"])
         return None
     log(f"ESP mounted at {letter}:", "OK")
     return f"{letter}:"
@@ -231,8 +239,12 @@ def cleanup_boot_volume(root: str) -> dict:
 def unmount_letter(letter_root: str) -> None:
     L = letter_root.rstrip("\\").rstrip(":")
     _run(["mountvol", f"{L}:", "/d"])
-    # Also diskpart remove if assigned that way
-    _diskpart(f"select volume {L}\nremove letter={L}\nexit\n")
+    # Only remove letter via diskpart if volume looks like EFI/System
+    detail = _diskpart(f"select volume {L}\ndetail volume\nexit\n")
+    if re.search(r"\b(EFI|System|Reserved|ESP)\b", detail or "", re.I) or "FAT32" in (detail or "").upper():
+        _diskpart(f"select volume {L}\nremove letter={L}\nexit\n")
+    else:
+        log(f"Skip diskpart remove letter {L}: (not clearly system/EFI volume)", "INFO")
 
 
 def create_larger_esp(size_mb: int = TARGET_ESP_MB) -> str | None:
@@ -246,26 +258,19 @@ def create_larger_esp(size_mb: int = TARGET_ESP_MB) -> str | None:
     if not letter:
         return None
 
-    # Shrink C
+    # Shrink C — verify success before create
     shrink = _diskpart(
         f"select volume C\n"
         f"shrink desired={size_mb} minimum={max(300, size_mb - 50)}\n"
         f"exit\n"
     )
     log(f"shrink C: {shrink.splitlines()[-1] if shrink else 'n/a'}")
+    if shrink and not re.search(r"successfully|complete|shrunk", shrink, re.I):
+        # diskpart English/localized: still proceed only if no explicit error
+        if re.search(r"error|failed|denied|not enough", shrink, re.I):
+            log(f"C: shrink failed — abort ESP expand: {shrink[-300:]}", "ERROR")
+            return None
 
-    # Create EFI partition in the free space (at end of C - UEFI can boot from any ESP)
-    script = (
-        "select disk 0\n"
-        "list partition\n"
-        f"create partition efi size={size_mb}\n"
-        "format fs=fat32 quick label=ESP\n"
-        f"assign letter={letter}\n"
-        "exit\n"
-    )
-    # If disk 0 is wrong, try to detect system disk from C:
-    out = _diskpart("list volume\nexit\n")
-    # Prefer selecting the disk that contains C:
     detail = _diskpart("select volume C\ndetail volume\nexit\n")
     dm = re.search(r"Disk\s+#?\s*(\d+)", detail, re.I)
     disk_n = dm.group(1) if dm else "0"
@@ -278,6 +283,9 @@ def create_larger_esp(size_mb: int = TARGET_ESP_MB) -> str | None:
     )
     create_out = _diskpart(script)
     log(create_out[-500:] if create_out else "create done")
+    if create_out and re.search(r"error|failed|denied", create_out, re.I):
+        log(f"EFI create failed: {create_out[-300:]}", "ERROR")
+        return None
 
     root = f"{letter}:"
     if not Path(root + "\\").exists():
@@ -286,11 +294,10 @@ def create_larger_esp(size_mb: int = TARGET_ESP_MB) -> str | None:
 
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
-    code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "UEFI"])
+    code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "UEFI"], timeout=180)
     log(f"bcdboot -> {code}: {bout[:300]}")
     if code != 0 and "successfully" not in bout.lower():
-        # Try ALL
-        code2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"])
+        code2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
         log(f"bcdboot ALL -> {code2}: {bout2[:300]}")
         if code2 != 0:
             log("bcdboot failed on new ESP - old ESP still present, boot should remain OK", "WARN")
@@ -336,7 +343,10 @@ def create_larger_system_reserved_mbr(size_mb: int = TARGET_ESP_MB) -> str | Non
 def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
     """
     Main entry: fix SRP/ESP space issues for Windows feature upgrades.
+    Idempotent: skips re-expand if a prior successful expand is recorded.
     """
+    import json
+
     log("=== Fix System Reserved / EFI partition (setup update error) ===", "STEP")
     result = {
         "ok": False,
@@ -346,6 +356,20 @@ def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
         "expanded": False,
         "actions": [],
     }
+
+    # Idempotency: do not shrink C: repeatedly
+    prior_path = STATE_DIR / "srp-fix.json"
+    prior_expanded = False
+    if prior_path.exists():
+        try:
+            prev = json.loads(prior_path.read_text(encoding="utf-8"))
+            prior_expanded = bool(prev.get("expanded"))
+            if prior_expanded and not force_expand:
+                log("Prior ESP/SRP expand recorded — skip re-expand (idempotent)", "OK")
+                force_expand = False
+                result["actions"].append("skip_reexpand_prior")
+        except Exception:
+            pass
 
     uefi = _is_uefi()
     mounted = None
@@ -357,7 +381,6 @@ def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
             result["mode"] = "SystemReserved"
             mounted = find_system_reserved_letter()
             if not mounted and _is_uefi() is False:
-                # Some "BIOS" still have EFI if GPT converted partially
                 mounted = mount_esp()
                 if mounted:
                     result["mode"] = "EFI"
@@ -372,14 +395,22 @@ def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
         result["total_mb"] = info["total_mb"]
         result["actions"].extend(info["actions"])
 
-        need_expand = force_expand or info["free_mb"] < MIN_FREE_MB or info["total_mb"] < MIN_SIZE_MB_COMFORTABLE
+        # Stale Panther logs alone must not force expand if space is already OK
+        space_tight = info["free_mb"] < MIN_FREE_MB or info["total_mb"] < MIN_SIZE_MB_COMFORTABLE
+        need_expand = space_tight or (force_expand and not prior_expanded and space_tight)
+        # Only honor force_expand when space is actually tight OR no prior expand
+        if force_expand and not prior_expanded and not space_tight:
+            log("Historical SRP error in logs but ESP space OK after cleanup — skip expand", "OK")
+            need_expand = False
+        if prior_expanded and not space_tight:
+            need_expand = False
+
         if need_expand:
             log(
                 f"Partition still tight (free={info['free_mb']:.1f} MB, size={info['total_mb']:.1f} MB) "
                 f"- expanding via new larger boot partition...",
                 "WARN",
             )
-            # Unmount before creating new partition
             unmount_letter(mounted)
             mounted = None
 
@@ -402,17 +433,20 @@ def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
                 result["actions"].append(f"Created larger boot partition {new_root} ({t:.0f} MB)")
                 unmount_letter(new_root)
                 log("Larger boot partition created. Reboot once before upgrade if firmware needs refresh.", "OK")
+                result["ok"] = True
             else:
-                log("Expand failed - cleanup may still be enough for setup", "WARN")
+                log("Expand failed — ESP/SRP still insufficient", "ERROR")
+                result["ok"] = False
+                result["actions"].append("expand_failed")
         else:
             log(f"ESP/SRP has enough free space ({info['free_mb']:.1f} MB) after cleanup", "OK")
+            result["ok"] = True
+            if prior_expanded:
+                result["expanded"] = True
 
-        result["ok"] = True
         try:
-            import json
-
             STATE_DIR.mkdir(parents=True, exist_ok=True)
-            (STATE_DIR / "srp-fix.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+            prior_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         except Exception:
             pass
         return result

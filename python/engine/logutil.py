@@ -300,4 +300,13 @@ def save_state(patch: dict[str, Any]) -> None:
     cur.update(patch)
     cur["UpdatedAt"] = datetime.now().isoformat()
     _ensure_dirs()
-    STATE_FILE.write_text(json.dumps(cur, indent=2, default=str), encoding="utf-8")
+    tmp = STATE_FILE.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(cur, indent=2, default=str), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except OSError as e:
+        log(f"State save failed: {e}", "ERROR")
+        try:
+            STATE_FILE.write_text(json.dumps(cur, indent=2, default=str), encoding="utf-8")
+        except OSError as e2:
+            log(f"State save fallback failed: {e2}", "ERROR")

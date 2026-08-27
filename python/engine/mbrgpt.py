@@ -18,30 +18,42 @@ CODES = {
 }
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
-    r = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    out = ((r.stdout or "") + (r.stderr or "")).strip()
-    return r.returncode, out
+def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        return r.returncode, out
+    except subprocess.TimeoutExpired:
+        return 124, f"TIMEOUT after {timeout}s"
+    except Exception as e:
+        return 1, str(e)
 
 
 def _diskpart(script: str) -> str:
-    r = subprocess.run(
-        ["diskpart"],
-        input=script,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    return ((r.stdout or "") + (r.stderr or "")).strip()
+    try:
+        r = subprocess.run(
+            ["diskpart"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return ((r.stdout or "") + (r.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT"
+    except Exception as e:
+        return str(e)
 
 
 def suspend_bitlocker() -> None:

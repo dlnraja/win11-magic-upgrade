@@ -46,7 +46,32 @@ def _runonce_register() -> None:
     log("RunOnce registered: continue chain after reboot", "OK")
 
 
+def _runonce_unregister() -> None:
+    subprocess.run(
+        [
+            "reg",
+            "delete",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+            "/v",
+            "Win11MagicUpgrade",
+            "/f",
+        ],
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    log("RunOnce cleared", "OK")
+
+
+# Setup exit codes that mean "launched / reboot needed" rather than hard failure
+SETUP_OK_CODES = {0, 3010, 3011, -2147021886}
+
+
 def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
+    """
+    Launch Setup and return promptly.
+    Waiting on setup.exe for hours freezes the GUI worker — instead we confirm
+    the process started and let Windows Setup manage its own reboot cycle.
+    """
     root = Path(setup_root)
     setup = root / "setup.exe"
     prep = root / "sources" / "setupprep.exe"
@@ -77,7 +102,22 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     cmd = [str(exe), *args]
     log(" ".join(cmd), "INFO")
     save_state({"Phase": "SetupRunning", "Cmd": cmd})
-    return subprocess.Popen(cmd).wait()
+    try:
+        # Don't wait forever (GUI freeze). Confirm process starts, then return.
+        proc = subprocess.Popen(cmd)
+    except OSError as e:
+        raise RuntimeError(f"Failed to launch Setup: {e}") from e
+
+    # Brief settle: if process dies instantly, capture exit code as failure
+    try:
+        code = proc.wait(timeout=8)
+        log(f"Setup exited quickly with code {code}", "WARN" if code not in SETUP_OK_CODES else "OK")
+        save_state({"Phase": "SetupExitedEarly", "SetupPid": proc.pid, "ExitCode": code})
+        return int(code)
+    except subprocess.TimeoutExpired:
+        save_state({"Phase": "SetupRunning", "SetupPid": proc.pid})
+        log(f"Setup running (pid={proc.pid}) — chain will resume after reboot via RunOnce", "OK")
+        return 0
 
 
 def _persist_chain(steps: list[ChainStep], index: int) -> None:
@@ -457,11 +497,14 @@ def run_pipeline(
             start_index = _next_pending_index(steps, 0, r)
 
         _persist_chain(steps, start_index)
+        has_srp_step = any(s.kind == 'fix_srp' for s in steps)
         try:
             apply_migration_patches(
                 autonomous=True,
                 allow_auto_reboot=not resume,
                 system_disk=getattr(r, 'disk_number', None),
+                resume=resume,
+                skip_srp=has_srp_step,  # chain owns SRP — avoid double shrink
             )
         except AutonomousRebootRequired as ar:
             write_migration_report(
@@ -533,11 +576,34 @@ def run_pipeline(
                 return 3010
 
             if step.kind == 'iso_upgrade':
+                code = int(result if result is not None else -1)
+                if code not in SETUP_OK_CODES:
+                    save_state(
+                        {
+                            'Phase': 'SetupFailed',
+                            'ChainIndex': i,  # do NOT advance — retry same step
+                            'LastExitCode': code,
+                            'LastStep': step.as_dict(),
+                        }
+                    )
+                    _runonce_unregister()
+                    write_migration_report(
+                        extra={
+                            'Result': 'SETUP_FAILED',
+                            'ExitCode': code,
+                            'Step': step.label,
+                            'Chain': format_chain(steps),
+                        }
+                    )
+                    log(f'Setup failed (exit {code}) — chain index not advanced', 'ERROR')
+                    return code
+
                 save_state(
                     {
                         'Phase': 'WaitingReboot',
                         'ChainIndex': i + 1,
                         'LastStep': step.as_dict(),
+                        'LastExitCode': code,
                     }
                 )
                 log(
@@ -545,7 +611,6 @@ def run_pipeline(
                     'After reboot the tool continues the next step automatically (RunOnce).',
                     'OK',
                 )
-                code = int(result or 0)
                 write_migration_report(
                     extra={
                         'Result': 'SETUP_LAUNCHED',

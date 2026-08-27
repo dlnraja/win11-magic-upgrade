@@ -214,7 +214,7 @@ def scan_compatdata_blockers() -> None:
         log("No CompatData BlockMigration hits in local Panther/appraiser caches", "OK")
 
 
-def reset_windows_update_components() -> None:
+def reset_windows_update_components(*, rename_catroot2: bool = False) -> None:
     """Mitigate 0x80070002 / 0x80240034 / 0x80070422 / stuck WU downloads."""
     log("Resetting Windows Update components (safe soft reset)...", "STEP")
     services = ["wuauserv", "bits", "cryptsvc", "dosvc", "UsoSvc"]
@@ -225,33 +225,35 @@ def reset_windows_update_components() -> None:
     for rel in (
         windir / "SoftwareDistribution" / "Download",
         windir / "SoftwareDistribution" / "DataStore" / "Logs",
-        windir / "System32" / "catroot2",
     ):
         if not rel.exists():
             continue
         try:
-            if rel.name.lower() == "catroot2":
-                # rename catroot2 like MS script
+            for child in list(rel.iterdir())[:2000]:
+                try:
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+                    elif child.is_dir():
+                        shutil.rmtree(child, ignore_errors=True)
+                except Exception:
+                    pass
+            log(f"Cleared {rel}", "OK")
+        except Exception as e:
+            log(f"WU cleanup {rel.name}: {e}", "INFO")
+
+    if rename_catroot2:
+        rel = windir / "System32" / "catroot2"
+        if rel.exists():
+            try:
                 bak = rel.with_name("catroot2.bak-magic")
                 if bak.exists():
                     shutil.rmtree(bak, ignore_errors=True)
-                try:
-                    rel.rename(bak)
-                    log("Renamed catroot2 -> catroot2.bak-magic", "OK")
-                except Exception:
-                    pass
-            else:
-                for child in list(rel.iterdir())[:2000]:
-                    try:
-                        if child.is_file():
-                            child.unlink(missing_ok=True)
-                        elif child.is_dir():
-                            shutil.rmtree(child, ignore_errors=True)
-                    except Exception:
-                        pass
-                log(f"Cleared {rel}", "OK")
-        except Exception as e:
-            log(f"WU cleanup {rel.name}: {e}", "INFO")
+                rel.rename(bak)
+                log("Renamed catroot2 -> catroot2.bak-magic", "OK")
+            except Exception as e:
+                log(f"catroot2 rename skipped: {e}", "INFO")
+    else:
+        log("Skip catroot2 rename (stability)", "OK")
 
     # Ensure services are set to auto/manual and start
     for svc, start in (("wuauserv", "demand"), ("bits", "delayed-auto"), ("cryptsvc", "auto")):
@@ -383,7 +385,7 @@ def expand_prior_error_scan() -> None:
             pass
 
 
-def apply_extra_error_fixes() -> None:
+def apply_extra_error_fixes(*, soft_wu_reset: bool = True) -> None:
     log("=== Extra error fixes (SetupDiag / MS Support catalog) ===", "STEP")
     expand_prior_error_scan()
     detect_safe_or_audit_mode()
@@ -397,5 +399,8 @@ def apply_extra_error_fixes() -> None:
     stop_extra_blocker_services()
     ensure_critical_services()
     cleanup_delivery_optimization()
-    reset_windows_update_components()
+    if soft_wu_reset:
+        reset_windows_update_components(rename_catroot2=False)
+    else:
+        log("Skip WU soft reset on resume (stability)", "OK")
     log("Extra error fixes done.", "OK")

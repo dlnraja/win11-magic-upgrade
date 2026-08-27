@@ -273,13 +273,14 @@ class App(tk.Tk):
                     code = run_pipeline(sink, quiet=True)
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
                 # Setup launched / auto-reboot = in progress, not a failure dialog
+                SETUP_OK = {0, 3010, 3011}
                 if code == 3010:
                     msg = self.t.get(
                         "done_reboot",
                         "Reboot scheduled. Chain resumes automatically (RunOnce).",
                     )
                     self.after(0, lambda: messagebox.showinfo(title, msg))
-                elif action == "oneclick" and code != 0:
+                elif action == "oneclick" and code in SETUP_OK:
                     msg = self.t.get(
                         "done_setup",
                         "Windows Setup launched. PC will reboot; upgrade continues automatically.",

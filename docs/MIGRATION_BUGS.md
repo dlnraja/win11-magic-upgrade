@@ -86,7 +86,18 @@ One-Click always installs the preventive pack **then** applies runtime remediati
 
 Inventory: `%LOCALAPPDATA%\Win11MagicUpgrade\compat-engine.json`
 
-### Autonomous One-Click (v1.6+)
+### Stability hardening (v1.8+)
+
+| Guard | Detail |
+|-------|--------|
+| Resume-safe | Never delete live `$WINDOWS.~BT` during `--resume` / active Setup |
+| Chain index | Setup failure does **not** advance ChainIndex; RunOnce cleared |
+| ESP expand | Idempotent — no repeated C: shrink; expand failure sets `ok=False` |
+| Reboot loop | Pending reboot auto-reboot runs once (`PendingRebootHandled`) |
+| Disk offline | Skipped if system disk unknown |
+| Setup launch | Non-blocking (no multi-hour GUI freeze); early exit codes checked |
+| Timeouts | diskpart / sc / bcdboot helpers use timeouts |
+| State file | Atomic write via `.tmp` + replace |
 
 | Behavior | Detail |
 |----------|--------|

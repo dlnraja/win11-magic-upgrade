@@ -13,7 +13,7 @@ from pathlib import Path
 from .logutil import STATE_DIR, log, save_state
 
 
-def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
+def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
     try:
         r = subprocess.run(
             cmd,
@@ -25,6 +25,8 @@ def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return 124, f"TIMEOUT after {timeout}s"
     except Exception as e:
         return 1, str(e)
 
@@ -130,10 +132,11 @@ def dismount_removable_volumes() -> list[str]:
 def offline_secondary_fixed_disks(system_disk: int | None = None) -> int:
     """
     Offline non-system fixed disks to avoid 0x80070002-0x20009 style Setup confusion.
-    Safety: never offline disk 0 if system_disk unknown; never offline the boot disk.
+    Safety: refuse if system_disk unknown; never offline the boot/system disk.
     """
     if system_disk is None:
-        system_disk = 0
+        log("system_disk unknown — skipping secondary disk offline (safety)", "WARN")
+        return 0
     # List disks via diskpart
     script = "list disk\n"
     tmp = STATE_DIR / "list-disk.txt"
@@ -145,8 +148,6 @@ def offline_secondary_fixed_disks(system_disk: int | None = None) -> int:
     for n in sorted(set(nums)):
         if n == int(system_disk):
             continue
-        body = f"select disk {n}\nonline disk\ndetail disk\n"
-        # Only offline if Online and not containing system/boot (heuristic: skip if "Boot" or "System" in detail)
         detail_script = STATE_DIR / f"detail-disk-{n}.txt"
         detail_script.write_text(f"select disk {n}\ndetail disk\n", encoding="utf-8")
         _, detail = _run(["diskpart", "/s", str(detail_script)])

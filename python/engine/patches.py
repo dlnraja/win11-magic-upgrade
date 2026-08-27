@@ -50,7 +50,7 @@ ERROR_PATTERNS = (
 )
 
 
-def _run(cmd: list[str]) -> str:
+def _run(cmd: list[str], timeout: int = 180) -> str:
     try:
         r = subprocess.run(
             cmd,
@@ -58,9 +58,12 @@ def _run(cmd: list[str]) -> str:
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return ((r.stdout or "") + (r.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return f"TIMEOUT after {timeout}s"
     except Exception as e:
         return str(e)
 
@@ -307,7 +310,33 @@ def stop_risky_services() -> None:
             _run(["sc", "stop", svc])
 
 
-def clear_upgrade_leftovers() -> None:
+def clear_upgrade_leftovers(*, force: bool = False) -> None:
+    """
+    Remove stale upgrade staging folders.
+    NEVER delete $WINDOWS.~BT while Setup/resume is in progress.
+    """
+    from .logutil import load_state
+
+    state = load_state()
+    phase = str(state.get("Phase") or "")
+    if not force and phase in ("SetupRunning", "WaitingReboot", "AutoReboot", "PendingRebootCycle"):
+        log(f"Skip clearing upgrade leftovers (phase={phase})", "OK")
+        return
+    bt = Path(r"C:\$WINDOWS.~BT")
+    if not force and bt.exists():
+        # Live Setup often holds files under ~BT — only clear clearly stale leftovers
+        act = bt / "Sources" / "Panther" / "setupact.log"
+        try:
+            if act.exists():
+                import time
+
+                age_h = (time.time() - act.stat().st_mtime) / 3600
+                if age_h < 6:
+                    log("Skip deleting $WINDOWS.~BT (recent setupact — Setup may be active)", "WARN")
+                    return
+        except Exception:
+            pass
+
     for junk in (
         r"C:\$WINDOWS.~BT",
         r"C:\$Windows.~WS",
@@ -317,7 +346,7 @@ def clear_upgrade_leftovers() -> None:
     ):
         if Path(junk).exists():
             log(f"Removing leftover {junk}", "WARN")
-            _run(["cmd", "/c", f'rmdir /s /q "{junk}"'])
+            _run(["cmd", "/c", f'rmdir /s /q "{junk}"'], timeout=300)
 
 
 def free_space_helpers() -> float:
@@ -450,6 +479,8 @@ def apply_migration_patches(
     autonomous: bool = True,
     allow_auto_reboot: bool = False,
     system_disk: int | None = None,
+    resume: bool = False,
+    skip_srp: bool = False,
 ) -> None:
     log("=== Migration patches (runtime remediation) ===", "STEP")
 
@@ -469,7 +500,7 @@ def apply_migration_patches(
     check_problem_devices()
     audit_filter_drivers()
 
-    if autonomous:
+    if autonomous and not resume:
         try:
             from .autonomy import apply_autonomous_remediations
 
@@ -484,13 +515,14 @@ def apply_migration_patches(
     log("Disconnecting mapped network drives...", "STEP")
     _run(["net", "use", "*", "/delete", "/y"])
 
-    stop_risky_services()
+    if not resume:
+        stop_risky_services()
     suspend_bitlocker_if_needed()
-    clear_upgrade_leftovers()
+    clear_upgrade_leftovers(force=False)
     free_space_helpers()
     clear_appraiser_cache()
     needs_heal = quick_component_health()
-    if needs_heal:
+    if needs_heal and not resume:
         try:
             from .enrich import dism_component_cleanup_and_heal
 
@@ -502,7 +534,7 @@ def apply_migration_patches(
     try:
         from .errfix import apply_extra_error_fixes
 
-        apply_extra_error_fixes()
+        apply_extra_error_fixes(soft_wu_reset=not resume)
     except Exception as e:
         log(f"Extra error fixes skipped: {e}", "WARN")
 
@@ -517,17 +549,18 @@ def apply_migration_patches(
     if free < 12:
         raise RuntimeError(f"Not enough free disk space ({free:.1f} GB). Need ~20 GB.")
 
-    # Always preempt "system reserved partition" upgrade failures
-    try:
-        from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
+    # SRP: skip in prep when chain will run fix_srp (avoid double shrink)
+    if not skip_srp:
+        try:
+            from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
 
-        force = scan_logs_for_srp_error()
-        srp = inspect_and_fix_system_reserved(force_expand=force)
-        if isinstance(srp, dict) and srp.get("ok") is False:
-            log("SRP/ESP fix reported failure — retrying with force expand", "WARN")
-            srp = inspect_and_fix_system_reserved(force_expand=True)
-    except Exception as e:
-        log(f"System Reserved / EFI fix skipped: {e}", "WARN")
+            force = scan_logs_for_srp_error() and not resume
+            srp = inspect_and_fix_system_reserved(force_expand=force)
+            if isinstance(srp, dict) and srp.get("ok") is False:
+                log("SRP/ESP fix reported failure — retrying with force expand", "WARN")
+                srp = inspect_and_fix_system_reserved(force_expand=True)
+        except Exception as e:
+            log(f"System Reserved / EFI fix skipped: {e}", "WARN")
 
     # Align Boot Manager bitness when OS is x64 but ESP still has IA32 boot files
     try:
@@ -550,10 +583,26 @@ def apply_migration_patches(
         log(f"Boot Manager smart fix skipped: {e}", "WARN")
 
     if pending and allow_auto_reboot:
+        from .logutil import load_state, save_state
         from .autonomy import schedule_reboot
 
-        log("Pending reboot detected — scheduling autonomous reboot then resume", "STEP")
-        schedule_reboot(seconds=40, reason="Win11MagicUpgrade pending reboot prep")
-        raise AutonomousRebootRequired("pending_reboot")
+        st = load_state()
+        if st.get("PendingRebootHandled"):
+            log(
+                "Pending reboot marker still set after prior auto-reboot — continue without looping",
+                "WARN",
+            )
+        else:
+            save_state({"PendingRebootHandled": True, "Phase": "PendingRebootCycle"})
+            log("Pending reboot detected — scheduling autonomous reboot then resume", "STEP")
+            schedule_reboot(seconds=40, reason="Win11MagicUpgrade pending reboot prep")
+            raise AutonomousRebootRequired("pending_reboot")
+    elif not pending:
+        try:
+            from .logutil import save_state
+
+            save_state({"PendingRebootHandled": False})
+        except Exception:
+            pass
 
     log("Migration patches done.", "OK")
