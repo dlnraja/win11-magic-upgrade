@@ -1,4 +1,4 @@
-# CI/CD antivirus trust — VirusTotal + Kaspersky OpenTIP (Release workflow only).
+# CI/CD antivirus trust - VirusTotal + Kaspersky OpenTIP (Release workflow only).
 # Does NOT run inside the app / One-Click. Optional secrets:
 #   VIRUSTOTAL_API_KEY or MAGIC_VT_API_KEY
 #   MAGIC_KASPERSKY_OPENTIP_KEY or KASPERSKY_OPENTIP_KEY

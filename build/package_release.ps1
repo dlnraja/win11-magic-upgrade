@@ -55,7 +55,7 @@ $helpLines = @(
     "1) Prefer this ZIP. Extract, then right-click Fix-KIS.cmd -> Run as administrator.",
     "2) If EXE was deleted: KIS Quarantine -> Restore -> Trusted application.",
     "3) Desktop guide: Win11MagicUpgrade-KIS-WHITELIST.txt",
-    "4) Cloud FP (VirusTotal / OpenTIP) is submitted by GitHub Actions Release — not by One-Click.",
+    "4) Cloud FP (VirusTotal / OpenTIP) is submitted by GitHub Actions Release - not by One-Click.",
     "5) Submit portal: https://opentip.kaspersky.com/  or  newvirus@kaspersky.com",
     "",
     "Source: https://github.com/dlnraja/win11-magic-upgrade",
