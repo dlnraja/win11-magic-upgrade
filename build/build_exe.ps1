@@ -1,4 +1,5 @@
 ﻿# Build portable Win11MagicUpgrade.exe — embeds pure Python engine (no .NET 4.x runtime needed on target)
+# AV-hardened: NO UPX, UAC manifest, version resource (reduces Kaspersky Trojan.PDF heuristics)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
@@ -15,16 +16,21 @@ if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
 Copy-Item (Join-Path $Root "python\engine") (Join-Path $payload "engine") -Recurse -Force
 Copy-Item (Join-Path $Root "i18n") $payload -Recurse -Force
-# Optional legacy PS kept out of runtime path; still ship docs only
 
 $sep = ";"
+$manifest = Join-Path $Root "build\app.manifest"
+$version = Join-Path $Root "build\version_info.txt"
 
-Write-Host "Building EXE (pure Python engine, no PowerShell at runtime)..." -ForegroundColor Cyan
+Write-Host "Building EXE (no UPX, UAC admin manifest, version info)..." -ForegroundColor Cyan
 python -m PyInstaller `
     --noconfirm `
     --clean `
     --onefile `
     --windowed `
+    --uac-admin `
+    --noupx `
+    --version-file $version `
+    --manifest $manifest `
     --name "Win11MagicUpgrade" `
     --distpath $dist `
     --workpath $work `
@@ -49,6 +55,9 @@ python -m PyInstaller `
     --hidden-import engine.hybrid_uefi `
     --hidden-import engine.sysreserved `
     --hidden-import engine.logutil `
+    --hidden-import engine.progress `
+    --hidden-import engine.av_trust `
+    --hidden-import engine.av_cloud `
     --add-data "$payload\engine${sep}engine" `
     --add-data "$payload\i18n${sep}i18n" `
     (Join-Path $Root "python\magic_upgrade.py")
@@ -67,4 +76,5 @@ Copy-Item (Join-Path $Root "NOTICE") $portable -Force -ErrorAction SilentlyConti
 
 Write-Host ""
 Write-Host "OK: $portable\Win11MagicUpgrade.exe" -ForegroundColor Green
+Write-Host "AV notes: UPX disabled + UAC manifest + version resource. Rebuild required for Kaspersky FP reduction." -ForegroundColor DarkGray
 Write-Host "Target PCs need NO .NET Framework 4.x and NO working PowerShell for the upgrade engine." -ForegroundColor DarkGray

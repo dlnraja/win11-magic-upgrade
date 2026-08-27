@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import ssl
 import time
@@ -11,10 +12,14 @@ import uuid
 from pathlib import Path
 
 from .logutil import STATE_DIR, log
+from .progress import format_bytes, format_eta, format_speed, report_progress
 
 ORG_ID = "y6jn8c31"
 PROFILE_ID = "606624d44113"
 INSTANCE_ID = "560dc9f3-1aa5-4a2f-b63c-9e18f8d0e175"
+
+# Minimum size to treat a file as a real Windows retail ISO (incomplete downloads are smaller)
+MIN_ISO_BYTES = 2_000_000_000
 
 # Fido product edition IDs (x64-oriented). Updated from Fido v1.70 table.
 PRODUCTS = {
@@ -186,9 +191,15 @@ def resolve_iso_url(win: str = "11", lang_hint: str = "en-US", arch: str = "x64"
     return chosen
 
 
-def download_file(url: str, dest: Path, log_every_mb: int = 64) -> Path:
+def download_file(url: str, dest: Path, log_every_mb: int = 32) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     log(f"Downloading -> {dest.name} (urllib, resumable)...", "STEP")
+    report_progress(
+        phase=f"Download {dest.name}",
+        percent=0.0,
+        detail="Connecting to Microsoft CDN…",
+        indeterminate=True,
+    )
     existing = dest.stat().st_size if dest.exists() else 0
     headers = {}
     mode = "wb"
@@ -198,6 +209,8 @@ def download_file(url: str, dest: Path, log_every_mb: int = 64) -> Path:
         log(f"Resuming from {existing} bytes", "INFO")
 
     req = urllib.request.Request(url, headers=headers)
+    started = time.time()
+    last_ui = 0.0
     with urllib.request.urlopen(req, context=_ctx(), timeout=120) as resp:
         total = resp.headers.get("Content-Length")
         total_i = int(total) + existing if total and existing else (int(total) if total else None)
@@ -210,18 +223,257 @@ def download_file(url: str, dest: Path, log_every_mb: int = 64) -> Path:
                     break
                 f.write(chunk)
                 written += len(chunk)
+                now = time.time()
+                elapsed = max(now - started, 0.001)
+                downloaded_session = max(written - existing, 0)
+                speed = downloaded_session / elapsed
+                eta = None
+                pct = None
+                if total_i and total_i > 0:
+                    pct = 100.0 * written / total_i
+                    remain = max(total_i - written, 0)
+                    if speed > 0:
+                        eta = remain / speed
+                # UI throttle ~0.4s
+                if now - last_ui >= 0.4:
+                    detail = (
+                        f"{format_bytes(written)}"
+                        + (f" / {format_bytes(total_i)}" if total_i else "")
+                        + f"  ·  {format_speed(speed)}"
+                        + f"  ·  ETA {format_eta(eta)}"
+                    )
+                    report_progress(
+                        phase=f"Download {dest.name}",
+                        percent=pct,
+                        detail=detail,
+                        bytes_done=written,
+                        bytes_total=total_i or 0,
+                        speed_bps=speed,
+                        eta_seconds=eta,
+                        indeterminate=total_i is None,
+                    )
+                    last_ui = now
                 if written - last_report >= log_every_mb * 1024 * 1024:
                     if total_i:
-                        pct = 100.0 * written / total_i
-                        log(f"Download {written/1e9:.2f}/{total_i/1e9:.2f} GB ({pct:.1f}%)")
+                        log(
+                            f"Download {written/1e9:.2f}/{total_i/1e9:.2f} GB "
+                            f"({100.0 * written / total_i:.1f}%) · {format_speed(speed)} · ETA {format_eta(eta)}"
+                        )
                     else:
-                        log(f"Download {written/1e9:.2f} GB")
+                        log(f"Download {written/1e9:.2f} GB · {format_speed(speed)}")
                     last_report = written
 
     if dest.stat().st_size < 1_000_000_000:
         raise RuntimeError(f"ISO too small / incomplete: {dest}")
     log(f"Download complete: {dest} ({dest.stat().st_size/1e9:.2f} GB)", "OK")
+    report_progress(
+        phase=f"Download {dest.name}",
+        percent=100.0,
+        detail=f"Complete — {format_bytes(dest.stat().st_size)}",
+        bytes_done=dest.stat().st_size,
+        bytes_total=dest.stat().st_size,
+        speed_bps=0.0,
+        eta_seconds=0.0,
+    )
     return dest
+
+
+def _iso_name_matches(win: str, arch: str, name: str) -> bool:
+    n = name.lower()
+    arch_ok = (arch == "x64" and ("x64" in n or "64bit" in n or "x86" not in n)) or (
+        arch == "x86" and ("x86" in n or "32bit" in n)
+    )
+    if win == "11":
+        if arch != "x64":
+            return False
+        return any(
+            k in n
+            for k in (
+                "win11",
+                "windows11",
+                "windows_11",
+                "win_11",
+                "26100",
+                "26200",
+                "22631",
+                "22621",
+            )
+        ) and ("x86" not in n or "x64" in n)
+    if win == "10":
+        return arch_ok and any(
+            k in n
+            for k in (
+                "win10",
+                "windows10",
+                "windows_10",
+                "win_10",
+                "22h2",
+                "19045",
+                "19044",
+            )
+        )
+    return False
+
+
+def _user_profile_dirs() -> list[Path]:
+    home = Path(os.environ.get("USERPROFILE") or Path.home())
+    names = (
+        "Downloads",
+        "Téléchargements",
+        "Telechargements",
+        "Desktop",
+        "Bureau",
+        "Documents",
+        "Videos",
+        "Vidéos",
+    )
+    out: list[Path] = []
+    for name in names:
+        p = home / name
+        if p.is_dir():
+            out.append(p)
+    # Localized Downloads via Explorer Shell Folders
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        ) as key:
+            for value_name in ("{374DE290-123F-4565-9164-39C4925E467B}", "Downloads"):
+                try:
+                    val, _ = winreg.QueryValueEx(key, value_name)
+                    if val and Path(val).is_dir():
+                        out.append(Path(val))
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    # de-dupe
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in out:
+        k = str(p.resolve()).lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(p)
+    return uniq
+
+
+def iso_search_roots(extra: Path | None = None) -> list[Path]:
+    """Folders scanned for existing Windows ISOs (no full-disk crawl)."""
+    roots: list[Path] = []
+    if extra:
+        roots.append(extra)
+    roots.append(STATE_DIR / "iso")
+    roots.extend(_user_profile_dirs())
+
+    # Portable / app folders
+    try:
+        import sys
+
+        if getattr(sys, "frozen", False):
+            roots.append(Path(sys.executable).resolve().parent)
+            roots.append(Path(sys.executable).resolve().parent / "iso")
+        else:
+            root = Path(__file__).resolve().parents[2]
+            roots.extend([root, root / "iso", root / "dist", root / "media"])
+    except Exception:
+        pass
+
+    # Common drop locations on fixed drives
+    for letter in "CDEFGHI":
+        drive = Path(f"{letter}:/")
+        if not drive.exists():
+            continue
+        for sub in ("ISO", "ISOs", "WindowsISO", "WinISO", "ESD", "Images", "OS"):
+            p = drive / sub
+            if p.is_dir():
+                roots.append(p)
+
+    # Extra dirs from env (semicolon-separated)
+    for part in (os.environ.get("MAGIC_ISO_DIRS") or "").split(";"):
+        part = part.strip().strip('"')
+        if part and Path(part).is_dir():
+            roots.append(Path(part))
+
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in roots:
+        try:
+            if not p.exists():
+                continue
+            k = str(p.resolve()).lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            uniq.append(p)
+        except Exception:
+            continue
+    return uniq
+
+
+def _iter_isos_in_dir(folder: Path, *, recursive: bool = False) -> list[Path]:
+    found: list[Path] = []
+    try:
+        if recursive:
+            # Cap depth: only one level of subdirs for Downloads (speed)
+            for p in folder.glob("*.iso"):
+                found.append(p)
+            for sub in folder.iterdir():
+                if sub.is_dir():
+                    try:
+                        found.extend(sub.glob("*.iso"))
+                    except Exception:
+                        pass
+        else:
+            found.extend(folder.glob("*.iso"))
+    except Exception:
+        pass
+    return found
+
+
+def find_local_iso(win: str, arch: str = "x64", out_dir: Path | None = None) -> Path | None:
+    """
+    Auto-detect an existing Windows ISO on the PC:
+    cache, Downloads/Téléchargements, Desktop, Documents, common ISO folders, MAGIC_ISO_DIRS.
+    """
+    arch = "x86" if arch.lower() in ("x86", "x32", "32", "i386") else "x64"
+    candidates: list[Path] = []
+    roots = iso_search_roots(out_dir)
+    log(f"Scanning {len(roots)} location(s) for Windows {win} ISO…", "STEP")
+    for root in roots:
+        # Downloads / Desktop: also scan one subfolder level
+        deep = root.name.lower() in (
+            "downloads",
+            "téléchargements",
+            "telechargements",
+            "desktop",
+            "bureau",
+            "documents",
+            "iso",
+            "isos",
+        )
+        for p in _iter_isos_in_dir(root, recursive=deep):
+            try:
+                if p.stat().st_size < MIN_ISO_BYTES:
+                    continue
+                if _iso_name_matches(win, arch, p.name):
+                    candidates.append(p)
+            except OSError:
+                continue
+
+    if not candidates:
+        log(f"No local Windows {win} ISO found in Downloads / cache / common folders", "INFO")
+        return None
+
+    # Prefer newest (mtime), then largest
+    candidates.sort(key=lambda x: (x.stat().st_mtime, x.stat().st_size), reverse=True)
+    best = candidates[0]
+    log(f"Auto-detected local ISO: {best} ({best.stat().st_size/1e9:.2f} GB)", "OK")
+    if len(candidates) > 1:
+        log(f"  ({len(candidates) - 1} other matching ISO(s) ignored)", "INFO")
+    return best
 
 
 def get_iso(
@@ -233,27 +485,33 @@ def get_iso(
     out_dir = out_dir or (STATE_DIR / "iso")
     out_dir.mkdir(parents=True, exist_ok=True)
     arch = "x86" if arch.lower() in ("x86", "x32", "32", "i386") else "x64"
-    # Reuse existing large ISO
-    for p in sorted(out_dir.glob("*.iso"), key=lambda x: x.stat().st_mtime, reverse=True):
-        if p.stat().st_size > 2_000_000_000:
-            name = p.name.lower()
-            arch_ok = (arch == "x64" and ("x64" in name or "64bit" in name or "x86" not in name)) or (
-                arch == "x86" and ("x86" in name or "32bit" in name)
-            )
-            if win == "11" and arch == "x64" and (
-                "win11" in name or "windows11" in name or "26100" in name or "26200" in name
-            ):
-                log(f"Reusing ISO: {p}", "OK")
-                return p
-            if win == "10" and arch_ok and (
-                "win10" in name or "windows10" in name or "22h2" in name or "19045" in name
-            ):
-                log(f"Reusing ISO: {p}", "OK")
-                return p
+    label = f"Windows {win} ({arch})"
+    report_progress(
+        phase=f"ISO {label}",
+        percent=None,
+        detail="Searching Downloads / cache / PC for existing ISO…",
+        indeterminate=True,
+    )
+
+    # 1) Auto-detect on PC (Downloads, cache, common folders)
+    local = find_local_iso(win, arch=arch, out_dir=out_dir)
+    if local is not None:
+        report_progress(
+            phase=f"ISO {label}",
+            percent=100.0,
+            detail=f"Reused local — {local.name}",
+        )
+        return local
 
     if win == "11" and arch != "x64":
         raise RuntimeError("Windows 11 ISO is 64-bit only")
 
+    report_progress(
+        phase=f"ISO {label}",
+        percent=None,
+        detail="No local ISO — resolving official Microsoft CDN URL…",
+        indeterminate=True,
+    )
     url = resolve_iso_url(win=win, lang_hint=locale, arch=arch)
     m = re.search(r"/([^/?]+\.iso)", url, re.I)
     fname = m.group(1) if m else f"Windows{win}_{arch}_{int(time.time())}.iso"

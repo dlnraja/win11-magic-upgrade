@@ -11,10 +11,12 @@ from .autodiag import build_plan, print_plan
 from .bypass import apply_hardware_bypass, setup_bypass_args
 from .chain import ChainStep, build_version_chain, format_chain
 from .detect import collect_report, is_admin, print_report
+from .av_trust import declare_all_av_trust
 from .iso import get_iso
 from .logutil import STATE_DIR, init_logging, load_state, log, save_state, write_migration_report, get_log_paths
 from .mbrgpt import convert_mbr_to_gpt, repair_boot_manager
 from .patches import AutonomousRebootRequired, apply_migration_patches
+from .progress import report_progress
 from .sysreserved import inspect_and_fix_system_reserved
 from .virtdisk import mount_iso
 
@@ -522,7 +524,19 @@ def run_pipeline(
         if not is_admin():
             raise PermissionError('Administrator required for upgrade pipeline')
 
+        # ---- Phase 0: AV trust (Kaspersky / Defender false-positive declarations) ----
+        report_progress(
+            phase="Phase 0/7 — Antivirus trust",
+            percent=2.0,
+            detail="Declaring app as safe (Defender + Kaspersky FP notice)…",
+        )
+        try:
+            declare_all_av_trust()
+        except Exception as e:
+            log(f"AV trust skipped: {e}", "WARN")
+
         # ---- Phase 1: Diagnose ----
+        report_progress(phase="Phase 1/7 — Diagnose", percent=8.0, detail="Collecting system report…")
         log(">>> PHASE 1/7 — Auto-diagnose", "STEP")
         r = collect_report()
         print_report(r)
@@ -569,6 +583,12 @@ def run_pipeline(
         _persist_chain(steps, start_index)
 
         # ---- Phase 2+3+4: Preventives + bypass + runtime (inside apply_migration_patches) ----
+        report_progress(
+            phase="Phase 2–4/7 — Patches + bypass",
+            percent=18.0,
+            detail="Preventives, Flyby11 bypass, runtime remediations…",
+            indeterminate=True,
+        )
         log(">>> PHASE 2/7 — Install preventive patches (persistent)", "STEP")
         log(">>> PHASE 3/7 — Flyby11/FlyOOBE compat + HwReqChk bypass", "STEP")
         log(">>> PHASE 4/7 — Runtime remediations / enrich / SRP prep", "STEP")
@@ -620,6 +640,11 @@ def run_pipeline(
             return 0
 
         # ---- Phase 5: Prefetch ISOs ----
+        report_progress(
+            phase="Phase 5/7 — ISO download",
+            percent=30.0,
+            detail="Prefetching official Microsoft ISOs (progress below)…",
+        )
         log(">>> PHASE 5/7 — Prefetch / reuse Microsoft ISOs for the whole chain", "STEP")
         iso_cache: dict[str, str] = {}
         if not resume:
@@ -629,6 +654,12 @@ def run_pipeline(
                 log(f'ISO prefetch partial ({e}) — will download on demand per step', 'WARN')
 
         # ---- Phase 6+7: Execute chain ----
+        report_progress(
+            phase="Phase 6–7/7 — Migration chain",
+            percent=70.0,
+            detail="Mount ISO · Setup · RunOnce…",
+            indeterminate=True,
+        )
         log(">>> PHASE 6/7 — Execute migration chain (ESP/MBR/hybrid/ISO/Setup)", "STEP")
         log(">>> PHASE 7/7 — Quiet Setup + RunOnce auto-resume across reboots", "STEP")
 
@@ -637,6 +668,13 @@ def run_pipeline(
         while i < total:
             step = steps[i]
             _persist_chain(steps, i)
+            chain_pct = 70.0 + (25.0 * i / max(total, 1))
+            report_progress(
+                phase=f"Chain {i + 1}/{total}",
+                percent=chain_pct,
+                detail=step.label,
+                indeterminate=True,
+            )
             log(f"--- Chain {i + 1}/{total}: {step.label} ---", "STEP")
 
             remaining_after = steps[i + 1 :]

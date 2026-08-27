@@ -1,52 +1,37 @@
 ﻿@echo off
-:: Win11 Magic Upgrade — ONE-CLICK full intelligent migration
+:: Win11 Magic Upgrade — ONE-CLICK full intelligent migration (GUI + progress)
 setlocal EnableExtensions
 cd /d "%~dp0"
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (
   echo Auto-elevating to Administrator...
-  mshta "javascript:var s=new ActiveXObject('Shell.Application');s.ShellExecute('%~f0','%*','','runas',1);close();"
+  :: Prefer PowerShell Start-Process -Verb RunAs (no mshta JS — AV-friendly)
+  powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Start-Process -LiteralPath '%~f0' -Verb RunAs -ArgumentList '%*'"
   exit /b
 )
 
 title Win11 Magic Upgrade — ONE-CLICK
 echo.
-echo   ONE-CLICK full migration:
-echo   diag - preventives - Flyby11 bypass - patches - ISO - Setup - RunOnce
-echo   No .NET Framework 4.x  ^|  No PowerShell
+echo   ONE-CLICK full migration (GUI with progress bars):
+echo   AV trust - diag - preventives - bypass - patches - ISO - Setup - RunOnce
+echo   No .NET Framework 4.x  ^|  No PowerShell engine
 echo.
 
 if exist "%~dp0Win11MagicUpgrade.exe" (
-  "%~dp0Win11MagicUpgrade.exe" --cli --oneclick %*
-  set ERR=%ERRORLEVEL%
-  echo Exit code: %ERR%
-  if %ERR%==0 exit /b 0
-  if %ERR%==3010 exit /b 0
-  echo.
-  echo Non-zero exit — see Desktop MigrationReport.txt / SupportGuide.txt
-  pause
-  exit /b %ERR%
+  :: Launch elevated GUI with --auto oneclick (visible progress, not invisible --cli)
+  start "" "%~dp0Win11MagicUpgrade.exe" --auto oneclick %*
+  exit /b 0
 )
 
 where py >nul 2>&1 && (
-  py -3 "%~dp0python\magic_upgrade.py" --cli --oneclick %*
-  set ERR=%ERRORLEVEL%
-  echo Exit code: %ERR%
-  if %ERR%==0 exit /b 0
-  if %ERR%==3010 exit /b 0
-  pause
-  exit /b %ERR%
+  start "" py -3 "%~dp0python\magic_upgrade.py" --auto oneclick %*
+  exit /b 0
 )
 
 where python >nul 2>&1 && (
-  python "%~dp0python\magic_upgrade.py" --cli --oneclick %*
-  set ERR=%ERRORLEVEL%
-  echo Exit code: %ERR%
-  if %ERR%==0 exit /b 0
-  if %ERR%==3010 exit /b 0
-  pause
-  exit /b %ERR%
+  start "" python "%~dp0python\magic_upgrade.py" --auto oneclick %*
+  exit /b 0
 )
 
 echo ERROR: Win11MagicUpgrade.exe not found and Python is not installed.
