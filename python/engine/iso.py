@@ -1,4 +1,4 @@
-"""Official Microsoft ISO download (Fido-compatible API) — pure urllib, no PowerShell."""
+"""Official Microsoft ISO download (Fido-compatible API) - pure urllib, no PowerShell."""
 from __future__ import annotations
 
 import json
@@ -224,21 +224,37 @@ def download_file(url: str, dest: Path, log_every_mb: int = 64) -> Path:
     return dest
 
 
-def get_iso(win: str, locale: str, out_dir: Path | None = None) -> Path:
+def get_iso(
+    win: str,
+    locale: str,
+    out_dir: Path | None = None,
+    arch: str = "x64",
+) -> Path:
     out_dir = out_dir or (STATE_DIR / "iso")
     out_dir.mkdir(parents=True, exist_ok=True)
+    arch = "x86" if arch.lower() in ("x86", "x32", "32", "i386") else "x64"
     # Reuse existing large ISO
     for p in sorted(out_dir.glob("*.iso"), key=lambda x: x.stat().st_mtime, reverse=True):
-        if p.stat().st_size > 3_000_000_000:
+        if p.stat().st_size > 2_000_000_000:
             name = p.name.lower()
-            if win == "11" and ("win11" in name or "windows11" in name or "22631" in name or "26100" in name or "26200" in name):
+            arch_ok = (arch == "x64" and ("x64" in name or "64bit" in name or "x86" not in name)) or (
+                arch == "x86" and ("x86" in name or "32bit" in name)
+            )
+            if win == "11" and arch == "x64" and (
+                "win11" in name or "windows11" in name or "26100" in name or "26200" in name
+            ):
                 log(f"Reusing ISO: {p}", "OK")
                 return p
-            if win == "10" and ("win10" in name or "windows10" in name or "22h2" in name or "19045" in name):
+            if win == "10" and arch_ok and (
+                "win10" in name or "windows10" in name or "22h2" in name or "19045" in name
+            ):
                 log(f"Reusing ISO: {p}", "OK")
                 return p
 
-    url = resolve_iso_url(win=win, lang_hint=locale, arch="x64")
+    if win == "11" and arch != "x64":
+        raise RuntimeError("Windows 11 ISO is 64-bit only")
+
+    url = resolve_iso_url(win=win, lang_hint=locale, arch=arch)
     m = re.search(r"/([^/?]+\.iso)", url, re.I)
-    fname = m.group(1) if m else f"Windows{win}_{int(time.time())}.iso"
+    fname = m.group(1) if m else f"Windows{win}_{arch}_{int(time.time())}.iso"
     return download_file(url, out_dir / fname)

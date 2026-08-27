@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Win11 Magic Upgrade — portable GUI/CLI.
+Win11 Magic Upgrade - portable GUI/CLI.
 Pure Python engine: NO .NET Framework 4.x, NO PowerShell, NO FlyOOBE.
 """
 from __future__ import annotations
@@ -140,6 +140,17 @@ class App(tk.Tk):
             pady=8,
             command=lambda: self.start("bypass"),
         ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            btns,
+            text=self.t.get("btn_mbr", "MBR->GPT + Boot"),
+            font=("Segoe UI", 10),
+            bg="#1e293b",
+            fg="#e2e8f0",
+            relief="flat",
+            padx=12,
+            pady=8,
+            command=lambda: self.start("mbr"),
+        ).pack(side="left", padx=(8, 0))
 
         tk.Label(
             self,
@@ -162,7 +173,7 @@ class App(tk.Tk):
         )
         self.log.pack(fill="both", expand=True, padx=20, pady=(0, 20))
         self.append(f"Root: {self.root_dir}\n")
-        self.append("Runtime: pure Python — no .NET 4.x / no PowerShell\n")
+        self.append("Runtime: pure Python - no .NET 4.x / no PowerShell\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
 
     def append(self, text: str) -> None:
@@ -188,6 +199,7 @@ class App(tk.Tk):
             try:
                 from engine import (  # type: ignore
                     apply_bypass_only,
+                    convert_mbr_only,
                     run_diagnose,
                     run_pipeline,
                 )
@@ -198,6 +210,9 @@ class App(tk.Tk):
                     code = 0
                 elif action == "bypass":
                     apply_bypass_only(sink)
+                    code = 0
+                elif action == "mbr":
+                    convert_mbr_only(sink)
                     code = 0
                 else:
                     code = run_pipeline(sink)

@@ -1,4 +1,4 @@
-"""Researched migration patches — stdlib / native exes only."""
+"""Researched migration patches - stdlib / native exes only."""
 from __future__ import annotations
 
 import os

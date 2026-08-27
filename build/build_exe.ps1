@@ -38,7 +38,7 @@ python -m PyInstaller `
     --hidden-import engine.virtdisk `
     --hidden-import engine.mbrgpt `
     --hidden-import engine.patches `
-    --hidden-import engine.logutil `
+    --hidden-import engine.autodiag `
     --add-data "$payload\engine${sep}engine" `
     --add-data "$payload\i18n${sep}i18n" `
     (Join-Path $Root "python\magic_upgrade.py")

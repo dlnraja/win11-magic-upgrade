@@ -1,4 +1,4 @@
-"""System detection via winreg + ctypes + wmic — no PowerShell / no .NET."""
+"""System detection via winreg + ctypes + wmic - no PowerShell / no .NET."""
 from __future__ import annotations
 
 import ctypes
@@ -282,8 +282,8 @@ def print_report(r: Report) -> None:
     log(f"CPU: {r.cpu_name} | SSE4.2/POPCNT={r.sse42} | TPM={r.tpm_present}")
     log("Runtime: pure Python (no PowerShell, no .NET Framework 4.x required)", "OK")
     if r.needs_intermediate:
-        log("Obsolete Win10 — intermediate Win10 22H2 required before Win11.", "WARN")
+        log("Obsolete Win10 - intermediate Win10 22H2 required before Win11.", "WARN")
     if r.partition_style == "MBR":
-        log("MBR disk — will convert to GPT without wipe when possible.", "WARN")
+        log("MBR disk - will convert to GPT without wipe when possible.", "WARN")
     if r.sse42 is False:
-        log("CPU lacks SSE4.2/POPCNT — Win11 24H2+ will not boot.", "ERROR")
+        log("CPU lacks SSE4.2/POPCNT - Win11 24H2+ will not boot.", "ERROR")

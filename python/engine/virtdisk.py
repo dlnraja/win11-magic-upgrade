@@ -1,4 +1,4 @@
-"""ISO mount via virtdisk.dll (Win8+/Win10) — no PowerShell Mount-DiskImage."""
+"""ISO mount via virtdisk.dll (Win8+/Win10) - no PowerShell Mount-DiskImage."""
 from __future__ import annotations
 
 import ctypes

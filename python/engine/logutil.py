@@ -1,4 +1,4 @@
-"""Logging + persistent state — stdlib only."""
+"""Logging + persistent state - stdlib only."""
 from __future__ import annotations
 
 import json

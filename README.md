@@ -31,20 +31,28 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 
 | Area | Behavior |
 |------|----------|
-| Bypass | MoSetup, LabConfig, 24H2 HwReqChk, `/product server` |
-| ISO | Official Microsoft CDN via [Fido](https://github.com/pbatard/Fido) |
-| MBR→GPT | `mbr2gpt` without wipe (+ EFI space / WinRE prep) |
+| Auto-diag | Builds an action plan (32-bit / MBR / obsolete / no SSE4.2 / unsupported HW) |
+| Bypass | Embedded intelligent registry pack (LabConfig, MoSetup, HwReqChk, PCHC, …) |
+| ISO | Official Microsoft CDN via urllib (Fido-compatible API) |
+| MBR→GPT | `mbr2gpt` without wipe + layout prep + **bcdboot bootmgr repair** |
+| 32-bit | Win11 impossible → max path **Win10 22H2 x86** (keep apps) |
+| No SSE4.2 | Win11 24H2+ won't boot → max path **Win10 22H2 x64** |
 | Obsolete Win10 | Intermediate **22H2**, then Win11 (RunOnce resume) |
-| Migration patches | AV/backup blockers, mapped drives, caches, SetupDiag hints |
-| i18n | `i18n/strings.json` (en / fr) |
+| Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
-## Docs
+## Max compatibility matrix
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Migration bugs & patches](docs/MIGRATION_BUGS.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security](SECURITY.md)
-- [Third-party notices](NOTICE)
+| Situation | What the app does |
+|-----------|-------------------|
+| Unsupported TPM/CPU/Secure Boot | Full registry pack + `setup /product server` |
+| MBR disk | Auto `mbr2gpt` (no wipe) + `bcdboot` bootmgr repair; remind UEFI firmware |
+| Win10 1511 / obsolete | Intermediate Win10 22H2 then Win11 |
+| 32-bit Windows | **Cannot** install Win11; upgrades to **Win10 22H2 x86** (keep files/apps) |
+| CPU without SSE4.2/POPCNT | **Cannot** boot Win11 24H2+; upgrades to **Win10 22H2 x64** |
+| Already Win11 24H2+ | Re-applies registry pack for future feature updates |
+
+Registry keys are embedded in `python/engine/bypass.py` (`REGISTRY_PACK`) — no external `.reg` file required.
+
 
 ## Build
 
