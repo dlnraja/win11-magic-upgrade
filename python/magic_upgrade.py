@@ -217,11 +217,21 @@ class App(tk.Tk):
         if self._busy:
             return
         title = self.t.get("app_title", "Win11 Magic Upgrade")
+        # Autonomous: auto-elevate without Yes/No dialog
         if action != "diagnose" and not is_admin():
-            if messagebox.askyesno(title, self.t.get("need_admin", "Admin?")):
-                relaunch_as_admin([f"--{action}"] if getattr(sys, "frozen", False) else None)
+            self.append("Elevation required — relaunching as Administrator...\n")
+            cli_map = {
+                "oneclick": ["--cli", "--oneclick"],
+                "install-patches": ["--cli", "--install-patches"],
+                "patch": ["--cli", "--patch"],
+                "bypass": ["--cli", "--bypass"],
+                "mbr": ["--cli", "--mbr"],
+                "srp": ["--cli", "--srp"],
+            }
+            relaunch_as_admin(cli_map.get(action, ["--cli", f"--{action}"]))
             return
-        if action == "oneclick":
+        # One-Click: no confirmation (set MAGIC_CONFIRM=1 to re-enable)
+        if action == "oneclick" and os.environ.get("MAGIC_CONFIRM", "").strip() == "1":
             if not messagebox.askyesno(title, self.t.get("confirm_upgrade", "Continue?")):
                 return
 
@@ -260,9 +270,22 @@ class App(tk.Tk):
                     install_preventive_only(sink)
                     code = 0
                 else:
-                    code = run_pipeline(sink)
+                    code = run_pipeline(sink, quiet=True)
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
-                if code == 0:
+                # Setup launched / auto-reboot = in progress, not a failure dialog
+                if code == 3010:
+                    msg = self.t.get(
+                        "done_reboot",
+                        "Reboot scheduled. Chain resumes automatically (RunOnce).",
+                    )
+                    self.after(0, lambda: messagebox.showinfo(title, msg))
+                elif action == "oneclick" and code != 0:
+                    msg = self.t.get(
+                        "done_setup",
+                        "Windows Setup launched. PC will reboot; upgrade continues automatically.",
+                    )
+                    self.after(0, lambda: messagebox.showinfo(title, msg))
+                elif code == 0:
                     self.after(
                         0,
                         lambda: messagebox.showinfo(title, self.t.get("done_ok", "Done")),

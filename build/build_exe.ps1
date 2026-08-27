@@ -41,6 +41,7 @@ python -m PyInstaller `
     --hidden-import engine.enrich `
     --hidden-import engine.support `
     --hidden-import engine.preventive `
+    --hidden-import engine.autonomy `
     --hidden-import engine.errfix `
     --hidden-import engine.bootmgr `
     --hidden-import engine.hybrid_uefi `

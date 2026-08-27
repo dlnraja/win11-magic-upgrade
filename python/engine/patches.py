@@ -157,20 +157,14 @@ def check_pending_reboot() -> bool:
     if pfr:
         log("PendingFileRenameOperations present (reboot recommended before upgrade)", "WARN")
         pending = True
-    if pending:
-        log(
-            "A reboot is strongly recommended before setup (0xC1900107 / stuck pending). "
-            "Continue only if you already rebooted once.",
-            "WARN",
-        )
     return pending
 
 
-def audit_filter_drivers() -> None:
+def audit_filter_drivers() -> list[str]:
     """fltmc: third-party minifilters often break winre.wim mount (0xC1420121)."""
     out = _run(["fltmc", "filters"])
     if not out or "Error" in out[:40]:
-        return
+        return []
     suspects = []
     for line in out.splitlines():
         parts = line.split()
@@ -181,12 +175,13 @@ def audit_filter_drivers() -> None:
             suspects.append(name)
     if suspects:
         log(
-            "Risky file-system filters (disconnect VPN / uninstall encryption / AV before upgrade): "
+            "Risky file-system filters detected (auto-unload attempted): "
             + ", ".join(sorted(set(suspects))),
             "WARN",
         )
     else:
         log("fltmc: no well-known third-party filter names matched", "OK")
+    return suspects
 
 
 def repair_wimmount_service() -> None:
@@ -404,29 +399,32 @@ def check_problem_devices() -> None:
         log("No obvious Device Manager problem devices", "OK")
 
 
-def warn_removable_disks() -> None:
+def warn_removable_disks() -> list[str]:
     """Microsoft: disconnect non-essential USB storage during upgrade."""
     out = _run(["wmic", "logicaldisk", "where", "DriveType=2", "get", "DeviceID,VolumeName"])
     letters = re.findall(r"([A-Z]:)", out)
     if letters:
         log(
-            "Removable drives present - unplug USB/SD disks before upgrade: " + ", ".join(letters),
+            "Removable drives present — will auto-dismount: " + ", ".join(letters),
             "WARN",
         )
+    return letters
 
 
-def quick_component_health() -> None:
-    """0x800F081F - cheap CheckHealth only (no long RestoreHealth)."""
+def quick_component_health() -> bool:
+    """0x800F081F - CheckHealth; True if repairable corruption detected."""
     dism = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "Dism.exe"
     if not dism.exists():
-        return
+        return False
     out = _run([str(dism), "/Online", "/Cleanup-Image", "/CheckHealth"])
     if re.search(r"repairable|corrupt", out, re.I):
-        log("DISM CheckHealth reports repairable corruption - consider RestoreHealth later", "WARN")
-    elif re.search(r"No component store corruption|healthy", out, re.I):
+        log("DISM CheckHealth: repairable corruption — auto RestoreHealth", "WARN")
+        return True
+    if re.search(r"No component store corruption|healthy", out, re.I):
         log("DISM CheckHealth: OK", "OK")
     else:
         log(f"DISM CheckHealth: {out[-180:]}", "INFO")
+    return False
 
 
 def suspend_bitlocker_if_needed() -> None:
@@ -438,7 +436,21 @@ def suspend_bitlocker_if_needed() -> None:
         log(f"BitLocker suspend skipped: {e}", "WARN")
 
 
-def apply_migration_patches(*, install_preventive: bool = True) -> None:
+class AutonomousRebootRequired(Exception):
+    """Raised when prep needs a reboot; RunOnce will resume One-Click."""
+
+    def __init__(self, reason: str = "prep"):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def apply_migration_patches(
+    *,
+    install_preventive: bool = True,
+    autonomous: bool = True,
+    allow_auto_reboot: bool = False,
+    system_disk: int | None = None,
+) -> None:
     log("=== Migration patches (runtime remediation) ===", "STEP")
 
     # Always install durable preventives first, then runtime remediations
@@ -452,10 +464,19 @@ def apply_migration_patches(*, install_preventive: bool = True) -> None:
 
     scan_prior_setup_logs()
     detect_software_blockers()
-    check_pending_reboot()
+    pending = check_pending_reboot()
     warn_removable_disks()
     check_problem_devices()
     audit_filter_drivers()
+
+    if autonomous:
+        try:
+            from .autonomy import apply_autonomous_remediations
+
+            apply_autonomous_remediations(system_disk=system_disk)
+        except Exception as e:
+            log(f"Autonomous remediations partial: {e}", "WARN")
+
     repair_wimmount_service()
     ensure_winre()
     clear_veracrypt_setupconfig()
@@ -468,7 +489,15 @@ def apply_migration_patches(*, install_preventive: bool = True) -> None:
     clear_upgrade_leftovers()
     free_space_helpers()
     clear_appraiser_cache()
-    quick_component_health()
+    needs_heal = quick_component_health()
+    if needs_heal:
+        try:
+            from .enrich import dism_component_cleanup_and_heal
+
+            log("Auto deep heal (DISM RestoreHealth + SFC)...", "STEP")
+            dism_component_cleanup_and_heal()
+        except Exception as e:
+            log(f"Auto deep heal skipped: {e}", "WARN")
 
     try:
         from .errfix import apply_extra_error_fixes
@@ -493,7 +522,10 @@ def apply_migration_patches(*, install_preventive: bool = True) -> None:
         from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
 
         force = scan_logs_for_srp_error()
-        inspect_and_fix_system_reserved(force_expand=force)
+        srp = inspect_and_fix_system_reserved(force_expand=force)
+        if isinstance(srp, dict) and srp.get("ok") is False:
+            log("SRP/ESP fix reported failure — retrying with force expand", "WARN")
+            srp = inspect_and_fix_system_reserved(force_expand=True)
     except Exception as e:
         log(f"System Reserved / EFI fix skipped: {e}", "WARN")
 
@@ -516,5 +548,12 @@ def apply_migration_patches(*, install_preventive: bool = True) -> None:
         apply_smart_boot_strategy(os_arch=os_arch, is_uefi=is_uefi)
     except Exception as e:
         log(f"Boot Manager smart fix skipped: {e}", "WARN")
+
+    if pending and allow_auto_reboot:
+        from .autonomy import schedule_reboot
+
+        log("Pending reboot detected — scheduling autonomous reboot then resume", "STEP")
+        schedule_reboot(seconds=40, reason="Win11MagicUpgrade pending reboot prep")
+        raise AutonomousRebootRequired("pending_reboot")
 
     log("Migration patches done.", "OK")

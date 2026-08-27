@@ -70,6 +70,7 @@ After each ISO step, **RunOnce** resumes the next chain step automatically.
 CLI extras (admin):
 
 ```text
+Win11MagicUpgrade.exe --cli --oneclick         # Fully autonomous (quiet Setup + RunOnce)
 Win11MagicUpgrade.exe --cli --install-patches  # Install ALL preventive patches (persistent)
 Win11MagicUpgrade.exe --cli --patch            # Preventives + runtime remediate + SupportGuide (no ISO)
 Win11MagicUpgrade.exe --cli --patch-deep       # + DISM RestoreHealth / SFC
@@ -79,6 +80,8 @@ Win11MagicUpgrade.exe --cli --srp      # Fix System Reserved / EFI only
 Win11MagicUpgrade.exe --cli --mbr      # MBR→GPT + bootmgr only
 Win11MagicUpgrade.exe --cli --diagnose
 ```
+
+One-Click is **maximally autonomous**: auto-elevate, install preventives, unload risky filters, dismount USB, offline secondary disks, quiet Setup (`/quiet`), auto-reboot when pending/MBR2GPT, resume via RunOnce. Set `MAGIC_CONFIRM=1` only if you want a GUI confirmation.
 
 
 | Situation | What the app does |

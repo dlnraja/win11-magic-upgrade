@@ -14,7 +14,7 @@ from .detect import collect_report, is_admin, print_report
 from .iso import get_iso
 from .logutil import STATE_DIR, init_logging, load_state, log, save_state, write_migration_report, get_log_paths
 from .mbrgpt import convert_mbr_to_gpt, repair_boot_manager
-from .patches import apply_migration_patches
+from .patches import AutonomousRebootRequired, apply_migration_patches
 from .sysreserved import inspect_and_fix_system_reserved
 from .virtdisk import mount_iso
 
@@ -140,7 +140,15 @@ def _execute_step(
         return None
 
     if step.kind == "fix_srp":
-        inspect_and_fix_system_reserved(force_expand=False)
+        from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
+
+        force = scan_logs_for_srp_error()
+        res = inspect_and_fix_system_reserved(force_expand=force)
+        if isinstance(res, dict) and not res.get("ok", True):
+            # Retry once with forced expand
+            res = inspect_and_fix_system_reserved(force_expand=True)
+            if isinstance(res, dict) and not res.get("ok", True):
+                raise RuntimeError("ESP/SRP fix failed — cannot continue autonomous upgrade")
         return None
 
     if step.kind == "fix_bootmgr":
@@ -152,11 +160,11 @@ def _execute_step(
     if step.kind == "hybrid_ia32":
         from .hybrid_uefi import apply_hybrid_ia32_path
 
-        # Activate default bootia32 only when OS is already x64 (BIOS handoff ready)
-        activate = report.architecture == "x64"
+        # Always activate when OS is x64 — One-Click must be fully autonomous
+        activate = True
         res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
         if not res.get("ok"):
-            log("Hybrid IA32 deploy failed - continuing with safest keep-apps path", "WARN")
+            raise RuntimeError("Hybrid IA32 deploy failed — cannot continue Win11 x64 path")
         return None
 
     if step.kind == "mbr2gpt":
@@ -168,10 +176,13 @@ def _execute_step(
             return None
         ok, code, msg = convert_mbr_to_gpt(report.disk_number)
         if not ok:
-            log(f"MBR conversion failed ({msg}) - continue chain cautiously", "WARN")
-        else:
-            save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code})
-        return None
+            raise RuntimeError(f"MBR→GPT failed ({msg}) — stop autonomous chain")
+        save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code})
+        # Register resume + reboot so firmware/GPT settle before next ISO
+        from .autonomy import schedule_reboot
+
+        schedule_reboot(seconds=50, reason="Win11MagicUpgrade after MBR2GPT")
+        raise AutonomousRebootRequired("mbr2gpt")
 
     if step.kind == "iso_upgrade":
         arch = step.arch or "x64"
@@ -387,15 +398,19 @@ def install_preventive_only(sink: Callable[[str], None] | None = None) -> None:
 def run_pipeline(
     sink: Callable[[str], None] | None = None,
     *,
-    quiet: bool = False,
+    quiet: bool = True,
     skip_mbr: bool = False,
     skip_intermediate: bool = False,
     win10_iso: str | None = None,
     win11_iso: str | None = None,
     resume: bool = False,
 ) -> int:
+    """
+    Fully autonomous One-Click: preventives + runtime remediations + quiet setup.
+    Reboots/resumes via RunOnce when needed. Default quiet=True (no Setup UI).
+    """
     init_logging(sink)
-    log('Engine: pure Python - intermediate version chain enabled', 'OK')
+    log('Engine: pure Python — autonomous intermediate version chain', 'OK')
 
     try:
         if not is_admin():
@@ -416,16 +431,44 @@ def run_pipeline(
         log(format_chain(steps), 'OK')
 
         state = load_state()
-        start_index = int(state.get('ChainIndex', 0) or 0) if resume else 0
+        saved_index = int(state.get('ChainIndex', 0) or 0) if resume else 0
         if resume:
-            log(f'Resuming chain after reboot (saved index={start_index})', 'STEP')
-            start_index = _next_pending_index(steps, 0, r)
+            log(f'Resuming chain after reboot (saved index={saved_index})', 'STEP')
+            start_index = _next_pending_index(steps, saved_index, r)
         else:
             start_index = _next_pending_index(steps, 0, r)
 
         _persist_chain(steps, start_index)
-        apply_migration_patches()
-        apply_hardware_bypass()
+        try:
+            apply_migration_patches(
+                autonomous=True,
+                allow_auto_reboot=not resume,
+                system_disk=getattr(r, 'disk_number', None),
+            )
+        except AutonomousRebootRequired as ar:
+            write_migration_report(
+                extra={
+                    'Result': 'AUTO_REBOOT',
+                    'Reason': ar.reason,
+                    'Chain': format_chain(steps),
+                }
+            )
+            log('Exiting for autonomous reboot; RunOnce continues the chain.', 'OK')
+            return 3010  # conventional "reboot required" style code
+
+        try:
+            from .support import write_support_pack
+
+            write_support_pack(
+                extra={
+                    'Mode': 'ONECLICK_AUTONOMOUS',
+                    'Target': plan.target,
+                    'Chain': format_chain(steps),
+                    'QuietSetup': quiet,
+                }
+            )
+        except Exception as e:
+            log(f'Support pack: {e}', 'WARN')
 
         total = len(steps)
         i = start_index
@@ -434,22 +477,42 @@ def run_pipeline(
             _persist_chain(steps, i)
 
             remaining_after = steps[i + 1 :]
-            needs_resume = step.kind == 'iso_upgrade' and any(
+            needs_resume = step.kind in (
+                'iso_upgrade',
+                'mbr2gpt',
+                'fix_srp',
+                'hybrid_ia32',
+                'fix_bootmgr',
+            ) and any(
                 s.kind in ('iso_upgrade', 'mbr2gpt', 'fix_srp', 'hybrid_ia32', 'fix_bootmgr')
                 for s in remaining_after
             )
-            if needs_resume:
+            if needs_resume or step.kind in ('iso_upgrade', 'mbr2gpt'):
                 _runonce_register()
 
-            result = _execute_step(
-                step,
-                step_no=i + 1,
-                total=total,
-                report=r,
-                quiet=quiet,
-                win10_iso=win10_iso,
-                win11_iso=win11_iso,
-            )
+            try:
+                result = _execute_step(
+                    step,
+                    step_no=i + 1,
+                    total=total,
+                    report=r,
+                    quiet=quiet,
+                    win10_iso=win10_iso,
+                    win11_iso=win11_iso,
+                )
+            except AutonomousRebootRequired as ar:
+                write_migration_report(
+                    extra={
+                        'Result': 'AUTO_REBOOT',
+                        'Reason': ar.reason,
+                        'Step': step.label,
+                        'Chain': format_chain(steps),
+                        'ChainIndex': i + 1,
+                    }
+                )
+                save_state({'Phase': 'AutoReboot', 'ChainIndex': i + 1, 'Reason': ar.reason})
+                log('Exiting for autonomous reboot; RunOnce continues the chain.', 'OK')
+                return 3010
 
             if step.kind == 'iso_upgrade':
                 save_state(
@@ -460,8 +523,8 @@ def run_pipeline(
                     }
                 )
                 log(
-                    f'Intermediate setup launched ({step.label}). '
-                    'After reboot the tool continues the next step automatically.',
+                    f'Setup launched quietly ({step.label}). '
+                    'After reboot the tool continues the next step automatically (RunOnce).',
                     'OK',
                 )
                 code = int(result or 0)
@@ -471,6 +534,7 @@ def run_pipeline(
                         'ExitCode': code,
                         'Step': step.label,
                         'Chain': format_chain(steps),
+                        'Autonomous': True,
                     }
                 )
                 return code
@@ -482,7 +546,12 @@ def run_pipeline(
         save_state({'Phase': 'Done', 'ChainIndex': total})
         log('Version chain completed.', 'OK')
         write_migration_report(
-            extra={'Result': 'DONE', 'Chain': format_chain(steps), 'Target': plan.target}
+            extra={
+                'Result': 'DONE',
+                'Chain': format_chain(steps),
+                'Target': plan.target,
+                'Autonomous': True,
+            }
         )
         return 0
     except Exception as e:

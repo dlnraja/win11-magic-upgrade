@@ -71,9 +71,21 @@ Win11MagicUpgrade.exe --cli --patch-deep       # + DISM RestoreHealth + SFC
 
 One-Click always installs the preventive pack **then** applies runtime remediations before the ISO chain.
 
+### Autonomous One-Click (v1.6+)
+
+| Behavior | Detail |
+|----------|--------|
+| Auto-elevate | No Yes/No admin dialog |
+| Quiet Setup | `/quiet /showoobe none` by default |
+| Auto remediations | Unload risky fltmc filters, disable problem PnP, dismount USB, offline secondary disks |
+| Auto deep heal | DISM RestoreHealth + SFC when CheckHealth reports corruption |
+| Auto reboot | Pending reboot / after MBR2GPT → `shutdown /r` + RunOnce `--cli --resume` |
+| Fail-fast | MBR/SRP/hybrid hard failures stop the chain (no silent continue) |
+| Confirmation | Disabled; set env `MAGIC_CONFIRM=1` to re-enable GUI confirm |
+
 Inventory files: `%LOCALAPPDATA%\Win11MagicUpgrade\installed-preventive-patches.json` and `preventive-patches.reg`.
 
-GUI: **Install preventives** or **Patch / Enrich**. Writes `SupportGuide.txt` + `MigrationReport.txt` (Desktop copies).
+GUI: **One-Click (autonomous)** or **Patch / Enrich**. Writes `SupportGuide.txt` + `MigrationReport.txt` (Desktop copies).
 
 ## Boot Manager / UEFI bitness (smart)
 
