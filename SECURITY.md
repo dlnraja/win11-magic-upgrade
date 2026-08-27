@@ -134,10 +134,17 @@ Boot layout changes use `engine/boot_safe.py`:
 1. **Preflight** — verify system disk #, firmware, BitLocker, C: free space; export BCD; snapshot ESP files
 2. **Native tiers** — cleanup → `bcdboot` → verified `diskpart` expand (never invent disk 0)
 3. **Retries** — failed ESP/SRP expands re-run after restore
-4. **Guarantee bootable** — on success *or* failure: BCD import → ESP file restore → `bcdboot` rewrite; reboot only if verified
+4. **Guarantee bootable** — on success *or* failure intelligent ladder:
+   BCD import → ESP file restore → `bcdboot` (UEFI/ALL/BIOS) → `bcdedit` heal →
+   `bootrec` (if present) → **temporary WinRE ramdisk** (`reagentc /boottore`, one-shot) →
+   GParted rescue package. Reboot only if Windows is verified **or** WinRE one-shot is staged.
 5. **Postflight** — check ESP boot files + `{bootmgr}`
 6. **Fallback** — stage **GParted Live** ISO + guide (never auto-flash / auto-boot disks)
 7. **Autodiag** — on persistent failure, sanitized GitHub Issue (+ optional PR) with restore facts only (no PII)
    - `%LOCALAPPDATA%\\Win11MagicUpgrade\\rescue\\`
    - Desktop `Win11MagicUpgrade-GParted-Rescue.txt`
-8. Env: `MAGIC_GPARTED_FALLBACK=0` skip ISO download; `MAGIC_REQUIRE_BCD_BACKUP=1` hard-require BCD export
+8. Env:
+   - `MAGIC_GPARTED_FALLBACK=0` skip ISO download
+   - `MAGIC_REQUIRE_BCD_BACKUP=1` hard-require BCD export
+   - `MAGIC_WINRE_FALLBACK=0` disable WinRE one-shot staging
+   - `MAGIC_WINRE_BOOT=1` force stage WinRE even if postflight looks OK

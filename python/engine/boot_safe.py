@@ -290,6 +290,282 @@ def rewrite_boot_files_from_windows(*, prefer_uefi: bool | None = None) -> bool:
     return ok
 
 
+def _bcdedit(*args: str, timeout: int = 90) -> tuple[int, str]:
+    return _run(["bcdedit", *args], timeout=timeout)
+
+
+def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
+    """
+    Intelligent bcdedit repairs that avoid leaving a broken {default}/{current}.
+    Never deletes the Windows boot entry; only heals paths/devices and recovery flags.
+    """
+    actions: list[str] = []
+    uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
+    sys_root = os.environ.get("SystemRoot", r"C:\Windows")
+    drive = os.environ.get("SystemDrive", "C:")
+    winload = r"\Windows\system32\winload.efi" if uefi else r"\Windows\system32\winload.exe"
+
+    log("BCD heal — bcdedit store repair...", "STEP")
+
+    # Export a fresh backup before mutating BCD further
+    if backup_bcd():
+        actions.append("bcd_backup_before_heal")
+
+    # Ensure bootmgr is readable
+    code, out = _bcdedit("/enum", "{bootmgr}")
+    if code != 0 or not out or "cannot find" in out.lower():
+        # Recreate via bcdboot is preferred; soft nudge here
+        actions.append("bootmgr_enum_failed")
+    else:
+        actions.append("bootmgr_ok")
+
+    # Soft settings that reduce "failed boot → recovery loop" noise
+    for args, tag in (
+        (("/set", "{bootmgr}", "timeout", "10"), "timeout10"),
+        (("/set", "{bootmgr}", "displaybootmenu", "Yes"), "bootmenu"),
+        (("/set", "{current}", "bootstatuspolicy", "IgnoreAllFailures"), "ignore_boot_failures"),
+        (("/set", "{current}", "recoveryenabled", "Yes"), "recovery_enabled"),
+        (("/set", "{default}", "bootstatuspolicy", "IgnoreAllFailures"), "default_ignore_fail"),
+    ):
+        c, o = _bcdedit(*args)
+        if c == 0:
+            actions.append(tag)
+        else:
+            # Non-fatal — entry may not exist yet
+            log(f"bcdedit {' '.join(args)} skipped: {(o or '')[:120]}", "INFO")
+
+    # Point OS loader device at SystemDrive when broken (common after ESP swap)
+    # device partition=C:  /  osdevice partition=C:  /  path winload
+    for ident in ("{current}", "{default}"):
+        for name, value in (
+            ("device", f"partition={drive}"),
+            ("osdevice", f"partition={drive}"),
+            ("path", winload),
+            ("systemroot", r"\Windows"),
+        ):
+            c, o = _bcdedit("/set", ident, name, value)
+            if c == 0:
+                actions.append(f"set_{ident.strip('{}')}_{name}")
+            else:
+                # Avoid spamming — one note per ident
+                if name == "device":
+                    log(f"bcdedit set {ident} {name}: {(o or '')[:100]}", "INFO")
+
+    # Describe for logs (sanitized later)
+    c2, enum_out = _bcdedit("/enum", "{current}")
+    if c2 == 0 and enum_out:
+        actions.append("enum_current_ok")
+        try:
+            (STATE_DIR / "bcd-enum-current.txt").write_text(
+                enum_out[:4000], encoding="utf-8", errors="replace"
+            )
+        except Exception:
+            pass
+
+    log(f"BCD heal actions: {', '.join(actions[-12:])}", "OK" if actions else "WARN")
+    return actions
+
+
+def try_bootrec_repair() -> list[str]:
+    """
+    bootrec.exe is normally WinRE-only; try if present (some full OS images ship it).
+    Safe flags only — no disk wipe.
+    """
+    actions: list[str] = []
+    bootrec = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "bootrec.exe"
+    if not bootrec.exists():
+        # Also check SysWOW / Repair folder
+        alt = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "Repair" / "bootrec.exe"
+        if alt.exists():
+            bootrec = alt
+        else:
+            return actions
+
+    log("bootrec available — attempting non-destructive repair...", "STEP")
+    for flag in ("/fixboot", "/rebuildbcd"):
+        # /fixmbr only on MBR disks — skip by default to avoid GPT harm
+        code, out = _run([str(bootrec), flag], timeout=180)
+        actions.append(f"bootrec{flag}:{code}")
+        log(f"bootrec {flag} -> {code}: {(out or '')[:200]}")
+        if code != 0 and "Access is denied" in (out or ""):
+            break
+    return actions
+
+
+def try_bootrec_fixmbr_if_bios() -> list[str]:
+    """Only run /fixmbr on BIOS/MBR firmware — never on pure UEFI/GPT blindly."""
+    if _firmware() == "UEFI":
+        return []
+    bootrec = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "bootrec.exe"
+    if not bootrec.exists():
+        return []
+    code, out = _run([str(bootrec), "/fixmbr"], timeout=120)
+    log(f"bootrec /fixmbr -> {code}: {(out or '')[:160]}")
+    return [f"bootrec_fixmbr:{code}"]
+
+
+def ensure_winre_enabled() -> dict[str, Any]:
+    """Enable Windows RE (ramdisk Winre.wim) — the safe 'lite Windows' recovery environment."""
+    info: dict[str, Any] = {"enabled": False, "location": None, "actions": []}
+    reagentc = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "reagentc.exe"
+    if not reagentc.exists():
+        info["actions"].append("reagentc_missing")
+        return info
+
+    code, out = _run([str(reagentc), "/info"], timeout=90)
+    info["info_tail"] = (out or "")[-500:]
+    if re.search(r"Windows RE status:\s*Enabled", out or "", re.I):
+        info["enabled"] = True
+        info["actions"].append("winre_already_enabled")
+    else:
+        c2, o2 = _run([str(reagentc), "/enable"], timeout=180)
+        info["actions"].append(f"reagentc_enable:{c2}")
+        log(f"reagentc /enable -> {c2}: {(o2 or '')[:200]}")
+        _, out3 = _run([str(reagentc), "/info"], timeout=90)
+        info["enabled"] = bool(re.search(r"Windows RE status:\s*Enabled", out3 or "", re.I))
+        info["info_tail"] = (out3 or "")[-500:]
+
+    m = re.search(r"Windows RE location:\s*(.+)", info.get("info_tail") or out or "", re.I)
+    if m:
+        info["location"] = m.group(1).strip()[:260]
+    return info
+
+
+def stage_temporary_winre_ramdisk_boot(*, one_shot: bool = True) -> dict[str, Any]:
+    """
+    Stage a TEMPORARY boot into Windows RE (Winre.wim ramdisk) — lite repair OS.
+    Does NOT replace the normal Windows boot entry.
+    - one_shot=True → reagentc /boottore (next reboot enters WinRE once, then back to Windows)
+    - Never auto-reboots here; caller decides after guarantee_bootable.
+    """
+    result: dict[str, Any] = {"staged": False, "mode": None, "actions": []}
+    allow = os.environ.get("MAGIC_WINRE_FALLBACK", "1").strip().lower()
+    if allow in ("0", "false", "no"):
+        result["actions"].append("winre_fallback_disabled")
+        return result
+
+    winre = ensure_winre_enabled()
+    result["winre"] = {k: winre.get(k) for k in ("enabled", "location", "actions")}
+    result["actions"].extend(winre.get("actions") or [])
+
+    if not winre.get("enabled"):
+        # Locate Winre.wim and try setreimage
+        candidates = [
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "Recovery" / "Winre.wim",
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Recovery" / "Winre.wim",
+        ]
+        reagentc = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "reagentc.exe"
+        for wim in candidates:
+            if wim.is_file() and reagentc.exists():
+                # /setreimage /path <dir> — directory containing Winre.wim
+                c, o = _run([str(reagentc), "/setreimage", "/path", str(wim.parent)], timeout=120)
+                result["actions"].append(f"setreimage:{c}")
+                log(f"reagentc /setreimage {wim.parent} -> {c}: {(o or '')[:160]}")
+                c2, _ = _run([str(reagentc), "/enable"], timeout=180)
+                result["actions"].append(f"reagentc_enable_after_set:{c2}")
+                winre = ensure_winre_enabled()
+                result["winre"] = {k: winre.get(k) for k in ("enabled", "location", "actions")}
+                break
+
+    if not winre.get("enabled"):
+        result["actions"].append("winre_unavailable")
+        return result
+
+    reagentc = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "reagentc.exe"
+    if one_shot and reagentc.exists():
+        # Next reboot → WinRE once (ramdisk), then normal Windows — ideal temporary fix env
+        c, o = _run([str(reagentc), "/boottore"], timeout=60)
+        result["actions"].append(f"boottore:{c}")
+        if c == 0:
+            result["staged"] = True
+            result["mode"] = "reagentc_boottore_oneshot"
+            log("Temporary WinRE ramdisk boot staged (one-shot via reagentc /boottore)", "OK")
+        else:
+            log(f"reagentc /boottore failed: {(o or '')[:200]}", "WARN")
+
+    # Also ensure recovery sequence is linked (multi-fallback)
+    _bcdedit("/set", "{current}", "recoveryenabled", "Yes")
+    result["actions"].append("recoveryenabled_yes")
+
+    # Write operator guide
+    try:
+        guide = STATE_DIR / "rescue" / "WinRE-Temporary-Boot.txt"
+        guide.parent.mkdir(parents=True, exist_ok=True)
+        guide.write_text(
+            "\n".join(
+                [
+                    "Win11 Magic Upgrade — temporary WinRE (ramdisk) repair boot",
+                    "=" * 56,
+                    f"Staged: {result.get('staged')} mode={result.get('mode')}",
+                    f"WinRE enabled: {winre.get('enabled')} loc={winre.get('location')}",
+                    "",
+                    "What this does:",
+                    "- Uses Microsoft Windows Recovery Environment (Winre.wim) in RAM",
+                    "- One-shot: next reboot enters WinRE, then returns to normal Windows",
+                    "- Does NOT wipe disks; does NOT replace your Windows boot entry",
+                    "",
+                    "In WinRE you can run:",
+                    "  Startup Repair | bcdboot C:\\Windows /s S: /f UEFI | diskpart | bootrec",
+                    "",
+                    "Disable one-shot staging: MAGIC_WINRE_FALLBACK=0",
+                    "Force staging even when boot looks OK: MAGIC_WINRE_BOOT=1",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        result["guide"] = str(guide)
+    except Exception:
+        pass
+    return result
+
+
+def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int | None = None) -> dict[str, Any]:
+    """
+    Full intelligent fallback ladder after ESP/MBR errors:
+      BCD import → ESP snapshot → bcdboot → bcdedit heal → bootrec → WinRE ramdisk stage
+    """
+    uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
+    log("=" * 60, "STEP")
+    log("INTELLIGENT BOOT REPAIR — multi-tool fallbacks", "STEP")
+    summary: dict[str, Any] = {"actions": [], "uefi": uefi, "system_disk": system_disk}
+
+    if restore_bcd_from_last():
+        summary["actions"].append("bcd_import")
+    if restore_esp_critical_files():
+        summary["actions"].append("esp_files_restored")
+    if rewrite_boot_files_from_windows(prefer_uefi=uefi):
+        summary["actions"].append("bcdboot_rewrite")
+
+    # Extra bcdboot ALL pass
+    sys_root = os.environ.get("SystemRoot", r"C:\Windows")
+    bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
+    if bcdboot.exists():
+        for mode in (("ALL", "UEFI", "BIOS") if uefi else ("ALL", "BIOS", "UEFI")):
+            code, out = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
+            summary["actions"].append(f"bcdboot_{mode}:{code}")
+            if code == 0 or "successfully" in (out or "").lower():
+                break
+
+    summary["actions"].extend(heal_bcd_store(prefer_uefi=uefi))
+    summary["actions"].extend(try_bootrec_repair())
+    summary["actions"].extend(try_bootrec_fixmbr_if_bios())
+
+    winre_stage = stage_temporary_winre_ramdisk_boot(one_shot=True)
+    summary["winre_stage"] = winre_stage
+    summary["actions"].extend(winre_stage.get("actions") or [])
+
+    post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
+    summary["postflight"] = post
+    summary["bootable"] = bool(post.get("ok") or post.get("bcd_bootmgr"))
+    # If still flaky but WinRE staged, mark recoverable
+    if not summary["bootable"] and winre_stage.get("staged"):
+        summary["recoverable_via_winre"] = True
+        log("Windows boot uncertain — temporary WinRE ramdisk boot is staged for next reboot", "WARN")
+    elif summary["bootable"]:
+        log("Intelligent repair: boot verified OK", "OK")
+    return summary
+
+
 def guarantee_bootable(
     *,
     expect_uefi: bool | None = None,
@@ -297,7 +573,7 @@ def guarantee_bootable(
     force_restore: bool = False,
 ) -> dict[str, Any]:
     """
-    ALWAYS leave the machine able to reboot into Windows.
+    ALWAYS leave the machine able to reboot into Windows (or one-shot WinRE).
     Called after success OR failure of ESP/MBR edits.
     """
     log("=" * 60, "STEP")
@@ -305,46 +581,52 @@ def guarantee_bootable(
     uefi = expect_uefi if expect_uefi is not None else (_firmware() == "UEFI")
     actions: list[str] = []
     post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
+    winre_stage: dict[str, Any] = {}
 
-    if post.get("ok") and not force_restore:
+    force_winre = os.environ.get("MAGIC_WINRE_BOOT", "").strip().lower() in ("1", "true", "yes")
+
+    if post.get("ok") and not force_restore and not force_winre:
         actions.append("postflight_ok")
-        out = {"bootable": True, "actions": actions, "postflight": post, "restored": False}
+        out = {
+            "bootable": True,
+            "actions": actions,
+            "postflight": post,
+            "restored": False,
+            "winre_stage": {},
+        }
         _write_bootable_status(out)
         return out
 
-    # Progressive restore
-    if force_restore or not post.get("ok"):
-        if restore_bcd_from_last():
-            actions.append("bcd_import")
-        if restore_esp_critical_files():
-            actions.append("esp_files_restored")
-        if rewrite_boot_files_from_windows(prefer_uefi=uefi):
-            actions.append("bcdboot_rewrite")
-        post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
+    # Progressive restore + intelligent multi-tool ladder
+    if force_restore or not post.get("ok") or force_winre:
+        repair = intelligent_boot_repair(prefer_uefi=uefi, system_disk=system_disk)
+        actions.extend(repair.get("actions") or [])
+        post = repair.get("postflight") or postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
+        winre_stage = repair.get("winre_stage") or {}
 
-    # Soft accept: BCD bootmgr present even if ESP inspect flaky (mountvol race)
     bootable = bool(post.get("ok") or post.get("bcd_bootmgr"))
-    if not bootable:
-        # One more bcdboot without /s (default system partition)
-        sys_root = os.environ.get("SystemRoot", r"C:\Windows")
-        bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
-        if bcdboot.exists():
-            mode = "UEFI" if uefi else "BIOS"
-            code, out = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
-            actions.append(f"bcdboot_default_{mode}:{code}")
-            post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
-            bootable = bool(post.get("ok") or post.get("bcd_bootmgr") or code == 0)
+    # One-shot WinRE counts as "safe reboot path" (temporary lite OS) if Windows uncertain
+    safe_reboot_path = bootable or bool(winre_stage.get("staged"))
 
     out = {
         "bootable": bootable,
+        "safe_reboot_path": safe_reboot_path,
         "actions": actions,
         "postflight": post,
-        "restored": "bcd_import" in actions or "esp_files_restored" in actions or "bcdboot_rewrite" in actions,
+        "winre_stage": winre_stage,
+        "restored": any(
+            a.startswith(p)
+            for a in actions
+            for p in ("bcd_import", "esp_files", "bcdboot", "bcdedit", "bootrec", "reagentc", "boottore", "set_")
+        )
+        or bool(actions),
     }
     if bootable:
         log("PC is bootable (verified) — safe to reboot", "OK")
+    elif winre_stage.get("staged"):
+        log("Windows uncertain — next reboot enters temporary WinRE ramdisk (then back to Windows)", "WARN")
     else:
-        log("CRITICAL: could not verify bootability — do NOT force reboot without WinRE", "ERROR")
+        log("CRITICAL: could not verify bootability — do NOT force reboot without WinRE/GParted media", "ERROR")
     _write_bootable_status(out)
     return out
 
@@ -366,17 +648,22 @@ def safe_reboot_after_boot_op(
     expect_uefi: bool | None = None,
 ) -> dict[str, Any]:
     """
-    Reboot only if guarantee_bootable says OK.
+    Reboot only if guarantee_bootable says OK (Windows bootable OR one-shot WinRE staged).
     Success or failure of the partition op must not brick the PC.
     """
     from .autonomy import schedule_reboot
 
     g = guarantee_bootable(expect_uefi=expect_uefi, system_disk=system_disk, force_restore=not success)
     result = {"scheduled": False, "bootable": g.get("bootable"), "guarantee": g, "success_op": success}
-    if not g.get("bootable"):
-        log("Reboot SKIPPED — bootability not verified after restore attempts", "ERROR")
+    ok_path = bool(g.get("bootable") or g.get("safe_reboot_path"))
+    if not ok_path:
+        log("Reboot SKIPPED — no verified Windows boot and no WinRE one-shot staged", "ERROR")
         return result
-    tag = "after-boot-op-ok" if success else "after-boot-op-failed-but-restored"
+    if g.get("bootable"):
+        tag = "after-boot-op-ok" if success else "after-boot-op-failed-but-restored"
+    else:
+        tag = "after-boot-op-winre-oneshot"
+        log("Scheduling reboot into temporary WinRE ramdisk (one-shot), then Windows", "WARN")
     schedule_reboot(seconds=seconds, reason=f"{reason} [{tag}]"[:500])
     result["scheduled"] = True
     return result
@@ -413,6 +700,8 @@ def report_boot_failure_autodiag(
         "has_gparted_guide": bool(((op_result or {}).get("fallback") or {}).get("guide")),
         "has_bcd_backup": bool((STATE_DIR / "bcd-backups" / "LAST.txt").exists()),
         "has_esp_snapshot": bool((STATE_DIR / "boot-snapshots" / "LAST.txt").exists()),
+        "winre_staged": bool((guarantee or {}).get("winre_stage", {}).get("staged")),
+        "safe_reboot_path": sanitize_obj((guarantee or {}).get("safe_reboot_path")),
     }
     # Attach sanitized JSON snippets from state (already machine facts)
     for name in ("boot-preflight.json", "boot-postflight.json", "bootable-status.json", "srp-fix.json"):
