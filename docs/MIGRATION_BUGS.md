@@ -86,6 +86,8 @@ One-Click always installs the preventive pack **then** applies runtime remediati
 
 Inventory: `%LOCALAPPDATA%\Win11MagicUpgrade\compat-engine.json`
 
+### Autonomous One-Click (v1.6+)
+
 | Behavior | Detail |
 |----------|--------|
 | Auto-elevate | No Yes/No admin dialog |
