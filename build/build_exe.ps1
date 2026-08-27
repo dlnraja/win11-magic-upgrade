@@ -62,6 +62,7 @@ python -m PyInstaller `
     --hidden-import engine.diskpart_safe `
     --hidden-import engine.sanitize `
     --hidden-import engine.gh_report `
+    --hidden-import engine.errors `
     --add-data "$payload\engine${sep}engine" `
     --add-data "$payload\i18n${sep}i18n" `
     (Join-Path $Root "python\magic_upgrade.py")

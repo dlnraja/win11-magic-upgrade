@@ -13,6 +13,7 @@ from .bypass import apply_hardware_bypass, setup_bypass_args
 from .chain import ChainStep, build_version_chain, format_chain
 from .detect import collect_report, is_admin, print_report
 from .av_trust import declare_all_av_trust
+from .errors import EXIT_BLOCKED, EXIT_FAILED, UpgradeBlockedError, remember_failure
 from .iso import get_iso
 from .logutil import STATE_DIR, init_logging, load_state, log, save_state, write_migration_report, get_log_paths
 from .mbrgpt import convert_mbr_to_gpt, repair_boot_manager
@@ -245,7 +246,9 @@ def _execute_step(
                 if os.environ.get("MAGIC_SRP_CONTINUE", "").strip().lower() in ("1", "true", "yes"):
                     log("ESP/SRP still failing — continuing because MAGIC_SRP_CONTINUE=1" + hint, "WARN")
                     return None
-                raise RuntimeError(msg + "." + (hint or " (sanitized autodiag saved locally)"))
+                full = msg + "." + (hint or " (sanitized autodiag saved locally)")
+                remember_failure(full, kind="esp-srp-failed", links=links)
+                raise UpgradeBlockedError(full, kind="esp-srp-failed", links=links)
         return None
 
     if step.kind == "fix_bootmgr":
@@ -445,7 +448,9 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
                 report={'disk_number': disk} if disk is not None else None,
                 srp_result=result if isinstance(result, dict) else None,
             )
-            raise RuntimeError(msg + '.' + (_links_hint(links) or ' (sanitized autodiag saved locally)'))
+            full = msg + '.' + (_links_hint(links) or ' (sanitized autodiag saved locally)')
+            remember_failure(full, kind='esp-srp-failed', links=links)
+            raise UpgradeBlockedError(full, kind='esp-srp-failed', links=links)
         write_migration_report(
             extra={
                 'Result': 'SRP_OK',
@@ -869,6 +874,26 @@ def run_pipeline(
         )
         end_session(success=True)
         return 0
+    except UpgradeBlockedError as e:
+        log(str(e), 'ERROR')
+        try:
+            write_migration_report(
+                extra={
+                    'Result': 'BLOCKED',
+                    'Exception': str(e),
+                    'Mode': 'ONECLICK',
+                    'Kind': getattr(e, 'kind', ''),
+                    'Issue': (getattr(e, 'links', None) or {}).get('issue'),
+                }
+            )
+        except Exception:
+            pass
+        try:
+            end_session(success=False)
+        except Exception:
+            pass
+        remember_failure(str(e), kind=getattr(e, 'kind', ''), links=getattr(e, 'links', None))
+        return EXIT_BLOCKED
     except Exception as e:
         log(str(e), 'ERROR')
         try:
@@ -881,6 +906,10 @@ def run_pipeline(
             pass
         # File GitHub autodiag if this failure was not already reported (ESP/SRP path embeds Issue:)
         msg = str(e)
+        links: dict = {}
         if 'Issue:' not in msg and 'github.com/' not in msg.lower():
-            _autodiag_links(kind='oneclick-failed', message=msg[:500], extra={'mode': 'ONECLICK'})
-        raise
+            links = _autodiag_links(kind='oneclick-failed', message=msg[:500], extra={'mode': 'ONECLICK'})
+        full = msg + (_links_hint(links) if links else '')
+        remember_failure(full or msg, kind='oneclick-failed', links=links)
+        # Do NOT re-raise — frozen windowed EXE would show PyInstaller "Unhandled exception"
+        return EXIT_FAILED

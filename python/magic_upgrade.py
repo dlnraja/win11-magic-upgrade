@@ -509,6 +509,10 @@ class App(tk.Tk):
                     code = run_pipeline(sink, quiet=True)
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
                 SETUP_OK = {0, 3010, 3011}
+                try:
+                    from engine.errors import EXIT_BLOCKED, EXIT_FAILED  # type: ignore
+                except Exception:
+                    EXIT_BLOCKED, EXIT_FAILED = 2, 3
                 if code == 3010:
                     msg = self.t.get(
                         "done_reboot",
@@ -521,6 +525,11 @@ class App(tk.Tk):
                         "Windows Setup launched. PC will reboot; upgrade continues automatically.",
                     )
                     self.after(0, lambda: messagebox.showinfo(title, msg))
+                elif code in (EXIT_BLOCKED, EXIT_FAILED):
+                    kind, detail = _failure_detail(code=code)
+                    body = _format_user_error(self.t, kind, detail)
+                    self.after(0, self.append, body + "\n")
+                    self.after(0, lambda b=body: messagebox.showerror(title, b))
                 elif code == 0:
                     self.after(
                         0,
@@ -529,13 +538,18 @@ class App(tk.Tk):
                 else:
                     msg = self.t.get("done_warn", "Code {code}").replace("{code}", str(code))
                     self.after(0, lambda: messagebox.showwarning(title, msg))
-                ok = True
+                ok = code in SETUP_OK or code == 0
             except Exception as ex:
                 hint = ""
                 try:
+                    from engine.errors import UpgradeBlockedError, remember_failure  # type: ignore
                     from engine.gh_report import report_unhandled_exception  # type: ignore
 
-                    if "Issue:" not in str(ex):
+                    if isinstance(ex, UpgradeBlockedError):
+                        remember_failure(str(ex), kind=ex.kind, links=ex.links)
+                        if ex.links.get("issue"):
+                            hint = f"\n\nGitHub: {ex.links['issue']}"
+                    elif "Issue:" not in str(ex):
                         links = report_unhandled_exception(
                             type(ex),
                             ex,
@@ -548,9 +562,10 @@ class App(tk.Tk):
                             hint = "\n\nSanitized autodiag saved locally."
                 except Exception:
                     pass
-                self.after(0, self.append, f"\nERROR: {ex}{hint}\n")
-                err_txt = str(ex) + hint
-                self.after(0, lambda t=err_txt: messagebox.showerror(title, t))
+                kind, detail = _failure_detail(ex)
+                body = _format_user_error(self.t, kind, (detail or str(ex)) + hint)
+                self.after(0, self.append, f"\nERROR:\n{body}\n")
+                self.after(0, lambda b=body: messagebox.showerror(title, b))
             finally:
                 try:
                     from engine.progress import end_session, set_progress_callback  # type: ignore
@@ -596,6 +611,98 @@ def _parse_auto_action(argv: list[str]) -> str | None:
     return None
 
 
+def _message_box(title: str, message: str, *, error: bool = True) -> None:
+    """Native Windows dialog — works even when stdout is hidden (windowed EXE)."""
+    try:
+        flags = 0x00000010 if error else 0x00000040  # MB_ICONERROR / MB_ICONINFORMATION
+        ctypes.windll.user32.MessageBoxW(None, str(message)[:1500], str(title)[:120], flags)
+    except Exception:
+        try:
+            print(message, file=sys.stderr)
+        except Exception:
+            pass
+
+
+def _failure_detail(exc: BaseException | None = None, code: int | None = None) -> tuple[str, str]:
+    """Return (kind, detail_text) for user dialogs."""
+    kind = ""
+    detail = ""
+    links: dict = {}
+    try:
+        from engine.errors import last_failure  # type: ignore
+
+        info = last_failure()
+        kind = str(info.get("kind") or "")
+        detail = str(info.get("message") or "")
+        links = dict(info.get("links") or {})
+    except Exception:
+        pass
+    if not detail and exc is not None:
+        detail = str(exc)
+    if not detail and code is not None:
+        detail = f"exit code {code}"
+    issue = (links or {}).get("issue") or ""
+    if issue and issue not in detail:
+        detail = (detail + f"\n\nGitHub: {issue}").strip()
+    if not kind and detail and "ESP/SRP" in detail:
+        kind = "esp-srp-failed"
+    return kind, detail
+
+
+def _format_user_error(t: dict, kind: str, detail: str) -> str:
+    key = "error_esp_srp" if "esp-srp" in (kind or "") or "ESP/SRP" in detail else "error_blocked"
+    if kind in ("oneclick-failed", "unhandled-exception", "main-unhandled-exception", "gui-oneclick-exception"):
+        if "ESP/SRP" not in detail:
+            key = "error_crash"
+    tmpl = t.get(key) or t.get("error_blocked") or "{detail}"
+    return tmpl.replace("{detail}", detail or "(see logs)")
+
+
+def absorb_fatal(exc: BaseException, *, strings: dict | None = None) -> int:
+    """
+    Report + show friendly dialog. Never re-raise — avoids PyInstaller
+    'Unhandled exception in script' for expected upgrade stops.
+    """
+    from engine.errors import EXIT_BLOCKED, EXIT_FAILED, UpgradeBlockedError  # type: ignore
+
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        raise exc
+
+    t = strings or {}
+    try:
+        if not t:
+            t = load_strings(app_root())
+    except Exception:
+        t = {}
+
+    links: dict = {}
+    try:
+        from engine.gh_report import report_unhandled_exception  # type: ignore
+        from engine.errors import remember_failure  # type: ignore
+
+        if isinstance(exc, UpgradeBlockedError):
+            remember_failure(str(exc), kind=exc.kind, links=exc.links)
+            links = dict(exc.links or {})
+        elif "Issue:" not in str(exc):
+            links = report_unhandled_exception(
+                type(exc),
+                exc,
+                exc.__traceback__,
+                kind="app-fatal-exception",
+            ) or {}
+            remember_failure(str(exc), kind="app-fatal-exception", links=links)
+    except Exception:
+        pass
+
+    kind, detail = _failure_detail(exc)
+    if links.get("issue") and links["issue"] not in detail:
+        detail = (detail + f"\n\nGitHub: {links['issue']}").strip()
+    title = t.get("app_title", "Win11 Magic Upgrade")
+    body = _format_user_error(t, kind, detail)
+    _message_box(title, body, error=True)
+    return EXIT_BLOCKED if isinstance(exc, UpgradeBlockedError) or "ESP/SRP" in str(exc) else EXIT_FAILED
+
+
 def main() -> None:
     root = app_root()
     _ensure_sys_path(root)
@@ -608,6 +715,7 @@ def main() -> None:
     argv = sys.argv[1:]
     argv_l = [a.lower() for a in argv]
     auto_action = _parse_auto_action(argv)
+    strings = load_strings(root)
 
     cli = any(
         a in argv_l
@@ -641,6 +749,7 @@ def main() -> None:
                 run_patch_enrichment,
                 run_pipeline,
             )
+            from engine.errors import EXIT_BLOCKED, EXIT_FAILED, UpgradeBlockedError  # type: ignore
 
             if "--diagnose" in argv_l:
                 run_diagnose()
@@ -650,7 +759,6 @@ def main() -> None:
                 from engine.logutil import init_logging
 
                 init_logging()
-                # Cloud declare does not strictly need admin; local Defender exclusions do
                 if not is_admin():
                     if relaunch_as_admin(argv):
                         raise SystemExit(0)
@@ -662,47 +770,68 @@ def main() -> None:
                     raise SystemExit(0)
                 print("ERROR: UAC elevation failed or was cancelled.", file=sys.stderr)
                 raise SystemExit(5)
-            if "--bypass" in argv_l:
-                apply_bypass_only()
-                return
-            if "--mbr" in argv_l:
-                convert_mbr_only()
-                return
-            if "--srp" in argv_l:
-                fix_system_reserved_only()
-                return
-            if "--hybrid-activate" in argv_l:
-                deploy_hybrid_only(activate=True)
-                return
-            if "--hybrid" in argv_l:
-                deploy_hybrid_only(activate=False)
-                return
-            if "--install-patches" in argv_l:
-                install_preventive_only()
-                return
-            if "--patch-deep" in argv_l:
-                run_patch_enrichment(deep_heal=True)
-                return
-            if "--patch" in argv_l:
-                run_patch_enrichment(deep_heal=False)
-                return
-            code = run_pipeline(resume="--resume" in argv_l)
-            raise SystemExit(code)
+            try:
+                if "--bypass" in argv_l:
+                    apply_bypass_only()
+                    return
+                if "--mbr" in argv_l:
+                    convert_mbr_only()
+                    return
+                if "--srp" in argv_l:
+                    fix_system_reserved_only()
+                    return
+                if "--hybrid-activate" in argv_l:
+                    deploy_hybrid_only(activate=True)
+                    return
+                if "--hybrid" in argv_l:
+                    deploy_hybrid_only(activate=False)
+                    return
+                if "--install-patches" in argv_l:
+                    install_preventive_only()
+                    return
+                if "--patch-deep" in argv_l:
+                    run_patch_enrichment(deep_heal=True)
+                    return
+                if "--patch" in argv_l:
+                    run_patch_enrichment(deep_heal=False)
+                    return
+                code = run_pipeline(resume="--resume" in argv_l)
+                if code in (EXIT_BLOCKED, EXIT_FAILED):
+                    kind, detail = _failure_detail(code=code)
+                    _message_box(
+                        strings.get("app_title", "Win11 Magic Upgrade"),
+                        _format_user_error(strings, kind, detail),
+                        error=True,
+                    )
+                raise SystemExit(code)
+            except UpgradeBlockedError as e:
+                raise SystemExit(absorb_fatal(e, strings=strings))
+            except SystemExit:
+                raise
+            except Exception as e:
+                raise SystemExit(absorb_fatal(e, strings=strings))
 
         App(auto_action=auto_action).mainloop()
     except SystemExit:
         raise
-    except Exception:
-        # Last-resort CLI/GUI startup catch (hooks also cover this)
-        try:
-            from engine.gh_report import report_unhandled_exception  # type: ignore
-            import sys as _sys
-
-            report_unhandled_exception(*_sys.exc_info(), kind="main-unhandled-exception")
-        except Exception:
-            pass
-        raise
+    except Exception as e:
+        raise SystemExit(absorb_fatal(e, strings=strings))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as e:
+        # Absolute last line of defense vs PyInstaller "Unhandled exception in script"
+        try:
+            raise SystemExit(absorb_fatal(e))
+        except SystemExit:
+            raise
+        except Exception:
+            try:
+                _message_box("Win11 Magic Upgrade", str(e)[:800], error=True)
+            except Exception:
+                pass
+            raise SystemExit(3)

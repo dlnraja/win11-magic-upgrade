@@ -29,7 +29,7 @@ from .logutil import STATE_DIR, SETUPACT, SETUPERR, log
 from .sanitize import safe_report_fields, sanitize_obj, sanitize_text
 
 DEFAULT_REPO = "dlnraja/win11-magic-upgrade"
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.18.0"
 LABELS = ("autodiag", "esp-srp")
 _UNHANDLED_LABELS = ("autodiag", "unhandled")
 _reporting_lock = False
@@ -559,6 +559,21 @@ def install_exception_hooks() -> None:
         except Exception:
             pass
         report_unhandled_exception(exc_type, exc, tb, kind="unhandled-exception")
+        # Frozen windowed builds: avoid PyInstaller crash UI; show a short native box.
+        if getattr(sys, "frozen", False):
+            try:
+                import ctypes
+
+                msg = sanitize_text(f"{getattr(exc_type, '__name__', 'Error')}: {exc}")[:900]
+                ctypes.windll.user32.MessageBoxW(
+                    None,
+                    msg + "\n\n(Sanitized autodiag prepared — no personal data.)",
+                    "Win11 Magic Upgrade",
+                    0x00000010,
+                )
+            except Exception:
+                pass
+            return
         try:
             sys.__excepthook__(exc_type, exc, tb)
         except Exception:
