@@ -207,6 +207,29 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
         'chain_path': format_chain(chain),
         'logs': get_log_paths(),
     }
+    preventive_installed = False
+    preventive_ver = 0
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Win11MagicUpgrade'
+        ) as k:
+            preventive_installed = bool(winreg.QueryValueEx(k, 'PreventivePackInstalled')[0])
+            try:
+                preventive_ver = int(winreg.QueryValueEx(k, 'PreventivePackVersion')[0])
+            except OSError:
+                preventive_ver = 0
+    except OSError:
+        pass
+    payload['preventive_pack'] = {
+        'installed': preventive_installed,
+        'version': preventive_ver,
+    }
+    log(
+        f"Preventive pack: {'INSTALLED v' + str(preventive_ver) if preventive_installed else 'NOT INSTALLED'}",
+        'OK' if preventive_installed else 'WARN',
+    )
     out.write_text(json.dumps(payload, indent=2), encoding='utf-8')
     log(f'Diagnosis + chain written to {out}', 'OK')
     write_migration_report(
@@ -216,6 +239,8 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
             'Target': plan.target,
             'Chain': format_chain(chain),
             'CanWin11': plan.can_win11,
+            'PreventivePack': preventive_installed,
+            'PreventivePackVersion': preventive_ver,
         },
     )
     try:
@@ -231,8 +256,11 @@ def apply_bypass_only(sink: Callable[[str], None] | None = None) -> None:
     init_logging(sink)
     if not is_admin():
         raise PermissionError('Administrator required')
+    from .preventive import install_all_preventive_patches
+
+    install_all_preventive_patches()
     apply_hardware_bypass()
-    write_migration_report(extra={'Result': 'BYPASS_ONLY'})
+    write_migration_report(extra={'Result': 'BYPASS_AND_PREVENTIVE_INSTALLED'})
 
 
 def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
@@ -305,18 +333,22 @@ def run_patch_enrichment(
     deep_heal: bool = False,
 ) -> None:
     """
-    Patch / enrich / support mode: full remediation without launching setup ISO.
+    Patch / enrich / support mode: install ALL preventive patches + runtime remediation
+    without launching setup ISO.
     """
     init_logging(sink)
     if not is_admin():
         raise PermissionError("Administrator required")
-    log("=== PATCH / ENRICH / SUPPORT mode (no ISO upgrade) ===", "STEP")
+    log("=== PATCH mode: INSTALL preventives + runtime remediation (no ISO) ===", "STEP")
+    from .preventive import install_all_preventive_patches
+
+    inv = install_all_preventive_patches()
     r = collect_report()
     print_report(r)
     plan = build_plan(r)
     print_plan(plan)
     apply_hardware_bypass()
-    apply_migration_patches()
+    apply_migration_patches(install_preventive=False)
     if deep_heal:
         from .enrich import dism_component_cleanup_and_heal
 
@@ -326,11 +358,30 @@ def run_patch_enrichment(
     write_support_pack(
         extra={
             "Mode": "PATCH_DEEP" if deep_heal else "PATCH",
+            "PreventiveOk": inv.get("CountOk"),
             "Target": plan.target,
             "Chain": format_chain(build_version_chain(r)),
         }
     )
-    log("Patch/enrichment complete. Review SupportGuide.txt and MigrationReport.txt", "OK")
+    log("Preventive pack INSTALLED + runtime remediations applied. See SupportGuide.txt", "OK")
+
+
+def install_preventive_only(sink: Callable[[str], None] | None = None) -> None:
+    """Install every durable preventive patch; no runtime cleanup / no ISO."""
+    init_logging(sink)
+    if not is_admin():
+        raise PermissionError("Administrator required")
+    from .preventive import install_all_preventive_patches
+
+    inv = install_all_preventive_patches()
+    write_migration_report(
+        extra={
+            "Result": "PREVENTIVE_PACK_INSTALLED",
+            "PreventiveOk": inv.get("CountOk"),
+            "PreventiveFail": inv.get("CountFail"),
+        }
+    )
+    log("All preventive patches installed persistently on this PC.", "OK")
 
 
 def run_pipeline(

@@ -67,10 +67,17 @@ def write_support_pack(extra: dict[str, Any] | None = None) -> Path:
             "CLI helpers",
             "-" * 40,
             "Win11MagicUpgrade.exe --cli --diagnose",
+            "Win11MagicUpgrade.exe --cli --install-patches",
             "Win11MagicUpgrade.exe --cli --patch",
             "Win11MagicUpgrade.exe --cli --patch-deep",
             "Win11MagicUpgrade.exe --cli --srp",
             "Win11MagicUpgrade.exe --cli --hybrid",
+            "",
+            "Preventive vs runtime",
+            "-" * 40,
+            "--install-patches : durable REG/services installed on the PC (survive reboot)",
+            "--patch / One-Click : install preventives + runtime remediation each run",
+            "Inventory: %LOCALAPPDATA%\\Win11MagicUpgrade\\installed-preventive-patches.json",
             "",
         ]
     )

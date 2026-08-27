@@ -70,7 +70,8 @@ After each ISO step, **RunOnce** resumes the next chain step automatically.
 CLI extras (admin):
 
 ```text
-Win11MagicUpgrade.exe --cli --patch            # Remediate + enrich + SupportGuide (no ISO)
+Win11MagicUpgrade.exe --cli --install-patches  # Install ALL preventive patches (persistent)
+Win11MagicUpgrade.exe --cli --patch            # Preventives + runtime remediate + SupportGuide (no ISO)
 Win11MagicUpgrade.exe --cli --patch-deep       # + DISM RestoreHealth / SFC
 Win11MagicUpgrade.exe --cli --hybrid           # Stage CSMWrap IA32 hybrid on ESP
 Win11MagicUpgrade.exe --cli --hybrid-activate  # Replace bootia32.efi (stock backed up)

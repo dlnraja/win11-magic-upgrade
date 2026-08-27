@@ -1,36 +1,38 @@
 {
   "en": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "Auto-diag · patch/enrich · ESP/SRP · hybrid IA32 · support logs",
+    "app_sub": "Auto-diag · preventives · runtime patches · ESP/SRP · hybrid IA32 · support",
     "btn_oneclick": "One-Click (intelligent)",
     "btn_diagnose": "Auto-diagnose",
     "btn_bypass": "Registry pack",
     "btn_mbr": "MBR→GPT + Boot",
     "btn_srp": "Fix ESP/SRP",
     "btn_patch": "Patch / Enrich",
-    "note": "Keeps files & apps · Patch/Enrich mode · ESP padding · language-pack trim · restore point · SupportGuide.txt · Pure Python — NO .NET 4.x / NO PowerShell",
-    "confirm_upgrade": "Run stepped migration (intermediate versions if needed)?\nExample: Win10 1511 -> 22H2 -> Win11 latest.\nPatches + enrichment run first. Files and apps kept.\nMigrationReport + SupportGuide written to Desktop.",
+    "btn_install_patches": "Install preventives",
+    "note": "Keeps files & apps · Installs ALL preventive patches persistently + runtime remediation · ESP padding · SupportGuide · Pure Python — NO .NET 4.x / NO PowerShell",
+    "confirm_upgrade": "Run stepped migration (intermediate versions if needed)?\nExample: Win10 1511 -> 22H2 -> Win11 latest.\nAll preventive patches are installed first, then runtime remediations.\nMigrationReport + SupportGuide written to Desktop.",
     "need_admin": "Administrator rights are required.\nRelaunch as admin?",
-    "ready": "Ready. Use Patch/Enrich to remediate without upgrading, or One-Click for full chain.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
+    "ready": "Ready. Install preventives (persistent) or Patch/Enrich (preventives + runtime). One-Click does both then upgrades.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
     "done_ok": "Done.\nSee Desktop MigrationReport.txt + SupportGuide.txt and Panther\\setuperr.log",
     "done_warn": "Finished with code {code}.\nSee Desktop MigrationReport.txt + SupportGuide.txt",
-    "logs_hint": "Logs: Panther\\setupact.log / setuperr.log + MigrationReport.txt + SupportGuide.txt"
+    "logs_hint": "Logs: Panther\\setupact.log / setuperr.log + MigrationReport.txt + SupportGuide.txt + installed-preventive-patches.json"
   },
   "fr": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "Auto-diag · patch/enrich · ESP/SRP · hybride IA32 · support",
+    "app_sub": "Auto-diag · preventifs · patches runtime · ESP/SRP · hybride IA32 · support",
     "btn_oneclick": "One-Click (intelligent)",
     "btn_diagnose": "Auto-diagnostic",
     "btn_bypass": "Pack registre",
     "btn_mbr": "MBR→GPT + Boot",
     "btn_srp": "Corriger ESP/SRP",
     "btn_patch": "Patch / Enrich",
-    "note": "Conserve fichiers & apps · Mode Patch/Enrich · Padding ESP · language packs · point de restauration · SupportGuide.txt · Python pur — PAS de .NET 4.x / PAS de PowerShell",
-    "confirm_upgrade": "Lancer la migration par paliers ?\nExemple: Win10 1511 -> 22H2 -> Win11 latest.\nPatches + enrichissement d'abord. Fichiers et apps conserves.\nMigrationReport + SupportGuide sur le Bureau.",
+    "btn_install_patches": "Installer preventifs",
+    "note": "Conserve fichiers & apps · Installe TOUS les patches preventifs (persistants) + remediation runtime · Padding ESP · SupportGuide · Python pur — PAS de .NET 4.x / PAS de PowerShell",
+    "confirm_upgrade": "Lancer la migration par paliers ?\nExemple: Win10 1511 -> 22H2 -> Win11 latest.\nTous les patches preventifs sont installes d'abord, puis la remediation runtime.\nMigrationReport + SupportGuide sur le Bureau.",
     "need_admin": "Des droits Administrateur sont requis.\nRelancer en admin ?",
-    "ready": "Pret. Patch/Enrich pour remedier sans upgrader, ou One-Click pour la chaine complete.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
+    "ready": "Pret. Installer preventifs (persistants) ou Patch/Enrich (preventifs + runtime). One-Click fait les deux puis upgrade.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
     "done_ok": "Termine.\nVoir MigrationReport.txt + SupportGuide.txt sur le Bureau et Panther\\setuperr.log",
     "done_warn": "Termine avec code {code}.\nVoir MigrationReport.txt + SupportGuide.txt",
-    "logs_hint": "Logs: Panther\\setupact.log / setuperr.log + MigrationReport.txt + SupportGuide.txt"
+    "logs_hint": "Logs: Panther\\setupact.log / setuperr.log + MigrationReport.txt + SupportGuide.txt + installed-preventive-patches.json"
   }
 }

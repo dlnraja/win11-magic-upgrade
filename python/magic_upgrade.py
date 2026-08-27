@@ -173,6 +173,17 @@ class App(tk.Tk):
             pady=8,
             command=lambda: self.start("patch"),
         ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            btns,
+            text=self.t.get("btn_install_patches", "Install preventives"),
+            font=("Segoe UI", 10),
+            bg="#14532d",
+            fg="#e2e8f0",
+            relief="flat",
+            padx=12,
+            pady=8,
+            command=lambda: self.start("install-patches"),
+        ).pack(side="left", padx=(8, 0))
 
         tk.Label(
             self,
@@ -223,6 +234,7 @@ class App(tk.Tk):
                     apply_bypass_only,
                     convert_mbr_only,
                     fix_system_reserved_only,
+                    install_preventive_only,
                     run_diagnose,
                     run_patch_enrichment,
                     run_pipeline,
@@ -243,6 +255,9 @@ class App(tk.Tk):
                     code = 0
                 elif action == "patch":
                     run_patch_enrichment(sink, deep_heal=False)
+                    code = 0
+                elif action == "install-patches":
+                    install_preventive_only(sink)
                     code = 0
                 else:
                     code = run_pipeline(sink)
@@ -288,6 +303,7 @@ def main() -> None:
             "--hybrid-activate",
             "--patch",
             "--patch-deep",
+            "--install-patches",
         )
     )
     if cli:
@@ -296,6 +312,7 @@ def main() -> None:
             convert_mbr_only,
             deploy_hybrid_only,
             fix_system_reserved_only,
+            install_preventive_only,
             run_diagnose,
             run_patch_enrichment,
             run_pipeline,
@@ -321,6 +338,9 @@ def main() -> None:
             return
         if "--hybrid" in argv:
             deploy_hybrid_only(activate=False)
+            return
+        if "--install-patches" in argv:
+            install_preventive_only()
             return
         if "--patch-deep" in argv:
             run_patch_enrichment(deep_heal=True)

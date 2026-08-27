@@ -438,8 +438,17 @@ def suspend_bitlocker_if_needed() -> None:
         log(f"BitLocker suspend skipped: {e}", "WARN")
 
 
-def apply_migration_patches() -> None:
-    log("=== Migration patches (forum / MS researched) ===", "STEP")
+def apply_migration_patches(*, install_preventive: bool = True) -> None:
+    log("=== Migration patches (runtime remediation) ===", "STEP")
+
+    # Always install durable preventives first, then runtime remediations
+    if install_preventive:
+        try:
+            from .preventive import install_all_preventive_patches
+
+            install_all_preventive_patches()
+        except Exception as e:
+            log(f"Preventive pack install skipped: {e}", "WARN")
 
     scan_prior_setup_logs()
     detect_software_blockers()

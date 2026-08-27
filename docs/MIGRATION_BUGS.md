@@ -57,11 +57,23 @@ Research notes (Microsoft Support, SetupDiag, FlyOOBE issues, forums) and what t
 Without launching an ISO:
 
 ```text
-Win11MagicUpgrade.exe --cli --patch         # full remediation + support pack
-Win11MagicUpgrade.exe --cli --patch-deep    # + DISM RestoreHealth + SFC
+Win11MagicUpgrade.exe --cli --install-patches  # INSTALL all preventive patches (persistent)
+Win11MagicUpgrade.exe --cli --patch            # preventives + runtime remediation + support pack
+Win11MagicUpgrade.exe --cli --patch-deep       # + DISM RestoreHealth + SFC
 ```
 
-GUI button **Patch / Enrich**. Writes `SupportGuide.txt` + `MigrationReport.txt` (Desktop copies).
+### Preventive (persistent) vs runtime remediation
+
+| Layer | What | When |
+|-------|------|------|
+| **Preventive pack** | Durable registry (LabConfig, MoSetup, HwReqChk, EspPaddingPercent, AllowOSUpgrade, LongPaths, …), service start types, pagefile/hibernate, WIMMount registration, AppCompat tree purge | Installed on the PC; survives reboot. Marker: `HKLM\SOFTWARE\Win11MagicUpgrade\PreventivePackInstalled` |
+| **Runtime remediation** | Stop AV/VPN filters, clear `$WINDOWS.~BT`, mapped drives, Soft WU reset, fltmc audit, SRP cleanup hooks, etc. | Runs before each upgrade / `--patch` |
+
+One-Click always installs the preventive pack **then** applies runtime remediations before the ISO chain.
+
+Inventory files: `%LOCALAPPDATA%\Win11MagicUpgrade\installed-preventive-patches.json` and `preventive-patches.reg`.
+
+GUI: **Install preventives** or **Patch / Enrich**. Writes `SupportGuide.txt` + `MigrationReport.txt` (Desktop copies).
 
 ## Boot Manager / UEFI bitness (smart)
 
