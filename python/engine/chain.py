@@ -92,10 +92,18 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 note="Prevents reserved-partition upgrade failures",
             )
         )
-        if getattr(r, "firmware_likely_ia32", False):
+        if getattr(r, "firmware_likely_ia32", False) or getattr(r, "boot_strategy", "") == "hybrid_ia32_csmwrap":
             note_max = (
-                "CPU may be 64-bit but UEFI firmware is 32-bit (bootia32) - "
-                "Win11 x64 cannot boot (no supported bypass). Max: Win10 22H2 x86."
+                "IA32 UEFI + hybrid CSMWrap: keep-apps max = Win10 22H2 x86; "
+                "Win11 x64 via clean install after CSMWrap (Secure Boot off)."
+            )
+            steps.append(
+                ChainStep(
+                    id="hybrid_ia32",
+                    label="Deploy hybrid IA32 UEFI bridge (CSMWrap -> SeaBIOS)",
+                    kind="hybrid_ia32",
+                    note="Enables later Win11 x64 boot on 32-bit UEFI firmware",
+                ),
             )
         elif getattr(r, "cpu_64bit", False):
             note_max = (
@@ -125,17 +133,16 @@ def build_version_chain(r: Report) -> list[ChainStep]:
         )
         return steps
 
-    # IA32 UEFI + somehow x64 OS shouldn't happen; if flagged, stop before Win11
-    if getattr(r, "firmware_likely_ia32", False):
+    # IA32 UEFI + x64 OS: hybrid CSMWrap then continue toward Win11 (BIOS handoff)
+    if getattr(r, "firmware_likely_ia32", False) or getattr(r, "boot_strategy", "") == "hybrid_ia32_csmwrap":
         steps.append(
             ChainStep(
-                id="done",
-                label="Blocked: 32-bit UEFI firmware cannot boot Win11 x64",
-                kind="done",
-                note="Hard firmware limit - no safe bypass for bootia32-only systems",
+                id="hybrid_ia32",
+                label="Deploy hybrid IA32 UEFI bridge (CSMWrap -> SeaBIOS)",
+                kind="hybrid_ia32",
+                note="Activate CSMWrap as bootia32; disable Secure Boot; BIOS bootmgr for Win11 x64",
             )
         )
-        return steps
 
     # No SSE4.2: cannot boot Win11 24H2+
     if r.sse42 is False:

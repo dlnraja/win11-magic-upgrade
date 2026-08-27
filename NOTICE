@@ -16,5 +16,12 @@
 - Microsoft documented registry bypass: `AllowUpgradesWithUnsupportedTPMOrCPU`
 - Microsoft MBR2GPT: https://learn.microsoft.com/windows/deployment/mbr-to-gpt
 
+## CSMWrap (optional hybrid IA32 UEFI bridge)
+
+- Project: https://github.com/CSMWrap/CSMWrap
+- Downloaded at runtime only when IA32 UEFI hybrid path is selected (`csmwrapia32.efi`)
+- Not redistributed inside the portable EXE by default
+- See upstream repository for license terms
+
 Windows is a trademark of Microsoft Corporation. This project is not affiliated
 with Microsoft.

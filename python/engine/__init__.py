@@ -5,6 +5,7 @@ from .pipeline import (
     apply_bypass_only,
     convert_mbr_only,
     fix_system_reserved_only,
+    deploy_hybrid_only,
 )
 from .bypass import list_registry_pack
 from .autodiag import build_plan
@@ -16,6 +17,7 @@ __all__ = [
     "apply_bypass_only",
     "convert_mbr_only",
     "fix_system_reserved_only",
+    "deploy_hybrid_only",
     "list_registry_pack",
     "build_plan",
     "build_version_chain",

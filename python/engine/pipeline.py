@@ -149,6 +149,16 @@ def _execute_step(
         apply_smart_boot_strategy(os_arch=report.architecture, is_uefi=report.is_uefi)
         return None
 
+    if step.kind == "hybrid_ia32":
+        from .hybrid_uefi import apply_hybrid_ia32_path
+
+        # Activate default bootia32 only when OS is already x64 (BIOS handoff ready)
+        activate = report.architecture == "x64"
+        res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
+        if not res.get("ok"):
+            log("Hybrid IA32 deploy failed - continuing with safest keep-apps path", "WARN")
+        return None
+
     if step.kind == "mbr2gpt":
         if not report.mbr2gpt_available:
             log("mbr2gpt not available yet - will retry after Win10 intermediate", "WARN")
@@ -232,6 +242,17 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
     result = inspect_and_fix_system_reserved(force_expand=force)
     if not result.get("ok"):
         raise RuntimeError("System Reserved / EFI fix did not complete successfully")
+
+
+def deploy_hybrid_only(sink: Callable[[str], None] | None = None, *, activate: bool = False) -> None:
+    init_logging(sink)
+    if not is_admin():
+        raise PermissionError("Administrator required")
+    from .hybrid_uefi import apply_hybrid_ia32_path
+
+    res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
+    if not res.get("ok"):
+        raise RuntimeError("Hybrid IA32 UEFI deploy failed")
 
 
 def run_pipeline(

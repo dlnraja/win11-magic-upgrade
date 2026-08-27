@@ -32,17 +32,24 @@ Research notes (Microsoft Support, SetupDiag, FlyOOBE issues, forums) and what t
 | USB storage during setup | External disks | Warn to unplug removable drives |
 | Component store (`0x800F081F`) | Corruption | DISM `/CheckHealth` (warn only) |
 | Win11 x64 + 32-bit Boot Manager on ESP | Stale `bootia32` / wrong PE after repairs | Detect PE machine of `bootmgfw.efi`; `bcdboot` rewrite + `bootx64.efi` |
-| Win11 on IA32-only UEFI (Atom tablets) | Firmware bitness must match OS | **Hard limit** — no supported bypass; max Win10 22H2 x86; clean Win11 only if firmware is x64/CSM |
-| 32-bit Windows + 64-bit CPU | Architecture change not inplace | Max Win10 22H2 x86 keep-apps; Win11 = clean install x64 only |
+| Win11 on IA32-only UEFI (Atom tablets) | Firmware bitness must match OS for native UEFI | **Hybrid**: CSMWrap IA32 → SeaBIOS → BIOS bootmgr → Win x64 (`--cli --hybrid`) |
+| 32-bit Windows + 64-bit CPU | Architecture change not inplace | Max Win10 22H2 x86 keep-apps; Win11 = clean install x64 (via hybrid if IA32 UEFI) |
 
 ## Boot Manager / UEFI bitness (smart)
 
-Windows UEFI boot requires **firmware bitness == OS bitness**. The app:
+Windows native UEFI boot requires **firmware bitness == OS bitness**. The app:
 
 1. Mounts ESP and reads PE machine type of `bootmgfw.efi` / `bootx64.efi` / `bootia32.efi`  
-2. If **OS is x64** but ESP still has **32-bit** boot files → **`bcdboot` repair** (safe bypass for mismatch)  
-3. If firmware is **IA32-only** (typical Bay/Cherry Trail tablets) → **honest block**: Win11 x64 cannot load `winload.efi`; stay on Win10 22H2 x86  
-4. Never ships third-party IA32→x64 chainloaders (unsupported / brick risk)
+2. If **OS is x64** but ESP still has **32-bit** boot files → **`bcdboot` repair**  
+3. If firmware is **IA32-only** + **x64 CPU** → **hybrid bridge** (not a hard stop):
+   - Download **CSMWrap** `csmwrapia32.efi` (GitHub release)
+   - Stage on ESP (`EFI\MagicUpgrade\` + selectable `bootia32.magic.efi`)
+   - Install BIOS boot files (`bcdboot /f BIOS`)
+   - Chain: `IA32 UEFI → CSMWrap → SeaBIOS → BIOS bootmgr → Windows x64`
+   - **Secure Boot must be disabled**
+   - Keep-apps max on 32-bit OS remains **Win10 22H2 x86**; Win11 x64 needs clean install after hybrid
+   - `--cli --hybrid-activate` replaces default `bootia32.efi` (stock backed up)
+4. Does not ship unsigned CSMWrap inside the EXE (downloaded on demand)
 
 ## System Reserved / EFI (SRP) fix
 

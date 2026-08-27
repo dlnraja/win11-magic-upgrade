@@ -7,8 +7,9 @@ Scenarios (forums + Microsoft UEFI rules):
   C) OS x86 + CPU x64 + Legacy/BIOS               -> no inplace Win11; clean x64 only if CSM
   D) OS x64 + BIOS boot, UEFI-capable disk GPT    -> repair to UEFI x64 bootmgr
 
-Windows requires firmware bitness == OS bitness for UEFI boot.
-There is no supported way to run Win11 x64 on IA32-only UEFI firmware.
+Windows UEFI requires matching bitness for native boot.
+For IA32-only firmware + x64 CPU we use a hybrid CSMWrap bridge:
+  IA32 UEFI -> CSMWrap -> SeaBIOS -> BIOS bootmgr -> Windows x64
 """
 from __future__ import annotations
 
@@ -205,10 +206,12 @@ def analyze_boot_environment(os_arch: str, is_uefi: bool) -> BootEnv:
             strategy = "repair_bootmgr_x64"
             win11 = True
         elif firmware_ia32:
-            # Extremely rare if OS is already x64
-            strategy = "blocked_ia32_firmware"
-            win11 = False
-            notes.append("IA32 UEFI cannot load Win11 x64 winload.efi (hard firmware limit)")
+            # Extremely rare if OS is already x64 — still use hybrid bridge
+            strategy = "hybrid_ia32_csmwrap"
+            win11 = True  # via hybrid BIOS path after CSMWrap
+            notes.append(
+                "IA32 UEFI + x64 OS: deploy hybrid CSMWrap (UEFI IA32 -> SeaBIOS -> BIOS bootmgr)"
+            )
         else:
             strategy = "ok_x64"
             win11 = True
@@ -219,11 +222,11 @@ def analyze_boot_environment(os_arch: str, is_uefi: bool) -> BootEnv:
             win11 = False
             notes.append("32-bit CPU - Windows 11 does not exist")
         elif firmware_ia32:
-            strategy = "max_win10_x86_ia32_uefi"
-            win11 = False
+            strategy = "hybrid_ia32_csmwrap"
+            win11 = False  # no inplace x86->x64; hybrid enables later clean Win11 x64
             notes.append(
-                "CPU is 64-bit but firmware is 32-bit UEFI (bootia32). "
-                "Win11 x64 cannot boot here - no supported bypass. Max: Win10 22H2 x86 (keep apps)."
+                "IA32 UEFI + x64 CPU: hybrid CSMWrap staged for Win11 x64 boot. "
+                "Inplace keep-apps max remains Win10 22H2 x86; Win11 x64 = clean install after hybrid."
             )
         elif is_uefi and has_x64:
             # Odd: x86 OS on firmware that has x64 boot files - still no inplace to Win11
@@ -316,12 +319,32 @@ def apply_smart_boot_strategy(env: BootEnv | None = None, os_arch: str = "x64", 
             log("Boot Manager aligned to x64 for Windows 11 upgrade path", "OK")
         else:
             log("Boot Manager repair incomplete - upgrade may fail at reboot", "WARN")
+    elif env.strategy == "hybrid_ia32_csmwrap":
+        try:
+            from .hybrid_uefi import apply_hybrid_ia32_path
+
+            # Non-destructive stage by default; activate only if OS already x64
+            activate = env.os_arch == "x64"
+            res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
+            if res.get("ok"):
+                log(
+                    "Hybrid IA32 path ready (CSMWrap). Disable Secure Boot. "
+                    + (
+                        "Default bootia32 replaced — next boot is SeaBIOS/legacy."
+                        if res.get("activated")
+                        else "Select CSMWrap from firmware boot menu when installing Win11 x64."
+                    ),
+                    "OK",
+                )
+            else:
+                log("Hybrid deploy incomplete — falling back to Win10 22H2 x86 keep-apps path", "WARN")
+        except Exception as e:
+            log(f"Hybrid IA32 path failed: {e}", "WARN")
     elif env.strategy.startswith("max_win10") or env.strategy.startswith("clean_install"):
         log(f"Win11 x64 path blocked by boot/firmware architecture ({env.strategy})", "WARN")
     elif env.strategy == "blocked_ia32_firmware":
         log(
-            "Hard limit: 32-bit UEFI firmware cannot load 64-bit Windows Boot Manager / winload.efi. "
-            "No safe bypass. Stay on Win10 22H2 x86 or replace hardware/firmware.",
+            "IA32 UEFI without hybrid deploy — use --cli --hybrid to stage CSMWrap bridge.",
             "ERROR",
         )
     return env

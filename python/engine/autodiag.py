@@ -78,27 +78,40 @@ def build_plan(report: Report | None = None) -> Plan:
     # 32-bit: Win11 impossible; max = Win10 22H2 x86 inplace
     if r.architecture != "x64":
         if getattr(r, "firmware_likely_ia32", False):
+            warnings.append(
+                "IA32 UEFI detected: hybrid CSMWrap (UEFI32->SeaBIOS->BIOS) will be staged for Win11 x64."
+            )
+            actions.insert(
+                0,
+                Action(
+                    "hybrid_ia32",
+                    "Deploy hybrid IA32 UEFI bridge (CSMWrap)",
+                    "Download csmwrapia32.efi, stage on ESP; disable Secure Boot before Win11 x64",
+                    "high",
+                ),
+            )
             blockers.append(
-                "UEFI firmware is 32-bit (bootia32). Win11 x64 cannot boot - no supported bypass."
+                "No inplace Win11 from 32-bit Windows. Keep-apps max: Win10 22H2 x86. "
+                "Win11 x64 needs clean install booting via hybrid CSMWrap."
             )
         elif getattr(r, "cpu_64bit", False):
             blockers.append("32-bit Windows cannot inplace-upgrade to 64-bit Win11.")
             warnings.append("CPU is 64-bit: only a clean install of Win11 x64 can reach Windows 11.")
         else:
             blockers.append("Windows 11 does not exist as 32-bit. In-place Win11 upgrade is impossible.")
-        warnings.append("Best safe path: upgrade this 32-bit OS to Windows 10 22H2 x86 (keep files/apps).")
+        warnings.append("Best safe keep-apps path: Windows 10 22H2 x86.")
         if r.is_win10 and r.build < 19045:
             actions.append(
                 Action(
                     "win10_22h2_x86",
                     "In-place upgrade to Windows 10 22H2 (32-bit ISO)",
-                    "Maximum supported destination on x86 without wiping data",
+                    "Maximum keep-apps destination on x86",
                     "medium",
                 )
             )
         return Plan(
             target="win10_22h2",
-            summary="32-bit Windows / IA32 boot path - targeting Windows 10 22H2 x86 (max without wipe).",
+            summary="32-bit Windows / IA32 UEFI - hybrid bridge for future Win11 x64; keep-apps max Win10 22H2 x86.",
             can_win11=False,
             actions=actions,
             blockers=blockers,

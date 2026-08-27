@@ -269,12 +269,15 @@ def main() -> None:
             "--resume",
             "--mbr",
             "--srp",
+            "--hybrid",
+            "--hybrid-activate",
         )
     )
     if cli:
         from engine import (
             apply_bypass_only,
             convert_mbr_only,
+            deploy_hybrid_only,
             fix_system_reserved_only,
             run_diagnose,
             run_pipeline,
@@ -294,6 +297,12 @@ def main() -> None:
             return
         if "--srp" in argv:
             fix_system_reserved_only()
+            return
+        if "--hybrid-activate" in argv:
+            deploy_hybrid_only(activate=True)
+            return
+        if "--hybrid" in argv:
+            deploy_hybrid_only(activate=False)
             return
         code = run_pipeline(resume="--resume" in argv)
         raise SystemExit(code)

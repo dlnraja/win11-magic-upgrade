@@ -316,7 +316,7 @@ def print_report(r: Report) -> None:
     if r.bootmgr_mismatch:
         log("Boot Manager bitness mismatch - will repair before Win11 upgrade.", "WARN")
     if r.firmware_likely_ia32:
-        log("32-bit UEFI firmware detected - Win11 x64 cannot boot (hard limit).", "ERROR")
+        log("IA32 UEFI: hybrid CSMWrap path (UEFI32->SeaBIOS->BIOS) for Win11 x64.", "WARN")
     if r.needs_intermediate:
         log("Obsolete Win10 - intermediate Win10 22H2 required before Win11.", "WARN")
     if r.partition_style == "MBR":
