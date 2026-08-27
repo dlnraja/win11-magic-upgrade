@@ -14,12 +14,15 @@ Your GitHub account (`dlnraja`) is used to:
 It does **not** issue a Windows Authenticode certificate.  
 Self-signed `CN=dlnraja` (current default without secrets) is signed, but **SmartScreen still warns**.
 
-You need one of:
+You need **Option A**, **Option B**, or **both** (recommended dual path):
 
 | Path | Cost | How it uses GitHub |
 |------|------|--------------------|
-| Your own OV/EV `.pfx` | Paid CA | Secrets on this repo; CI signs |
-| [SignPath Foundation](https://signpath.org/) | Free for OSS | Sign up with GitHub; CI submits EXE to SignPath |
+| **A)** Own OV/EV `.pfx` | Paid CA | Secrets on this repo; CI signs |
+| **B)** [SignPath Foundation](https://signpath.org/) | Free for OSS | Sign up with GitHub; CI submits EXE to SignPath |
+| **A+B** | Both | A signs the build, B re-signs the release EXE (final SmartScreen cert) |
+
+Full checklist: [CODESIGN_A_AND_B.md](CODESIGN_A_AND_B.md) · status script: `build/setup_codesign_both.ps1`
 
 ## A) Own `.pfx` → upload with your GitHub account
 
@@ -100,7 +103,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build\setup_signpath_githu
 | Variable | `SIGNPATH_PROJECT_SLUG` | e.g. `win11-magic-upgrade` |
 | Variable | `SIGNPATH_SIGNING_POLICY_SLUG` | e.g. `release-signing` |
 
-Release workflow will submit `Win11MagicUpgrade.exe` to SignPath after the build (skipped if your own PFX secret is already set).
+Release workflow will submit `Win11MagicUpgrade.exe` to SignPath after the build.
+If Option A PFX is also set, SignPath **re-signs** the already-signed EXE (final Foundation / SmartScreen path), unless repo variable `MAGIC_SIGNPATH_SKIP_IF_PFX=1`.
 
 6. Tag a new `v*` release so CI signs with the Foundation certificate.
 ## What “intelligent” signing does

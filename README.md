@@ -26,7 +26,7 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 2. Extract, then run as Administrator: `Win11MagicUpgrade.exe` or `Win11MagicUpgrade.cmd`
 3. Click **ONE-CLICK — Full migration** (that’s it).
 
-Chrome / SmartScreen warning? → **[Download help](docs/DOWNLOAD.md)** · **[Code signing policy](docs/CODE_SIGNING_POLICY.md)** · **[Trusted PFX / SignPath](docs/CODESIGN.md)**  
+Chrome / SmartScreen warning? → **[Download help](docs/DOWNLOAD.md)** · **[Code signing A+B](docs/CODESIGN_A_AND_B.md)** · **[Policy](docs/CODE_SIGNING_POLICY.md)** · **[PFX / SignPath](docs/CODESIGN.md)**  
 OEM (Acer/Asus/Toshiba/…)? → **[OEM boot / license / encryption](docs/OEM.md)**
 
 ```text

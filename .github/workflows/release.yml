@@ -91,11 +91,10 @@ jobs:
           if (Test-Path .\dist\SHA256SUMS.txt) { Get-Content .\dist\SHA256SUMS.txt }
           Get-ChildItem .\dist\*.zip | ForEach-Object { $_.FullName; $_.Length }
 
-      # Optional: SignPath Foundation (free OV for OSS) — linked to your GitHub account.
-      # Apply at https://signpath.org / https://signpath.io then set:
-      #   secret SIGNPATH_API_TOKEN
-      #   vars  SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG
-      # Skipped when your own CODESIGN_PFX_BASE64 is already present (prefer your PFX).
+      # Option A (CODESIGN_PFX_BASE64) and Option B (SignPath) can both be configured.
+      # - A signs during build_exe.ps1
+      # - B re-signs the EXE with SignPath Foundation when secrets/vars are set (final SmartScreen path)
+      # Set MAGIC_SIGNPATH_SKIP_IF_PFX=1 to keep only A when a PFX secret is present.
       - name: Detect SignPath OSS signing
         id: signpath
         shell: bash
@@ -105,19 +104,28 @@ jobs:
           PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
           HAS_PFX: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          SKIP_IF_PFX: ${{ vars.MAGIC_SIGNPATH_SKIP_IF_PFX }}
         run: |
           set -euo pipefail
-          if [[ -n "${HAS_PFX:-}" && ${#HAS_PFX} -gt 80 ]]; then
+          if [[ "${SKIP_IF_PFX:-}" == "1" ]] && [[ -n "${HAS_PFX:-}" && ${#HAS_PFX} -gt 80 ]]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Own CODESIGN_PFX_BASE64 present - skipping SignPath"
+            echo "MAGIC_SIGNPATH_SKIP_IF_PFX=1 and PFX present - SignPath skipped (Option A only)"
             exit 0
           fi
           if [[ -n "${TOKEN:-}" && -n "${ORG_ID:-}" && -n "${PROJECT:-}" && -n "${POLICY:-}" ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "SignPath OSS signing enabled"
+            if [[ -n "${HAS_PFX:-}" && ${#HAS_PFX} -gt 80 ]]; then
+              echo "Option A+B: PFX signed build will be re-signed by SignPath (final artifact)"
+            else
+              echo "Option B: SignPath OSS signing enabled"
+            fi
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "SignPath not configured (optional). See docs/CODESIGN.md"
+            if [[ -n "${HAS_PFX:-}" && ${#HAS_PFX} -gt 80 ]]; then
+              echo "Option A only: CODESIGN_PFX_BASE64 present (SignPath not configured)"
+            else
+              echo "Neither A nor B fully configured - self-signed fallback. See docs/CODESIGN.md"
+            fi
           fi
 
       - name: Upload EXE for SignPath
@@ -125,7 +133,7 @@ jobs:
         id: upload-for-signpath
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Win11MagicUpgrade-unsigned-for-signpath
+          name: Win11MagicUpgrade-for-signpath
           path: dist/Win11MagicUpgrade.exe
           if-no-files-found: error
           retention-days: 1
@@ -165,7 +173,7 @@ jobs:
             ("Subject: {0}" -f $sig.SignerCertificate.Subject),
             ("Issuer: {0}" -f $sig.SignerCertificate.Issuer),
             ("Status: {0}" -f $sig.Status),
-            "PFX: signpath"
+            "PFX: signpath (Option B; may follow Option A PFX pre-sign)"
           )
           $pubTxt -join "`n" | Set-Content -LiteralPath (Join-Path $PWD "dist\PUBLISHER.txt") -Encoding ASCII
           @{
@@ -176,6 +184,7 @@ jobs:
             issuer = $sig.SignerCertificate.Issuer
             thumbprint = $sig.SignerCertificate.Thumbprint
             status = [string]$sig.Status
+            options = "A_and_or_B"
           } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PWD "dist\PUBLISHER.json") -Encoding ASCII
           if (Test-Path -LiteralPath $portable) {
             Copy-Item (Join-Path $PWD "dist\PUBLISHER.txt") (Join-Path $portable "PUBLISHER.txt") -Force
@@ -244,9 +253,9 @@ jobs:
             ## Publisher / AV trust (CI only)
 
             Authenticode: **dlnraja** (Release workflow).
-            SmartScreen: OV/EV `.pfx` or SignPath — [docs/CODESIGN.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN.md).
+            SmartScreen: **Option A** OV/EV `.pfx` and/or **Option B** SignPath — [docs/CODESIGN_A_AND_B.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN_A_AND_B.md).
             **Antivirus trust** (VirusTotal + Kaspersky OpenTIP) runs in this Release job — **not** inside One-Click.
-            Secrets: `VIRUSTOTAL_API_KEY`, `MAGIC_KASPERSKY_OPENTIP_KEY`.
+            Secrets: `CODESIGN_PFX_*`, `SIGNPATH_*`, `VIRUSTOTAL_API_KEY`, `MAGIC_KASPERSKY_OPENTIP_KEY`.
 
             Not malware - open source MIT. See SECURITY.md.
         env:
