@@ -23,7 +23,7 @@ concurrency:
 jobs:
   build-portable:
     runs-on: windows-latest
-    # Optional hardening: in GitHub â†’ Settings â†’ Environments, create `release`
+    # Optional hardening: in GitHub -> Settings -> Environments, create `release`
     # with required reviewers, then uncomment:
     # environment: release
     permissions:
@@ -125,16 +125,16 @@ jobs:
 
             1. `Win11MagicUpgrade-Portable-v*.zip`
             2. Verify `SHA256SUMS.txt`
-            3. Extract â†’ run `Win11MagicUpgrade.exe` as Administrator
+            3. Extract then run `Win11MagicUpgrade.exe` as Administrator
 
-            If Chrome says â€œvirus detectedâ€: see [docs/DOWNLOAD.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/DOWNLOAD.md) â€” Keep anyway / Unblock-File / report FP to Google.
+            If Chrome says "virus detected": see [docs/DOWNLOAD.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/DOWNLOAD.md) - Keep anyway / Unblock-File / report FP to Google.
 
             ## Publisher
 
-            Authenticode: **dlnraja** (Release workflow).  
-            For SmartScreen reputation, add a trusted OV/EV PFX via secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`.  
+            Authenticode: **dlnraja** (Release workflow).
+            For SmartScreen reputation, add a trusted OV/EV PFX via secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`.
             Optional VirusTotal submit: secret `VIRUSTOTAL_API_KEY`.
 
-            Not malware â€” open source MIT. See SECURITY.md.
+            Not malware - open source MIT. See SECURITY.md.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

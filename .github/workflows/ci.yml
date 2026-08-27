@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Never use pull_request_target â€” untrusted fork code + secrets = classic CI/CD attack
+  # Never use pull_request_target --- untrusted fork code + secrets = classic CI/CD attack
 
 permissions:
   contents: read
