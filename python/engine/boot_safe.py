@@ -534,6 +534,23 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
 
     if restore_bcd_from_last():
         summary["actions"].append("bcd_import")
+    # Full partition restore / dynamic regenerate before thin critical-file restore
+    try:
+        from .boot_partition_backup import ensure_partition_backup_then_repair
+
+        part_fix = ensure_partition_backup_then_repair(
+            prefer_uefi=uefi, system_disk=system_disk, force_backup=False
+        )
+        summary["partition_repair"] = {
+            "ok": part_fix.get("ok"),
+            "actions": (part_fix.get("actions") or [])[-12:],
+        }
+        summary["actions"].extend(part_fix.get("actions") or [])
+        if part_fix.get("ok"):
+            summary["actions"].append("partition_backup_restore_ok")
+    except Exception as e:
+        summary["actions"].append(f"partition_repair_skip:{type(e).__name__}")
+        log(f"Partition backup/restore: {e}", "WARN")
     if restore_esp_critical_files():
         summary["actions"].append("esp_files_restored")
     if rewrite_boot_files_from_windows(prefer_uefi=uefi):
@@ -805,6 +822,7 @@ def report_boot_failure_autodiag(
         "has_gparted_guide": bool(((op_result or {}).get("fallback") or {}).get("guide")),
         "has_bcd_backup": bool((STATE_DIR / "bcd-backups" / "LAST.txt").exists()),
         "has_esp_snapshot": bool((STATE_DIR / "boot-snapshots" / "LAST.txt").exists()),
+        "has_partition_backup": bool((STATE_DIR / "partition-backups" / "LAST.txt").exists()),
         "winre_staged": bool((guarantee or {}).get("winre_stage", {}).get("staged")),
         "winpe_staged": bool((guarantee or {}).get("winpe_stage", {}).get("staged")),
         "deep_verify_score": sanitize_obj(((guarantee or {}).get("deep_verify") or {}).get("score")),
@@ -855,6 +873,13 @@ def run_esp_srp_with_restore(
     snapshot_esp_critical_files()
     # Ensure BCD backup even if caller skipped preflight
     backup_bcd()
+    # Full partition generation (for dynamic regenerate after failure)
+    try:
+        from .boot_partition_backup import backup_boot_partitions
+
+        backup_boot_partitions(system_disk=system_disk)
+    except Exception as e:
+        log(f"pre-op partition backup: {e}", "WARN")
 
     last: dict[str, Any] = {"ok": False}
     attempts = max(1, int(retries))
@@ -977,6 +1002,20 @@ def preflight_boot_edit(
     except Exception as e:
         snap.notes.append(f"esp_snapshot_skip")
         log(f"ESP snapshot: {e}", "WARN")
+
+    # Full partition backup (ESP/SRP tree + WIM + metadata) for dynamic regenerate
+    try:
+        from .boot_partition_backup import backup_boot_partitions
+
+        pb = backup_boot_partitions(system_disk=disk)
+        if pb.get("ok"):
+            snap.notes.append("partition_backup_ok")
+            snap.bcd_backup = snap.bcd_backup or pb.get("bcd")
+        else:
+            snap.notes.append("partition_backup_weak")
+    except Exception as e:
+        snap.notes.append("partition_backup_skip")
+        log(f"Partition backup: {e}", "WARN")
 
     snap.safe_to_mutate = len(snap.block_reasons) == 0
     if snap.safe_to_mutate:
@@ -1228,6 +1267,8 @@ def prepare_partition_fallbacks(
         "iso": str(iso) if iso else None,
         "freedos": freedos,
         "tools": [
+            "partition-backup-restore",
+            "dynamic-regenerate",
             "ps-storage",
             "bcdboot",
             "bcdedit",

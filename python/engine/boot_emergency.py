@@ -765,6 +765,18 @@ def run_emergency_repair_suite(
         "issues": before.get("issues"),
     }
 
+    # Partition backup restore / dynamic regenerate first
+    try:
+        from .boot_partition_backup import ensure_partition_backup_then_repair
+
+        part = ensure_partition_backup_then_repair(
+            prefer_uefi=uefi, system_disk=system_disk, force_backup=False
+        )
+        summary["partition_repair"] = {"ok": part.get("ok"), "actions": (part.get("actions") or [])[-10:]}
+        summary["actions"].extend(part.get("actions") or [])
+    except Exception as e:
+        summary["actions"].append(f"partition_repair_skip:{type(e).__name__}")
+
     regen = emergency_regenerate_bcd(prefer_uefi=uefi)
     summary["regenerate"] = {k: regen.get(k) for k in ("ok", "actions")}
     summary["actions"].extend(regen.get("actions") or [])

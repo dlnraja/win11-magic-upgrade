@@ -617,6 +617,28 @@ def inspect_and_fix_system_reserved(
                     log(f"PS Storage expand fallback failed: {e}", "WARN")
                     result["actions"].append(f"ps_storage_fail:{type(e).__name__}")
 
+                if not result.get("ok"):
+                    try:
+                        # Dynamic regenerate from last partition backup before GParted
+                        from .boot_partition_backup import dynamic_regenerate_boot_partition
+
+                        regen = dynamic_regenerate_boot_partition(
+                            prefer_uefi=(result.get("mode") == "EFI" or uefi),
+                            system_disk=disk_n,
+                        )
+                        result["dynamic_regenerate"] = {
+                            k: regen.get(k) for k in ("ok", "mode", "letter", "actions")
+                        }
+                        result["actions"].extend(regen.get("actions") or [])
+                        if regen.get("ok"):
+                            result["ok"] = True
+                            result["expanded"] = True
+                            result["actions"].append("expand_via_dynamic_regenerate")
+                            log("Boot partition dynamically regenerated from backup", "OK")
+                    except Exception as e:
+                        log(f"Dynamic regenerate failed: {e}", "WARN")
+                        result["actions"].append(f"dynamic_regen_fail:{type(e).__name__}")
+
                 if not result.get("ok") and _prepare_fallback:
                     try:
                         result["fallback"] = _prepare_fallback(

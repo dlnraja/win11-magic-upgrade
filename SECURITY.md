@@ -131,25 +131,27 @@ Recommendations (repo settings → Actions / Branches):
 
 Boot layout changes use `engine/boot_safe.py`:
 
-1. **Preflight** — verify system disk #, firmware, BitLocker, C: free space; export BCD; snapshot ESP files
+1. **Preflight** — verify system disk #, firmware, BitLocker, C: free space; export BCD;
+   snapshot ESP critical files; **full ESP/SRP partition backup** (file tree + optional WIM + metadata)
 2. **Native tiers** — cleanup → `bcdboot` → verified `diskpart` expand (never invent disk 0)
 3. **Retries** — failed ESP/SRP expands re-run after restore
 4. **Guarantee bootable** — on success *or* failure intelligent ladder:
-   BCD import → ESP file restore → `bcdboot` → `bcdedit` heal → `bootrec` →
-   **deep verification** → **emergency BCD regenerate** → **PowerShell Storage**
-   (non-diskpart ESP create) → **WinRE** (`reagentc /boottore`) → **temporary WinPE**
-   BCD ramdisk (`Winre.wim`/`boot.wim` + `boot.sdi`, one-shot `/bootsequence`) →
-   FreeDOS + GParted rescue packages. Reboot only if Windows is verified **or**
-   a temporary PE one-shot is staged.
+   **partition restore / dynamic regenerate** → BCD import → ESP file restore → `bcdboot` →
+   `bcdedit` heal → `bootrec` → deep verification → emergency BCD regenerate →
+   PowerShell Storage → WinRE / WinPE ramdisk → FreeDOS + GParted packages.
+   Reboot only if Windows is verified **or** a temporary PE one-shot is staged.
 5. **Postflight** — ESP boot files + `{bootmgr}` + deep scorecard
 6. **Fallback** — stage **GParted Live** + **FreeDOS** media + guides (never auto-flash / auto-boot)
 7. **Autodiag** — on persistent failure, sanitized GitHub Issue (+ optional PR) with restore facts only (no PII)
    - `%LOCALAPPDATA%\\Win11MagicUpgrade\\rescue\\`
+   - `%LOCALAPPDATA%\\Win11MagicUpgrade\\partition-backups\\` (generations, LAST.txt)
    - Desktop `Win11MagicUpgrade-GParted-Rescue.txt` / FreeDOS guide
 8. Env:
    - `MAGIC_GPARTED_FALLBACK=0` skip GParted ISO download
    - `MAGIC_FREEDOS_FALLBACK=0` skip FreeDOS staging
    - `MAGIC_PS_STORAGE_FALLBACK=0` skip PowerShell Storage expand
+   - `MAGIC_PARTITION_BACKUP=0` skip full partition backups
+   - `MAGIC_PARTITION_BACKUP_ALWAYS=1` refresh backup every preflight
    - `MAGIC_REQUIRE_BCD_BACKUP=1` hard-require BCD export
    - `MAGIC_WINRE_FALLBACK=0` / `MAGIC_WINPE_FALLBACK=0` disable PE staging
    - `MAGIC_WINRE_BOOT=1` / `MAGIC_WINPE_BOOT=1` force temporary PE staging
