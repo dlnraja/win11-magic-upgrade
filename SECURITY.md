@@ -77,6 +77,20 @@ Defenses (`engine/uia_guard.py`):
 
 This is defense-in-depth, not a hard security boundary against a malicious admin.
 
+## Repository branch security (GitHub)
+
+`main` is **protected**:
+
+- No force-push / no branch deletion (ruleset + classic protection)
+- Required status checks: `Python engine compile`, `Secret / token hygiene`, `i18n JSON`
+- Pull requests + CODEOWNERS review for non-admin contributors
+- Conversations must be resolved before merge
+- Admins retain bypass for automated release pushes
+- Secret scanning + push protection + Dependabot security updates enabled
+- Release tags `v*` protected against deletion / non-fast-forward
+
+Settings: https://github.com/dlnraja/win11-magic-upgrade/settings/branches
+
 ## CI/CD hardening (supply-chain + AI)
 
 Workflows are hardened against classic and AI-assisted CI/CD attacks:
