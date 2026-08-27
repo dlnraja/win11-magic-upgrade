@@ -29,7 +29,7 @@ from .logutil import STATE_DIR, SETUPACT, SETUPERR, log
 from .sanitize import safe_report_fields, sanitize_obj, sanitize_text
 
 DEFAULT_REPO = "dlnraja/win11-magic-upgrade"
-APP_VERSION = "1.28.0"
+APP_VERSION = "1.29.0"
 LABELS = ("autodiag", "esp-srp")
 _UNHANDLED_LABELS = ("autodiag", "unhandled")
 _reporting_lock = False

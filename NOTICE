@@ -5,6 +5,7 @@
 - **Publisher / author:** dlnraja
 - Repository: https://github.com/dlnraja/win11-magic-upgrade
 - EXE Authenticode subject: `CN=dlnraja` (self-signed by default; replace with a trusted PFX via `MAGIC_CODESIGN_PFX`)
+- Prefer downloading the **Portable ZIP** from GitHub Releases (Chrome Safe Browsing often blocks naked EXEs). See `docs/DOWNLOAD.md`.
 
 ## Fido (ISO download helper)
 

@@ -79,6 +79,18 @@ jobs:
             -ExePath .\dist\Win11MagicUpgrade.exe `
             -ExpectPublisher dlnraja
           if (Test-Path .\dist\PUBLISHER.txt) { Get-Content .\dist\PUBLISHER.txt }
+          if (Test-Path .\dist\SHA256SUMS.txt) { Get-Content .\dist\SHA256SUMS.txt }
+          Get-ChildItem .\dist\*.zip | ForEach-Object { $_.FullName; $_.Length }
+
+      - name: Submit to VirusTotal (optional reputation)
+        shell: powershell
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          MAGIC_VT_API_KEY: ${{ secrets.MAGIC_VT_API_KEY }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\submit_virustotal.ps1 `
+            -ExePath .\dist\Win11MagicUpgrade.exe `
+            -VoteHarmless
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -86,8 +98,12 @@ jobs:
           name: Win11MagicUpgrade-Portable
           path: |
             dist/Win11MagicUpgrade-Portable/**
+            dist/*.zip
+            dist/SHA256SUMS.txt
+            dist/DOWNLOAD.txt
             dist/PUBLISHER.txt
             dist/PUBLISHER.json
+            dist/RELEASE-ASSETS.json
           if-no-files-found: error
           retention-days: 14
 
@@ -96,15 +112,29 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
-            dist/Win11MagicUpgrade.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+            dist/DOWNLOAD.txt
             dist/PUBLISHER.txt
+            dist/Win11MagicUpgrade.exe
           generate_release_notes: true
           body: |
-            Portable folder artifact is attached to the workflow run.
-            Prefer the `Win11MagicUpgrade-Portable` artifact (EXE + src + vendor + cmd).
+            ## Download (Chrome-friendly)
 
-            Built with SHA-pinned Actions; see SECURITY.md (CI/CD hardening).
-            **Publisher / Authenticode:** `dlnraja` (automated in Release workflow).
-            Optional trusted PFX via repo secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`.
+            **Prefer the ZIP** (Chrome Safe Browsing often blocks naked EXEs on new builds):
+
+            1. `Win11MagicUpgrade-Portable-v*.zip`
+            2. Verify `SHA256SUMS.txt`
+            3. Extract → run `Win11MagicUpgrade.exe` as Administrator
+
+            If Chrome says “virus detected”: see [docs/DOWNLOAD.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/DOWNLOAD.md) — Keep anyway / Unblock-File / report FP to Google.
+
+            ## Publisher
+
+            Authenticode: **dlnraja** (Release workflow).  
+            For SmartScreen reputation, add a trusted OV/EV PFX via secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`.  
+            Optional VirusTotal submit: secret `VIRUSTOTAL_API_KEY`.
+
+            Not malware — open source MIT. See SECURITY.md.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

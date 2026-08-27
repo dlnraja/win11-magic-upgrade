@@ -65,6 +65,8 @@ python -m PyInstaller `
     --hidden-import engine.errors `
     --hidden-import engine.uia_guard `
     --hidden-import engine.boot_safe `
+    --hidden-import engine.boot_emergency `
+    --hidden-import engine.boot_partition_backup `
     --add-data "$payload\engine${sep}engine" `
     --add-data "$payload\i18n${sep}i18n" `
     (Join-Path $Root "python\magic_upgrade.py")
@@ -92,7 +94,15 @@ if (Test-Path $signScript) {
     if (Test-Path $pub) { Copy-Item $pub $portable -Force }
 }
 
+# ZIP + SHA256 (Chrome prefers ZIP over naked EXE downloads)
+$pkg = Join-Path $Root "build\package_release.ps1"
+if (Test-Path $pkg) {
+    Write-Host "Packaging ZIP + SHA256SUMS for release downloads..." -ForegroundColor Cyan
+    powershell -NoProfile -ExecutionPolicy Bypass -File $pkg -DistDir $dist
+}
+
 Write-Host ""
 Write-Host "OK: $portable\Win11MagicUpgrade.exe" -ForegroundColor Green
-Write-Host "Publisher: dlnraja | AV notes: UPX off + UAC manifest + version resource + Authenticode." -ForegroundColor DarkGray
+Write-Host "Prefer downloading the Portable ZIP from GitHub Releases (Chrome-friendly)." -ForegroundColor Yellow
+Write-Host "Publisher: dlnraja | AV notes: UPX off + UAC manifest + version resource + Authenticode + ZIP." -ForegroundColor DarkGray
 Write-Host "Target PCs need NO .NET Framework 4.x and NO working PowerShell for the upgrade engine." -ForegroundColor DarkGray

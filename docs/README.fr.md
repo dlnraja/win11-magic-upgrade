@@ -14,9 +14,12 @@ Inspiré de **Flyby11 / FlyOOBE**, runtime **Python pur** (PyInstaller) :
 
 ## Démarrage rapide
 
-1. Télécharger le ZIP **Portable** depuis les [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest).
-2. Lancer en Administrateur : `Win11MagicUpgrade.exe` ou `Win11MagicUpgrade.cmd`.
+1. Télécharger **`Win11MagicUpgrade-Portable-v*.zip`** depuis les [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)  
+   (**préférez le ZIP** — Chrome bloque souvent l’`.exe` nu)
+2. Extraire, puis lancer en Administrateur : `Win11MagicUpgrade.exe` ou `Win11MagicUpgrade.cmd`.
 3. Cliquer **ONE-CLICK — Migration complete** (c’est tout).
+
+Chrome dit « virus détecté » ? → **[Aide téléchargement](DOWNLOAD.md)** (Conserver, Unblock-File, SHA256, signaler FP à Google).
 
 ```text
 Win11MagicUpgrade.exe --cli --oneclick

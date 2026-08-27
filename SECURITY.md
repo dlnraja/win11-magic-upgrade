@@ -12,17 +12,20 @@ Please open a **private** security advisory on GitHub if available, or email the
 
 This tool intentionally bypasses Windows 11 *setup* hardware checks using documented/community methods (`/product server`, registry). It does not claim to be a security product. Running it requires Administrator rights and modifies system configuration.
 
-## Antivirus false positives (Kaspersky / Defender)
+## Antivirus false positives (Kaspersky / Defender / Chrome)
 
 Win11 Magic Upgrade is **not** malware, **not** a PDF trojan, and contains **no PDF exploit code**.
 
-Heuristic engines sometimes flag unsigned PyInstaller onefile EXEs (especially with UPX or `mshta` elevation) as `Trojan.PDF` / generic HEUR.
+Heuristic engines and **Chrome Safe Browsing** sometimes flag unsigned/new PyInstaller onefile EXEs (especially with UPX or `mshta` elevation) as `Trojan.PDF` / generic HEUR / “virus detected”.
 
-Mitigations shipped in the build:
+Mitigations shipped in the build / release:
 
 - **UPX disabled**
 - **UAC application manifest** (`requireAdministrator`) — no `mshta` JavaScript
 - **Version / ProductName** resource identifying the legitimate upgrader
+- **Release ZIP + SHA256SUMS** (prefer ZIP over naked EXE — Chrome is softer on GitHub ZIPs)
+- **DOWNLOAD.txt** / [docs/DOWNLOAD.md](docs/DOWNLOAD.md) unblock / Keep anyway / FP report links
+- Optional **VirusTotal CI submit** (`VIRUSTOTAL_API_KEY` secret)
 - At runtime, **autonomous trust declarations**:
   - Windows Defender path exclusions
   - Local Kaspersky trusted-app attempts + FP declaration files
@@ -57,8 +60,10 @@ If Kaspersky still quarantines the EXE:
   - `CODESIGN_PFX_BASE64` — base64 of your `.pfx` (`[Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx'))`)
   - `CODESIGN_PASSWORD` — PFX password
   - Aliases: `MAGIC_CODESIGN_PFX_BASE64` / `MAGIC_CODESIGN_PASSWORD`
+  - `VIRUSTOTAL_API_KEY` (or `MAGIC_VT_API_KEY`) — Release workflow submits the EXE + votes harmless
 - Local: `MAGIC_CODESIGN_PFX` + `MAGIC_CODESIGN_PASSWORD`, or self-signed via `build/sign_exe.ps1`
-- Portable package includes `PUBLISHER.txt` / `PUBLISHER.json`
+- Portable package includes `PUBLISHER.txt` / `PUBLISHER.json` / ZIP / `SHA256SUMS.txt`
+- **Chrome tip:** download the **ZIP** from Releases, not the raw EXE — see [docs/DOWNLOAD.md](docs/DOWNLOAD.md)
 
 ## Autonomous diagnostics (privacy)
 
