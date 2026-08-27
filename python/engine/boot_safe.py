@@ -29,7 +29,6 @@ from .diskpart_safe import (
     find_esp_candidates,
     find_system_reserved_candidates,
     get_system_disk_number,
-    run_diskpart,
 )
 from .logutil import STATE_DIR, log
 
