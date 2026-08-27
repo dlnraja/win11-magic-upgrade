@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,8 +29,10 @@ from .logutil import STATE_DIR, SETUPACT, SETUPERR, log
 from .sanitize import safe_report_fields, sanitize_obj, sanitize_text
 
 DEFAULT_REPO = "dlnraja/win11-magic-upgrade"
-APP_VERSION = "1.16.0"
+APP_VERSION = "1.17.0"
 LABELS = ("autodiag", "esp-srp")
+_UNHANDLED_LABELS = ("autodiag", "unhandled")
+_reporting_lock = False
 
 
 def _creationflags() -> int:
@@ -464,3 +467,120 @@ def report_failure_to_github(
     except Exception:
         pass
     return {"issue": issue_url, "pr": pr_url, "local_md": str(md)}
+
+
+def _already_filed(message: str) -> bool:
+    m = message or ""
+    return "Issue:" in m and "github.com" in m.lower()
+
+
+def report_unhandled_exception(
+    exc_type: type | None,
+    exc: BaseException | None,
+    tb: Any = None,
+    *,
+    kind: str = "unhandled-exception",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, str | None]:
+    """
+    File a privacy-scrubbed GitHub issue for an unexpected exception.
+    Safe to call from GUI workers, CLI, sys.excepthook, and threading.excepthook.
+    """
+    global _reporting_lock
+    import traceback
+
+    if exc is None:
+        return {}
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        return {}
+    msg = str(exc)
+    if _already_filed(msg):
+        return {}
+    if _reporting_lock:
+        return {}
+    _reporting_lock = True
+    try:
+        try:
+            from .logutil import init_logging
+
+            init_logging()
+        except Exception:
+            pass
+
+        et = exc_type or type(exc)
+        frames = traceback.format_exception(et, exc, tb)
+        tb_safe = sanitize_text("".join(frames))[-9000:]
+        # Drop absolute drive paths to basename for extra safety
+        tb_safe = re.sub(
+            r'(?i)([A-Z]:\\(?:[^\\\n]+\\)*)([^\\\n]+\.py)"',
+            r'…\\\2"',
+            tb_safe,
+        )
+        brief = sanitize_text(f"{getattr(et, '__name__', 'Exception')}: {msg}")[:500]
+        payload_extra = dict(extra or {})
+        payload_extra["exception_type"] = getattr(et, "__name__", str(et))
+        payload_extra["traceback"] = tb_safe
+        # Temporarily use unhandled labels
+        global LABELS
+        saved = LABELS
+        LABELS = _UNHANDLED_LABELS  # type: ignore[misc]
+        try:
+            return report_failure_to_github(
+                kind=kind,
+                message=brief,
+                extra=payload_extra,
+            )
+        finally:
+            LABELS = saved  # type: ignore[misc]
+    except Exception as e:
+        try:
+            log(f"unhandled autodiag failed: {sanitize_text(str(e))}", "WARN")
+        except Exception:
+            pass
+        return {}
+    finally:
+        _reporting_lock = False
+
+
+def install_exception_hooks() -> None:
+    """Install process-wide hooks so unexpected crashes still open a sanitized issue."""
+    import threading
+
+    global _hooks_installed
+    if globals().get("_hooks_installed"):
+        return
+    globals()["_hooks_installed"] = True
+
+    def _hook(exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+        try:
+            if exc_type is not None and issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+                sys.__excepthook__(exc_type, exc, tb)
+                return
+        except Exception:
+            pass
+        report_unhandled_exception(exc_type, exc, tb, kind="unhandled-exception")
+        try:
+            sys.__excepthook__(exc_type, exc, tb)
+        except Exception:
+            pass
+
+    sys.excepthook = _hook  # type: ignore[assignment]
+
+    if hasattr(threading, "excepthook"):
+        _prev_thook = threading.excepthook
+
+        def _thook(args) -> None:  # type: ignore[no-untyped-def]
+            report_unhandled_exception(
+                args.exc_type,
+                args.exc_value,
+                args.exc_traceback,
+                kind="thread-unhandled-exception",
+                extra={"thread": sanitize_text(getattr(args.thread, "name", "") or "")},
+            )
+            try:
+                if _prev_thook is not _thook:
+                    _prev_thook(args)
+            except Exception:
+                pass
+
+        threading.excepthook = _thook  # type: ignore[assignment]

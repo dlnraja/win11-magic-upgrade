@@ -4,8 +4,8 @@
 # (unsigned UPX-packed onefile binaries are often mislabeled e.g. Trojan.PDF).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 16, 0, 0),
-    prodvers=(1, 16, 0, 0),
+    filevers=(1, 17, 0, 0),
+    prodvers=(1, 17, 0, 0),
     mask=0x3F,
     flags=0x0,
     OS=0x40004,
@@ -21,12 +21,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'Win11 Magic Upgrade Project'),
             StringStruct('FileDescription', 'Win11 Magic Upgrade - One-Click Windows migration (NOT malware)'),
-            StringStruct('FileVersion', '1.16.0.0'),
+            StringStruct('FileVersion', '1.17.0.0'),
             StringStruct('InternalName', 'Win11MagicUpgrade'),
             StringStruct('LegalCopyright', 'Open source - legitimate system upgrade helper'),
             StringStruct('OriginalFilename', 'Win11MagicUpgrade.exe'),
             StringStruct('ProductName', 'Win11 Magic Upgrade'),
-            StringStruct('ProductVersion', '1.16.0.0'),
+            StringStruct('ProductVersion', '1.17.0.0'),
             StringStruct('Comments', 'Downloads official Microsoft ISOs only. No PDF/Trojan code.'),
           ]
         )

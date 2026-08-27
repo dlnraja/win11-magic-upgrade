@@ -90,6 +90,21 @@ class App(tk.Tk):
         self._elevating = False
         self._auto_action = auto_action
 
+        # Tk callback crashes → sanitized GitHub issue
+        def _tk_exc(exc, val, tb):  # type: ignore[no-untyped-def]
+            try:
+                from engine.gh_report import report_unhandled_exception  # type: ignore
+
+                report_unhandled_exception(exc, val, tb, kind="tk-callback-exception")
+            except Exception:
+                pass
+            try:
+                tk.Tk.report_callback_exception(self, exc, val, tb)
+            except Exception:
+                pass
+
+        self.report_callback_exception = _tk_exc  # type: ignore[method-assign]
+
         header = tk.Frame(self, bg="#0f172a")
         header.pack(fill="x", padx=20, pady=(18, 8))
         tk.Label(
@@ -456,6 +471,7 @@ class App(tk.Tk):
         self._poll_progress()
 
         def worker() -> None:
+            ok = False
             try:
                 from engine import (  # type: ignore
                     apply_bypass_only,
@@ -513,14 +529,33 @@ class App(tk.Tk):
                 else:
                     msg = self.t.get("done_warn", "Code {code}").replace("{code}", str(code))
                     self.after(0, lambda: messagebox.showwarning(title, msg))
+                ok = True
             except Exception as ex:
-                self.after(0, self.append, f"\nERROR: {ex}\n")
-                self.after(0, lambda: messagebox.showerror(title, str(ex)))
+                hint = ""
+                try:
+                    from engine.gh_report import report_unhandled_exception  # type: ignore
+
+                    if "Issue:" not in str(ex):
+                        links = report_unhandled_exception(
+                            type(ex),
+                            ex,
+                            ex.__traceback__,
+                            kind=f"gui-{action}-exception",
+                        )
+                        if links.get("issue"):
+                            hint = f"\n\nGitHub issue (sanitized): {links['issue']}"
+                        elif links.get("local_md"):
+                            hint = "\n\nSanitized autodiag saved locally."
+                except Exception:
+                    pass
+                self.after(0, self.append, f"\nERROR: {ex}{hint}\n")
+                err_txt = str(ex) + hint
+                self.after(0, lambda t=err_txt: messagebox.showerror(title, t))
             finally:
                 try:
                     from engine.progress import end_session, set_progress_callback  # type: ignore
 
-                    end_session(success=True)
+                    end_session(success=ok)
                     set_progress_callback(None)
                 except Exception:
                     pass
@@ -564,6 +599,12 @@ def _parse_auto_action(argv: list[str]) -> str | None:
 def main() -> None:
     root = app_root()
     _ensure_sys_path(root)
+    try:
+        from engine.gh_report import install_exception_hooks  # type: ignore
+
+        install_exception_hooks()
+    except Exception:
+        pass
     argv = sys.argv[1:]
     argv_l = [a.lower() for a in argv]
     auto_action = _parse_auto_action(argv)
@@ -588,66 +629,79 @@ def main() -> None:
         )
     )
     # --auto keeps GUI (not CLI)
-    if cli and auto_action is None:
-        from engine import (
-            apply_bypass_only,
-            convert_mbr_only,
-            deploy_hybrid_only,
-            fix_system_reserved_only,
-            install_preventive_only,
-            run_diagnose,
-            run_patch_enrichment,
-            run_pipeline,
-        )
+    try:
+        if cli and auto_action is None:
+            from engine import (
+                apply_bypass_only,
+                convert_mbr_only,
+                deploy_hybrid_only,
+                fix_system_reserved_only,
+                install_preventive_only,
+                run_diagnose,
+                run_patch_enrichment,
+                run_pipeline,
+            )
 
-        if "--diagnose" in argv_l:
-            run_diagnose()
-            return
-        if "--declare-av" in argv_l:
-            from engine.av_trust import declare_all_av_trust
-            from engine.logutil import init_logging
+            if "--diagnose" in argv_l:
+                run_diagnose()
+                return
+            if "--declare-av" in argv_l:
+                from engine.av_trust import declare_all_av_trust
+                from engine.logutil import init_logging
 
-            init_logging()
-            # Cloud declare does not strictly need admin; local Defender exclusions do
+                init_logging()
+                # Cloud declare does not strictly need admin; local Defender exclusions do
+                if not is_admin():
+                    if relaunch_as_admin(argv):
+                        raise SystemExit(0)
+                    print("WARN: continuing cloud declare without admin", flush=True)
+                declare_all_av_trust()
+                return
             if not is_admin():
                 if relaunch_as_admin(argv):
                     raise SystemExit(0)
-                print("WARN: continuing cloud declare without admin", flush=True)
-            declare_all_av_trust()
-            return
-        if not is_admin():
-            if relaunch_as_admin(argv):
-                raise SystemExit(0)
-            print("ERROR: UAC elevation failed or was cancelled.", file=sys.stderr)
-            raise SystemExit(5)
-        if "--bypass" in argv_l:
-            apply_bypass_only()
-            return
-        if "--mbr" in argv_l:
-            convert_mbr_only()
-            return
-        if "--srp" in argv_l:
-            fix_system_reserved_only()
-            return
-        if "--hybrid-activate" in argv_l:
-            deploy_hybrid_only(activate=True)
-            return
-        if "--hybrid" in argv_l:
-            deploy_hybrid_only(activate=False)
-            return
-        if "--install-patches" in argv_l:
-            install_preventive_only()
-            return
-        if "--patch-deep" in argv_l:
-            run_patch_enrichment(deep_heal=True)
-            return
-        if "--patch" in argv_l:
-            run_patch_enrichment(deep_heal=False)
-            return
-        code = run_pipeline(resume="--resume" in argv_l)
-        raise SystemExit(code)
+                print("ERROR: UAC elevation failed or was cancelled.", file=sys.stderr)
+                raise SystemExit(5)
+            if "--bypass" in argv_l:
+                apply_bypass_only()
+                return
+            if "--mbr" in argv_l:
+                convert_mbr_only()
+                return
+            if "--srp" in argv_l:
+                fix_system_reserved_only()
+                return
+            if "--hybrid-activate" in argv_l:
+                deploy_hybrid_only(activate=True)
+                return
+            if "--hybrid" in argv_l:
+                deploy_hybrid_only(activate=False)
+                return
+            if "--install-patches" in argv_l:
+                install_preventive_only()
+                return
+            if "--patch-deep" in argv_l:
+                run_patch_enrichment(deep_heal=True)
+                return
+            if "--patch" in argv_l:
+                run_patch_enrichment(deep_heal=False)
+                return
+            code = run_pipeline(resume="--resume" in argv_l)
+            raise SystemExit(code)
 
-    App(auto_action=auto_action).mainloop()
+        App(auto_action=auto_action).mainloop()
+    except SystemExit:
+        raise
+    except Exception:
+        # Last-resort CLI/GUI startup catch (hooks also cover this)
+        try:
+            from engine.gh_report import report_unhandled_exception  # type: ignore
+            import sys as _sys
+
+            report_unhandled_exception(*_sys.exc_info(), kind="main-unhandled-exception")
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":

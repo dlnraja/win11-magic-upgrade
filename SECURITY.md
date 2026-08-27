@@ -58,3 +58,6 @@ On hard failures (e.g. ESP/SRP cannot continue), the app may open a GitHub **Iss
 - Browser fallback opens a pre-filled issues form with the same scrubbed body
 
 Set `MAGIC_GH_REPO` to override the target repository (default `dlnraja/win11-magic-upgrade`).
+
+Unhandled exceptions (GUI worker, Tk callbacks, CLI, threads) use the same pipeline
+with kind `unhandled-exception` / `gui-*-exception` and labels `autodiag` + `unhandled`.
