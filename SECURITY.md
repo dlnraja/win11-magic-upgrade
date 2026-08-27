@@ -49,10 +49,16 @@ If Kaspersky still quarantines the EXE:
 ### Publisher identity (dlnraja)
 
 - Version resource / LegalCopyright / CompanyName: **dlnraja**
-- Authenticode: build signs with `CN=dlnraja` (self-signed) or a trusted PFX:
-  - `MAGIC_CODESIGN_PFX` = path to `.pfx`
-  - `MAGIC_CODESIGN_PASSWORD` = PFX password
-- Portable package includes `PUBLISHER.txt`
+- Authenticode is **automated in GitHub Actions** (Release + CI smoke):
+  1. `build/ci_prepare_codesign.ps1` loads secrets or falls back to self-signed `CN=dlnraja`
+  2. `build/sign_exe.ps1` signs the EXE (timestamped when possible)
+  3. `build/verify_signature.ps1` gates the Release job
+- Repo secrets (Settings → Secrets → Actions), optional but recommended for SmartScreen:
+  - `CODESIGN_PFX_BASE64` — base64 of your `.pfx` (`[Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx'))`)
+  - `CODESIGN_PASSWORD` — PFX password
+  - Aliases: `MAGIC_CODESIGN_PFX_BASE64` / `MAGIC_CODESIGN_PASSWORD`
+- Local: `MAGIC_CODESIGN_PFX` + `MAGIC_CODESIGN_PASSWORD`, or self-signed via `build/sign_exe.ps1`
+- Portable package includes `PUBLISHER.txt` / `PUBLISHER.json`
 
 ## Autonomous diagnostics (privacy)
 

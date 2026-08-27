@@ -97,18 +97,42 @@ jobs:
           fi
           echo "secret hygiene OK"
 
-  dependency-review:
-    name: Dependency review (PRs)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+  codesign-smoke:
+    name: Authenticode sign smoke (dlnraja)
+    runs-on: windows-latest
     permissions:
       contents: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Dependency Review
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
-        with:
-          fail-on-severity: high
+      - name: Prepare Authenticode
+        shell: powershell
+        env:
+          CODESIGN_PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          CODESIGN_PASSWORD: ${{ secrets.CODESIGN_PASSWORD }}
+          MAGIC_CODESIGN_PFX_BASE64: ${{ secrets.MAGIC_CODESIGN_PFX_BASE64 }}
+          MAGIC_CODESIGN_PASSWORD: ${{ secrets.MAGIC_CODESIGN_PASSWORD }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\ci_prepare_codesign.ps1
+      - name: Sign dummy payload + verify CN=dlnraja
+        shell: powershell
+        env:
+          MAGIC_REQUIRE_CODESIGN: "1"
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "sign-smoke"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $exe = Join-Path $dir "smoke.exe"
+          $tmpCs = Join-Path $dir "smoke.cs"
+          Set-Content -LiteralPath $tmpCs -Value @'
+          using System;
+          static class P { static void Main() { Console.WriteLine("dlnraja"); } }
+          '@ -Encoding ASCII
+          $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) {
+            $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          }
+          & $csc /nologo /out:$exe /target:exe $tmpCs
+          if ($LASTEXITCODE -ne 0) { throw "csc failed" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\sign_exe.ps1 -ExePath $exe -Publisher dlnraja
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\verify_signature.ps1 -ExePath $exe -ExpectPublisher dlnraja

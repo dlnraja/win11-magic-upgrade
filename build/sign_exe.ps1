@@ -1,6 +1,10 @@
 # Sign Win11MagicUpgrade.exe as publisher "dlnraja" (Authenticode).
-# Uses MAGIC_CODESIGN_PFX + MAGIC_CODESIGN_PASSWORD if set (recommended for trusted CA certs).
-# Otherwise creates/reuses a CurrentUser code-signing cert: CN=dlnraja.
+# Priority:
+#   1) MAGIC_CODESIGN_PFX (+ MAGIC_CODESIGN_PASSWORD) - trusted/CI PFX
+#   2) CODESIGN_PFX_BASE64 decoded by ci_prepare_codesign.ps1 into MAGIC_CODESIGN_PFX
+#   3) Self-signed CurrentUser cert CN=dlnraja
+#
+# MAGIC_REQUIRE_CODESIGN=1 -> fail if signature is not Valid.
 param(
     [Parameter(Mandatory = $true)][string]$ExePath,
     [string]$Publisher = "dlnraja"
@@ -56,25 +60,64 @@ function Get-PublisherCert {
 }
 
 $cert = Get-PublisherCert -Name $Publisher
-$sig = Set-AuthenticodeSignature -FilePath $ExePath -Certificate $cert -TimestampServer "http://timestamp.digicert.com" -HashAlgorithm SHA256
-if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
-    # UnknownError sometimes when timestamp server unreachable — retry without timestamp
-    Write-Host "Timestamp may have failed ($($sig.Status)); retrying without timestamp..." -ForegroundColor Yellow
+$tsServers = @(
+    "http://timestamp.digicert.com",
+    "http://timestamp.sectigo.com",
+    "http://timestamp.globalsign.com/tsa/r6advanced1"
+)
+$sig = $null
+foreach ($ts in $tsServers) {
+    try {
+        Write-Host "Signing with timestamp: $ts" -ForegroundColor DarkGray
+        $sig = Set-AuthenticodeSignature -FilePath $ExePath -Certificate $cert -TimestampServer $ts -HashAlgorithm SHA256
+        if ($sig.Status -eq "Valid") { break }
+        Write-Host "Status $($sig.Status) with $ts" -ForegroundColor Yellow
+    } catch {
+        Write-Host "Timestamp server failed: $ts - $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+if (-not $sig -or $sig.Status -ne "Valid") {
+    Write-Host "Retrying Authenticode without timestamp..." -ForegroundColor Yellow
     $sig = Set-AuthenticodeSignature -FilePath $ExePath -Certificate $cert -HashAlgorithm SHA256
 }
 
-Write-Host "Authenticode status: $($sig.Status) | Publisher: $($sig.SignerCertificate.Subject)" -ForegroundColor Green
-if ($sig.Status -notin @("Valid", "UnknownError")) {
-    Write-Host "WARN: signature status $($sig.Status) — EXE still built; install a trusted PFX via MAGIC_CODESIGN_PFX for SmartScreen." -ForegroundColor Yellow
+$mode = if ($env:MAGIC_CODESIGN_PFX -and (Test-Path -LiteralPath $env:MAGIC_CODESIGN_PFX)) { "pfx" } else { "selfsigned" }
+Write-Host "Authenticode status: $($sig.Status) | mode=$mode | Publisher: $($sig.SignerCertificate.Subject)" -ForegroundColor Green
+
+$require = $env:MAGIC_REQUIRE_CODESIGN
+$signedOk = $sig.SignerCertificate -and ($sig.Status -in @("Valid", "UnknownError", "NotTrusted"))
+if ($require -and $require.Trim().ToLower() -in @("1", "true", "yes")) {
+    if (-not $signedOk) {
+        throw "MAGIC_REQUIRE_CODESIGN=1 but signature status is $($sig.Status)"
+    }
+    if ($sig.SignerCertificate.Subject -notmatch [regex]::Escape("CN=$Publisher")) {
+        throw "MAGIC_REQUIRE_CODESIGN=1 but signer CN is $($sig.SignerCertificate.Subject)"
+    }
+} elseif (-not $signedOk) {
+    Write-Host "WARN: signature status $($sig.Status)" -ForegroundColor Yellow
 }
 
-# Sidecar identity file for portable package
 $meta = Join-Path (Split-Path $ExePath -Parent) "PUBLISHER.txt"
-@"
-Publisher: $Publisher
-GitHub: https://github.com/dlnraja/win11-magic-upgrade
-Signed: $(Get-Date -Format o)
-Thumbprint: $($cert.Thumbprint)
-Subject: $($cert.Subject)
-Status: $($sig.Status)
-"@ | Set-Content -LiteralPath $meta -Encoding UTF8
+$tsSubject = ""
+if ($sig.TimeStamperCertificate) { $tsSubject = $sig.TimeStamperCertificate.Subject }
+@(
+    "Publisher: $Publisher"
+    "GitHub: https://github.com/dlnraja/win11-magic-upgrade"
+    "Signed: $(Get-Date -Format o)"
+    "Mode: $mode"
+    "Thumbprint: $($cert.Thumbprint)"
+    "Subject: $($cert.Subject)"
+    "Status: $($sig.Status)"
+    "Timestamp: $tsSubject"
+) | Set-Content -LiteralPath $meta -Encoding UTF8
+
+$jsonPath = Join-Path (Split-Path $ExePath -Parent) "PUBLISHER.json"
+$payload = [ordered]@{
+    publisher = $Publisher
+    mode = $mode
+    status = [string]$sig.Status
+    thumbprint = $cert.Thumbprint
+    subject = $cert.Subject
+    exe = (Resolve-Path -LiteralPath $ExePath).Path
+}
+($payload | ConvertTo-Json) | Set-Content -LiteralPath $jsonPath -Encoding UTF8

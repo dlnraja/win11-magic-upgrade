@@ -54,16 +54,40 @@ jobs:
             esac
           fi
 
-      - name: Build portable package
+      - name: Prepare Authenticode (dlnraja)
         shell: powershell
+        env:
+          CODESIGN_PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          CODESIGN_PASSWORD: ${{ secrets.CODESIGN_PASSWORD }}
+          MAGIC_CODESIGN_PFX_BASE64: ${{ secrets.MAGIC_CODESIGN_PFX_BASE64 }}
+          MAGIC_CODESIGN_PASSWORD: ${{ secrets.MAGIC_CODESIGN_PASSWORD }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\ci_prepare_codesign.ps1
+
+      - name: Build + sign portable package
+        shell: powershell
+        env:
+          MAGIC_REQUIRE_CODESIGN: "1"
+          # MAGIC_CODESIGN_* injected into GITHUB_ENV by prepare step
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File .\build\build_exe.ps1
+
+      - name: Verify Authenticode (CN=dlnraja)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\verify_signature.ps1 `
+            -ExePath .\dist\Win11MagicUpgrade.exe `
+            -ExpectPublisher dlnraja
+          if (Test-Path .\dist\PUBLISHER.txt) { Get-Content .\dist\PUBLISHER.txt }
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Win11MagicUpgrade-Portable
-          path: dist/Win11MagicUpgrade-Portable/**
+          path: |
+            dist/Win11MagicUpgrade-Portable/**
+            dist/PUBLISHER.txt
+            dist/PUBLISHER.json
           if-no-files-found: error
           retention-days: 14
 
@@ -73,13 +97,14 @@ jobs:
         with:
           files: |
             dist/Win11MagicUpgrade.exe
+            dist/PUBLISHER.txt
           generate_release_notes: true
           body: |
             Portable folder artifact is attached to the workflow run.
             Prefer the `Win11MagicUpgrade-Portable` artifact (EXE + src + vendor + cmd).
 
             Built with SHA-pinned Actions; see SECURITY.md (CI/CD hardening).
-            Publisher / Authenticode subject: **dlnraja**
-            (`CN=dlnraja` — use a trusted PFX via `MAGIC_CODESIGN_PFX` for SmartScreen).
+            **Publisher / Authenticode:** `dlnraja` (automated in Release workflow).
+            Optional trusted PFX via repo secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
