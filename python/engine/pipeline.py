@@ -225,30 +225,43 @@ def _execute_step(
         return None
 
     if step.kind == "fix_srp":
-        from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
+        from .boot_safe import run_esp_srp_with_restore
+        from .sysreserved import scan_logs_for_srp_error
 
         force = scan_logs_for_srp_error()
         disk = getattr(report, "disk_number", None)
-        res = inspect_and_fix_system_reserved(force_expand=force, system_disk=disk)
+        rep = report.as_dict() if hasattr(report, "as_dict") else None
+        res = run_esp_srp_with_restore(
+            force_expand=force,
+            system_disk=disk,
+            retries=2,
+            report=rep if isinstance(rep, dict) else None,
+        )
         if isinstance(res, dict) and not res.get("ok", True):
-            # Retry once with forced expand
-            res = inspect_and_fix_system_reserved(force_expand=True, system_disk=disk)
-            if isinstance(res, dict) and not res.get("ok", True):
-                msg = "ESP/SRP fix failed — cannot continue autonomous upgrade"
+            links = res.get("autodiag") or {}
+            if not links:
                 links = _autodiag_links(
                     kind="esp-srp-failed",
-                    message=msg,
+                    message="ESP/SRP fix failed — cannot continue autonomous upgrade",
                     report=report,
-                    srp_result=res if isinstance(res, dict) else None,
+                    srp_result=res,
                     extra={"step": step.as_dict() if hasattr(step, "as_dict") else str(step)},
                 )
-                hint = _links_hint(links)
-                if os.environ.get("MAGIC_SRP_CONTINUE", "").strip().lower() in ("1", "true", "yes"):
-                    log("ESP/SRP still failing — continuing because MAGIC_SRP_CONTINUE=1" + hint, "WARN")
-                    return None
-                full = msg + "." + (hint or " (sanitized autodiag saved locally)")
-                remember_failure(full, kind="esp-srp-failed", links=links)
-                raise UpgradeBlockedError(full, kind="esp-srp-failed", links=links)
+            hint = _links_hint(links if isinstance(links, dict) else {})
+            bootable = res.get("bootable", True)
+            if not bootable:
+                log("ESP/SRP failed AND bootability unverified — refusing to continue", "ERROR")
+            if os.environ.get("MAGIC_SRP_CONTINUE", "").strip().lower() in ("1", "true", "yes"):
+                log("ESP/SRP still failing — continuing because MAGIC_SRP_CONTINUE=1" + hint, "WARN")
+                return None
+            # PC should still reboot into Windows (restore ran); block upgrade chain only
+            full = (
+                "ESP/SRP fix failed — cannot continue autonomous upgrade."
+                + (" Boot restore OK." if bootable else " Boot restore UNCERTAIN.")
+                + (hint or " (sanitized autodiag saved locally)")
+            )
+            remember_failure(full, kind="esp-srp-failed", links=links if isinstance(links, dict) else {})
+            raise UpgradeBlockedError(full, kind="esp-srp-failed", links=links if isinstance(links, dict) else {})
         return None
 
     if step.kind == "fix_bootmgr":
@@ -287,12 +300,29 @@ def _execute_step(
                     f"MBR→GPT failed — rescue staged: {meta['fallback'].get('guide')}",
                     "WARN",
                 )
-            raise RuntimeError(f"MBR→GPT failed ({msg}) — stop autonomous chain")
+            if meta.get("autodiag"):
+                log(f"Autodiag: {meta['autodiag']}", "INFO")
+            bootable = (meta.get("guarantee") or {}).get("bootable", True)
+            if not bootable:
+                raise RuntimeError(
+                    f"MBR→GPT failed ({msg}) — bootability NOT verified; fix WinRE before reboot"
+                )
+            raise RuntimeError(
+                f"MBR→GPT failed ({msg}) — PC kept bootable via restore; stop autonomous chain"
+            )
+        # Only reboot when conversion OK and bootable
+        if not (meta.get("guarantee") or {}).get("bootable", True):
+            raise RuntimeError("MBR→GPT reported OK but bootability check failed — reboot refused")
         save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code, "BootMeta": meta.get("postflight")})
-        # Register resume + reboot so firmware/GPT settle before next ISO
-        from .autonomy import schedule_reboot
+        from .boot_safe import safe_reboot_after_boot_op
 
-        schedule_reboot(seconds=50, reason="Win11MagicUpgrade after MBR2GPT")
+        safe_reboot_after_boot_op(
+            success=True,
+            reason="Win11MagicUpgrade after MBR2GPT",
+            seconds=50,
+            system_disk=report.disk_number,
+            expect_uefi=True,
+        )
         raise AutonomousRebootRequired("mbr2gpt")
 
     if step.kind == "iso_upgrade":
@@ -443,29 +473,39 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
     init_logging(sink)
     if not is_admin():
         raise PermissionError('Administrator required')
-    from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
+    from .sysreserved import scan_logs_for_srp_error
 
     try:
         force = scan_logs_for_srp_error()
         from .detect import collect_report
 
         disk = None
+        report_dict = None
         try:
-            disk = collect_report().disk_number
+            r = collect_report()
+            disk = r.disk_number
+            report_dict = r.as_dict()
         except Exception:
             pass
-        result = inspect_and_fix_system_reserved(force_expand=force, system_disk=disk)
+        from .boot_safe import run_esp_srp_with_restore
+
+        result = run_esp_srp_with_restore(
+            force_expand=force,
+            system_disk=disk,
+            retries=2,
+            report=report_dict,
+        )
         if not result.get('ok'):
-            msg = 'System Reserved / EFI fix did not complete successfully'
-            links = _autodiag_links(
+            links = result.get('autodiag') or {}
+            hint = ''
+            if isinstance(links, dict) and links.get('issue'):
+                hint = f" Issue: {links['issue']}"
+            boot = 'bootable' if result.get('bootable') else 'boot-uncertain'
+            raise UpgradeBlockedError(
+                f"System Reserved / EFI fix did not complete ({boot}).{hint}",
                 kind='esp-srp-failed',
-                message=msg,
-                report={'disk_number': disk} if disk is not None else None,
-                srp_result=result if isinstance(result, dict) else None,
+                links=links if isinstance(links, dict) else {},
             )
-            full = msg + '.' + (_links_hint(links) or ' (sanitized autodiag saved locally)')
-            remember_failure(full, kind='esp-srp-failed', links=links)
-            raise UpgradeBlockedError(full, kind='esp-srp-failed', links=links)
         write_migration_report(
             extra={
                 'Result': 'SRP_OK',
@@ -473,6 +513,7 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
                 'free_mb': result.get('free_mb'),
                 'expanded': result.get('expanded'),
                 'system_disk': result.get('system_disk'),
+                'bootable': result.get('bootable'),
             }
         )
     except Exception as e:

@@ -179,6 +179,330 @@ def restore_bcd_from_last() -> bool:
     return False
 
 
+_CRITICAL_REL_PATHS = (
+    Path("EFI") / "Microsoft" / "Boot" / "bootmgfw.efi",
+    Path("EFI") / "Microsoft" / "Boot" / "BCD",
+    Path("EFI") / "Microsoft" / "Boot" / "bootmgr.efi",
+    Path("EFI") / "Boot" / "bootx64.efi",
+    Path("EFI") / "Boot" / "bootia32.efi",
+    Path("bootmgr"),
+    Path("Boot") / "BCD",
+)
+
+
+def snapshot_esp_critical_files() -> Path | None:
+    """
+    Copy critical boot files from the current ESP/SRP to a local snapshot
+    (no PII — binary boot artifacts only). Used to restore if an edit fails.
+    """
+    from .sysreserved import mount_esp, unmount_letter
+
+    out_root = STATE_DIR / "boot-snapshots"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = out_root / stamp
+    dest.mkdir(parents=True, exist_ok=True)
+    mounted = None
+    copied = 0
+    try:
+        mounted = mount_esp()
+        if not mounted:
+            log("ESP snapshot skipped — cannot mount", "WARN")
+            return None
+        src_root = Path(f"{mounted.rstrip(':\\')}:\\")
+        for rel in _CRITICAL_REL_PATHS:
+            src = src_root / rel
+            if not src.is_file():
+                continue
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(src, target)
+                copied += 1
+            except Exception as e:
+                log(f"snapshot skip {rel}: {e}", "INFO")
+        meta = {
+            "utc": stamp,
+            "copied": copied,
+            "firmware": _firmware(),
+            "files": [str(p).replace("\\", "/") for p in _CRITICAL_REL_PATHS if (dest / p).is_file()],
+        }
+        (dest / "manifest.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        (out_root / "LAST.txt").write_text(str(dest), encoding="utf-8")
+        log(f"ESP/SRP critical snapshot: {copied} files → {dest}", "OK")
+        return dest if copied else None
+    finally:
+        if mounted:
+            try:
+                unmount_letter(mounted)
+            except Exception:
+                pass
+
+
+def restore_esp_critical_files() -> bool:
+    """Restore last ESP file snapshot onto the currently mountable ESP."""
+    from .sysreserved import mount_esp, unmount_letter
+
+    last = STATE_DIR / "boot-snapshots" / "LAST.txt"
+    if not last.exists():
+        return False
+    src_root = Path(last.read_text(encoding="utf-8").strip())
+    if not src_root.is_dir():
+        return False
+    mounted = None
+    restored = 0
+    try:
+        mounted = mount_esp()
+        if not mounted:
+            log("Cannot mount ESP to restore snapshot", "ERROR")
+            return False
+        dst_root = Path(f"{mounted.rstrip(':\\')}:\\")
+        for rel in _CRITICAL_REL_PATHS:
+            src = src_root / rel
+            if not src.is_file():
+                continue
+            dst = dst_root / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                restored += 1
+            except Exception as e:
+                log(f"restore {rel}: {e}", "WARN")
+        log(f"Restored {restored} critical boot files onto ESP", "OK" if restored else "WARN")
+        return restored > 0
+    finally:
+        if mounted:
+            try:
+                unmount_letter(mounted)
+            except Exception:
+                pass
+
+
+def rewrite_boot_files_from_windows(*, prefer_uefi: bool | None = None) -> bool:
+    """Last-resort: bcdboot from running Windows tree onto current ESP (keeps PC bootable)."""
+    from .mbrgpt import repair_boot_manager
+
+    uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
+    ok = repair_boot_manager(prefer_uefi=uefi)
+    if ok:
+        log("bcdboot rewrite from Windows — boot path re-anchored", "OK")
+    else:
+        log("bcdboot rewrite failed", "ERROR")
+    return ok
+
+
+def guarantee_bootable(
+    *,
+    expect_uefi: bool | None = None,
+    system_disk: int | None = None,
+    force_restore: bool = False,
+) -> dict[str, Any]:
+    """
+    ALWAYS leave the machine able to reboot into Windows.
+    Called after success OR failure of ESP/MBR edits.
+    """
+    log("=" * 60, "STEP")
+    log("GUARANTEE BOOTABLE — restore if needed", "STEP")
+    uefi = expect_uefi if expect_uefi is not None else (_firmware() == "UEFI")
+    actions: list[str] = []
+    post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
+
+    if post.get("ok") and not force_restore:
+        actions.append("postflight_ok")
+        out = {"bootable": True, "actions": actions, "postflight": post, "restored": False}
+        _write_bootable_status(out)
+        return out
+
+    # Progressive restore
+    if force_restore or not post.get("ok"):
+        if restore_bcd_from_last():
+            actions.append("bcd_import")
+        if restore_esp_critical_files():
+            actions.append("esp_files_restored")
+        if rewrite_boot_files_from_windows(prefer_uefi=uefi):
+            actions.append("bcdboot_rewrite")
+        post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
+
+    # Soft accept: BCD bootmgr present even if ESP inspect flaky (mountvol race)
+    bootable = bool(post.get("ok") or post.get("bcd_bootmgr"))
+    if not bootable:
+        # One more bcdboot without /s (default system partition)
+        sys_root = os.environ.get("SystemRoot", r"C:\Windows")
+        bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
+        if bcdboot.exists():
+            mode = "UEFI" if uefi else "BIOS"
+            code, out = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
+            actions.append(f"bcdboot_default_{mode}:{code}")
+            post = postflight_boot_edit(expect_uefi=uefi, system_disk=system_disk)
+            bootable = bool(post.get("ok") or post.get("bcd_bootmgr") or code == 0)
+
+    out = {
+        "bootable": bootable,
+        "actions": actions,
+        "postflight": post,
+        "restored": "bcd_import" in actions or "esp_files_restored" in actions or "bcdboot_rewrite" in actions,
+    }
+    if bootable:
+        log("PC is bootable (verified) — safe to reboot", "OK")
+    else:
+        log("CRITICAL: could not verify bootability — do NOT force reboot without WinRE", "ERROR")
+    _write_bootable_status(out)
+    return out
+
+
+def _write_bootable_status(data: dict[str, Any]) -> None:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (STATE_DIR / "bootable-status.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def safe_reboot_after_boot_op(
+    *,
+    success: bool,
+    reason: str,
+    seconds: int = 50,
+    system_disk: int | None = None,
+    expect_uefi: bool | None = None,
+) -> dict[str, Any]:
+    """
+    Reboot only if guarantee_bootable says OK.
+    Success or failure of the partition op must not brick the PC.
+    """
+    from .autonomy import schedule_reboot
+
+    g = guarantee_bootable(expect_uefi=expect_uefi, system_disk=system_disk, force_restore=not success)
+    result = {"scheduled": False, "bootable": g.get("bootable"), "guarantee": g, "success_op": success}
+    if not g.get("bootable"):
+        log("Reboot SKIPPED — bootability not verified after restore attempts", "ERROR")
+        return result
+    tag = "after-boot-op-ok" if success else "after-boot-op-failed-but-restored"
+    schedule_reboot(seconds=seconds, reason=f"{reason} [{tag}]"[:500])
+    result["scheduled"] = True
+    return result
+
+
+def report_boot_failure_autodiag(
+    *,
+    kind: str,
+    message: str,
+    op_result: dict[str, Any] | None = None,
+    guarantee: dict[str, Any] | None = None,
+    report: dict[str, Any] | None = None,
+) -> dict[str, str | None]:
+    """
+    File sanitized GitHub Issue (+ optional PR) with boot recovery facts only.
+    Never includes usernames, hostnames, full paths under Users, etc.
+    """
+    from .gh_report import report_failure_to_github
+    from .sanitize import sanitize_obj
+
+    extra: dict[str, Any] = {
+        "bootable_status": sanitize_obj((guarantee or {}).get("bootable")),
+        "restore_actions": sanitize_obj((guarantee or {}).get("actions")),
+        "postflight_issues": sanitize_obj(
+            ((guarantee or {}).get("postflight") or {}).get("issues")
+            or ((op_result or {}).get("postflight") or {}).get("issues")
+        ),
+        "op_ok": sanitize_obj((op_result or {}).get("ok")),
+        "op_actions": sanitize_obj((op_result or {}).get("actions")),
+        "preflight_blocks": sanitize_obj(
+            ((op_result or {}).get("preflight") or {}).get("block_reasons")
+        ),
+        "fallback_tools": sanitize_obj(((op_result or {}).get("fallback") or {}).get("tools")),
+        "has_gparted_guide": bool(((op_result or {}).get("fallback") or {}).get("guide")),
+        "has_bcd_backup": bool((STATE_DIR / "bcd-backups" / "LAST.txt").exists()),
+        "has_esp_snapshot": bool((STATE_DIR / "boot-snapshots" / "LAST.txt").exists()),
+    }
+    # Attach sanitized JSON snippets from state (already machine facts)
+    for name in ("boot-preflight.json", "boot-postflight.json", "bootable-status.json", "srp-fix.json"):
+        p = STATE_DIR / name
+        if not p.exists():
+            continue
+        try:
+            extra[name.replace(".json", "").replace("-", "_")] = sanitize_obj(
+                json.loads(p.read_text(encoding="utf-8"))
+            )
+        except Exception:
+            pass
+
+    return report_failure_to_github(
+        kind=kind,
+        message=message,
+        report=report,
+        srp_result=op_result if isinstance(op_result, dict) else None,
+        extra=extra,
+    )
+
+
+def run_esp_srp_with_restore(
+    *,
+    force_expand: bool = False,
+    system_disk: int | None = None,
+    retries: int = 2,
+    report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Intelligent ESP/SRP fix with snapshot → try/refix → always restore bootability
+    → sanitized GitHub report on persistent failure.
+    """
+    from .sysreserved import inspect_and_fix_system_reserved
+
+    log("=== Secure ESP/SRP op (snapshot → fix → restore → report) ===", "STEP")
+    snapshot_esp_critical_files()
+    # Ensure BCD backup even if caller skipped preflight
+    backup_bcd()
+
+    last: dict[str, Any] = {"ok": False}
+    attempts = max(1, int(retries))
+    for i in range(attempts):
+        force = force_expand or i > 0
+        log(f"ESP/SRP attempt {i + 1}/{attempts} (force_expand={force})", "STEP")
+        try:
+            last = inspect_and_fix_system_reserved(force_expand=force, system_disk=system_disk)
+        except Exception as e:
+            last = {"ok": False, "actions": [f"exception:{type(e).__name__}"], "error": str(e)[:300]}
+            log(f"ESP/SRP attempt error: {e}", "ERROR")
+        if isinstance(last, dict) and last.get("ok"):
+            break
+        # Between retries: restore bootability then retry expand
+        guarantee_bootable(system_disk=system_disk, force_restore=True)
+
+    gu = guarantee_bootable(
+        system_disk=system_disk if system_disk is not None else (last or {}).get("system_disk"),
+        expect_uefi=((last or {}).get("mode") == "EFI") if last else None,
+        force_restore=not bool((last or {}).get("ok")),
+    )
+    out = dict(last or {})
+    out["bootable"] = gu.get("bootable")
+    out["guarantee"] = gu
+    out["attempts"] = attempts
+
+    if not out.get("ok"):
+        if not out.get("fallback"):
+            try:
+                out["fallback"] = prepare_partition_fallbacks(
+                    reason="esp_srp_failed_after_retries",
+                    system_disk=out.get("system_disk"),
+                    mode=str(out.get("mode") or "unknown"),
+                )
+            except Exception:
+                pass
+        try:
+            links = report_boot_failure_autodiag(
+                kind="esp-srp-failed",
+                message="ESP/SRP fix failed after retries — PC kept bootable via restore",
+                op_result=out,
+                guarantee=gu,
+                report=report,
+            )
+            out["autodiag"] = links
+        except Exception as e:
+            log(f"autodiag after ESP fail: {e}", "WARN")
+
+    return out
+
+
 def preflight_boot_edit(
     *,
     intend: str = "esp-or-mbr",
@@ -240,6 +564,16 @@ def preflight_boot_edit(
         if os.environ.get("MAGIC_REQUIRE_BCD_BACKUP", "").strip().lower() in ("1", "true", "yes"):
             if intend in ("esp-expand", "mbr2gpt"):
                 snap.block_reasons.append("bcd_backup_required")
+
+    # Critical ESP file snapshot for restore-on-failure
+    try:
+        if snapshot_esp_critical_files():
+            snap.notes.append("esp_snapshot_ok")
+        else:
+            snap.notes.append("esp_snapshot_empty")
+    except Exception as e:
+        snap.notes.append(f"esp_snapshot_skip")
+        log(f"ESP snapshot: {e}", "WARN")
 
     snap.safe_to_mutate = len(snap.block_reasons) == 0
     if snap.safe_to_mutate:
@@ -494,32 +828,37 @@ def validated_repair_boot_manager(*, prefer_uefi: bool = True) -> dict[str, Any]
 
     repaired = repair_boot_manager(prefer_uefi=prefer_uefi)
     result["repaired"] = repaired
-    post = postflight_boot_edit(expect_uefi=prefer_uefi, system_disk=snap.disk_number)
-    result["postflight"] = post
-    result["ok"] = bool(repaired and post.get("ok"))
-    if repaired and not post.get("ok"):
-        log("bcdboot reported OK but postflight found issues — keep BCD backup", "WARN")
+    gu = guarantee_bootable(expect_uefi=prefer_uefi, system_disk=snap.disk_number, force_restore=not repaired)
+    result["postflight"] = gu.get("postflight") or {}
+    result["guarantee"] = gu
+    result["ok"] = bool(gu.get("bootable") and (repaired or gu.get("restored")))
+    if repaired and not (result["postflight"] or {}).get("ok"):
+        log("bcdboot reported OK but postflight found issues — restore path applied", "WARN")
     return result
 
 
 def validated_mbr_to_gpt(disk_number: int) -> tuple[bool, int, str, dict[str, Any]]:
-    """Preflight → mbr2gpt → postflight; prepare GParted rescue on hard fail."""
+    """Preflight → mbr2gpt → guarantee bootable → report on fail; never leave PC unbootable."""
     from .mbrgpt import convert_mbr_to_gpt
 
     meta: dict[str, Any] = {}
     snap = preflight_boot_edit(intend="mbr2gpt", system_disk=disk_number, require_disk=True)
     meta["preflight"] = snap.as_dict()
     if not snap.safe_to_mutate:
+        gu = guarantee_bootable(expect_uefi=False, system_disk=disk_number)
+        meta["guarantee"] = gu
         return False, -1, "preflight blocked: " + ",".join(snap.block_reasons), meta
 
     ok, code, msg = convert_mbr_to_gpt(disk_number)
     meta["mbr2gpt"] = {"ok": ok, "code": code, "msg": msg}
-    post = postflight_boot_edit(expect_uefi=True, system_disk=disk_number)
-    meta["postflight"] = post
 
-    if ok:
-        # Soft: conversion OK even if postflight warns (firmware may still be Legacy)
-        if not post.get("ok"):
+    # ALWAYS restore/verify bootability (success or fail)
+    gu = guarantee_bootable(expect_uefi=ok, system_disk=disk_number, force_restore=not ok)
+    meta["guarantee"] = gu
+    meta["postflight"] = gu.get("postflight") or {}
+
+    if ok and gu.get("bootable"):
+        if not (meta["postflight"] or {}).get("ok"):
             meta["fallback"] = prepare_partition_fallbacks(
                 reason="mbr2gpt_ok_but_postflight_issues",
                 system_disk=disk_number,
@@ -532,4 +871,19 @@ def validated_mbr_to_gpt(disk_number: int) -> tuple[bool, int, str, dict[str, An
         system_disk=disk_number,
         mode="MBR→GPT",
     )
+    try:
+        meta["autodiag"] = report_boot_failure_autodiag(
+            kind="mbr2gpt-failed",
+            message=f"MBR→GPT failed ({msg}) — PC kept bootable via restore"
+            if gu.get("bootable")
+            else f"MBR→GPT failed ({msg}) — restore attempted",
+            op_result={"ok": ok, "actions": [], "fallback": meta.get("fallback"), "preflight": meta.get("preflight")},
+            guarantee=gu,
+        )
+    except Exception as e:
+        log(f"mbr2gpt autodiag: {e}", "WARN")
+
+    # If conversion claimed OK but not bootable — treat as failure after restore
+    if ok and not gu.get("bootable"):
+        return False, code, "converted_but_not_bootable_after_restore", meta
     return False, code, msg, meta
