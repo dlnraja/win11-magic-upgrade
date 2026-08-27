@@ -135,16 +135,21 @@ Boot layout changes use `engine/boot_safe.py`:
 2. **Native tiers** — cleanup → `bcdboot` → verified `diskpart` expand (never invent disk 0)
 3. **Retries** — failed ESP/SRP expands re-run after restore
 4. **Guarantee bootable** — on success *or* failure intelligent ladder:
-   BCD import → ESP file restore → `bcdboot` (UEFI/ALL/BIOS) → `bcdedit` heal →
-   `bootrec` (if present) → **temporary WinRE ramdisk** (`reagentc /boottore`, one-shot) →
-   GParted rescue package. Reboot only if Windows is verified **or** WinRE one-shot is staged.
-5. **Postflight** — check ESP boot files + `{bootmgr}`
-6. **Fallback** — stage **GParted Live** ISO + guide (never auto-flash / auto-boot disks)
+   BCD import → ESP file restore → `bcdboot` → `bcdedit` heal → `bootrec` →
+   **deep verification** → **emergency BCD regenerate** → **PowerShell Storage**
+   (non-diskpart ESP create) → **WinRE** (`reagentc /boottore`) → **temporary WinPE**
+   BCD ramdisk (`Winre.wim`/`boot.wim` + `boot.sdi`, one-shot `/bootsequence`) →
+   FreeDOS + GParted rescue packages. Reboot only if Windows is verified **or**
+   a temporary PE one-shot is staged.
+5. **Postflight** — ESP boot files + `{bootmgr}` + deep scorecard
+6. **Fallback** — stage **GParted Live** + **FreeDOS** media + guides (never auto-flash / auto-boot)
 7. **Autodiag** — on persistent failure, sanitized GitHub Issue (+ optional PR) with restore facts only (no PII)
    - `%LOCALAPPDATA%\\Win11MagicUpgrade\\rescue\\`
-   - Desktop `Win11MagicUpgrade-GParted-Rescue.txt`
+   - Desktop `Win11MagicUpgrade-GParted-Rescue.txt` / FreeDOS guide
 8. Env:
-   - `MAGIC_GPARTED_FALLBACK=0` skip ISO download
+   - `MAGIC_GPARTED_FALLBACK=0` skip GParted ISO download
+   - `MAGIC_FREEDOS_FALLBACK=0` skip FreeDOS staging
+   - `MAGIC_PS_STORAGE_FALLBACK=0` skip PowerShell Storage expand
    - `MAGIC_REQUIRE_BCD_BACKUP=1` hard-require BCD export
-   - `MAGIC_WINRE_FALLBACK=0` disable WinRE one-shot staging
-   - `MAGIC_WINRE_BOOT=1` force stage WinRE even if postflight looks OK
+   - `MAGIC_WINRE_FALLBACK=0` / `MAGIC_WINPE_FALLBACK=0` disable PE staging
+   - `MAGIC_WINRE_BOOT=1` / `MAGIC_WINPE_BOOT=1` force temporary PE staging

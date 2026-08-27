@@ -595,13 +595,32 @@ def inspect_and_fix_system_reserved(
                 log("Larger boot partition created. Reboot once before upgrade if firmware needs refresh.", "OK")
                 result["ok"] = True
             else:
-                log("Expand failed — ESP/SRP still insufficient — staging GParted rescue", "ERROR")
+                log("Expand failed — trying PowerShell Storage (non-diskpart) then GParted rescue", "ERROR")
                 result["ok"] = False
                 result["actions"].append("expand_failed")
-                if _prepare_fallback:
+                # Non-diskpart fallback before GParted
+                try:
+                    from .boot_emergency import ps_storage_create_esp
+
+                    ps = ps_storage_create_esp(
+                        system_disk=disk_n,
+                        prefer_uefi=(result.get("mode") == "EFI" or uefi),
+                    )
+                    result["ps_storage"] = {k: ps.get(k) for k in ("ok", "letter", "actions")}
+                    result["actions"].extend(ps.get("actions") or [])
+                    if ps.get("ok"):
+                        result["expanded"] = True
+                        result["ok"] = True
+                        result["actions"].append("expand_via_ps_storage")
+                        log("ESP/SRP expanded via PowerShell Storage (diskpart bypass)", "OK")
+                except Exception as e:
+                    log(f"PS Storage expand fallback failed: {e}", "WARN")
+                    result["actions"].append(f"ps_storage_fail:{type(e).__name__}")
+
+                if not result.get("ok") and _prepare_fallback:
                     try:
                         result["fallback"] = _prepare_fallback(
-                            reason="diskpart_esp_mbr_expand_failed",
+                            reason="diskpart_and_ps_storage_esp_mbr_expand_failed",
                             system_disk=disk_n,
                             mode=str(result.get("mode") or ("EFI" if uefi else "SystemReserved")),
                         )
