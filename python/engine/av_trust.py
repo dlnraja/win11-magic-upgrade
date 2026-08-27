@@ -315,6 +315,39 @@ def _unblock_paths(paths: list[Path]) -> int:
     return count
 
 
+def _try_kaspersky_quarantine_restore(cli: Path, product: str) -> bool:
+    """
+    Best-effort restore of Win11MagicUpgrade* from Quarantine/Backup.
+    KES often needs Password protection credentials; consumer KIS may allow without.
+    """
+    names = (
+        "Win11MagicUpgrade.exe",
+        "Win11MagicUpgrade*",
+        "*MagicUpgrade*",
+    )
+    ok = False
+    for name in names:
+        for args in (
+            [str(cli), "RESTORE", "/REPLACE", name],
+            [str(cli), "RESTORE", name],
+            [str(cli), "BACKUP", "RESTORE", name],
+        ):
+            out = _run(args, timeout=60)
+            if _run_ok(out) or "restor" in out.lower():
+                ok = True
+                log(f"Kaspersky ({product}) quarantine restore attempt OK: {name}", "OK")
+                break
+        if ok:
+            break
+    if not ok:
+        log(
+            f"Kaspersky ({product}): auto-restore from quarantine not available "
+            "(open Quarantine in KIS GUI if the EXE was deleted)",
+            "INFO",
+        )
+    return ok
+
+
 def _write_kis_gui_guide(paths: list[Path]) -> Path | None:
     """
     Desktop + state-dir guide when KIS still quarantines (manual trusted-app steps).
@@ -387,6 +420,11 @@ def declare_kaspersky_trust(paths: list[Path] | None = None) -> bool:
             tag = "KIS" if is_kis else "Kaspersky"
             if isinstance(cli, Path) and cli.exists():
                 log(f"{tag} CLI: {cli} ({product})", "INFO")
+                try:
+                    if _try_kaspersky_quarantine_restore(cli, product):
+                        declared = True
+                except Exception as e:
+                    log(f"Kaspersky restore: {e}", "WARN")
                 for p in paths:
                     if _kaspersky_trust_attempts(cli, p, product):
                         declared = True

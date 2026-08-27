@@ -71,9 +71,10 @@ See [SECURITY.md](../SECURITY.md) — Defender exclusions, **Kaspersky KIS** tru
 If KIS quarantines `Win11MagicUpgrade.exe`:
 
 1. **Prefer the Release ZIP** (not the naked EXE) — see above.
-2. On first run the app writes **`Win11MagicUpgrade-KIS-WHITELIST.txt`** on your Desktop with step-by-step KIS GUI steps.
-3. **Restore from Quarantine** → add as **Trusted application** (Settings → Threats and Exclusions).
-4. Re-run elevated, or one-shot trust: `Win11MagicUpgrade.exe --cli --declare-av`
-5. Disable early auto-trust if needed: `MAGIC_EARLY_AV_TRUST=0` or `MAGIC_KIS_TRUST=0`
+2. Extract, then run **`Fix-KIS.cmd` as Administrator** (works even if the EXE is blocked).
+3. On first run the app writes **`Win11MagicUpgrade-KIS-WHITELIST.txt`** on your Desktop with step-by-step KIS GUI steps.
+4. **Restore from Quarantine** → add as **Trusted application** (Settings → Threats and Exclusions).
+5. In the GUI: **Fix AV / KIS**, or one-shot: `Win11MagicUpgrade.exe --cli --declare-av`
+6. Disable early auto-trust if needed: `MAGIC_EARLY_AV_TRUST=0` or `MAGIC_KIS_TRUST=0`
 
 The app auto-attempts `avp.com ADD`, trusted-zone SET, and `Unblock-File` when KIS is installed (admin helps).

@@ -218,6 +218,17 @@ class App(tk.Tk):
             pady=8,
             command=lambda: self.start("install-patches"),
         ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            btns,
+            text=self.t.get("btn_declare_av", "Fix AV / KIS"),
+            font=("Segoe UI", 10),
+            bg="#7c2d12",
+            fg="#e2e8f0",
+            relief="flat",
+            padx=12,
+            pady=8,
+            command=lambda: self.start("declare-av"),
+        ).pack(side="left", padx=(8, 0))
 
         tk.Label(
             self,
@@ -535,6 +546,13 @@ class App(tk.Tk):
                 elif action == "install-patches":
                     install_preventive_only(sink)
                     code = 0
+                elif action == "declare-av":
+                    from engine.av_trust import declare_all_av_trust  # type: ignore
+
+                    declare_all_av_trust()
+                    sink("AV / Kaspersky KIS trust declarations finished (best-effort).\n")
+                    sink("If KIS still blocks: restore from Quarantine + Trusted apps (see Desktop KIS-WHITELIST).\n")
+                    code = 0
                 else:
                     code = run_pipeline(sink, quiet=True)
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
@@ -560,6 +578,17 @@ class App(tk.Tk):
                     body = _format_user_error(self.t, kind, detail)
                     self.after(0, self.append, body + "\n")
                     self.after(0, lambda b=body: messagebox.showerror(title, b))
+                elif code == 0 and action == "declare-av":
+                    self.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            title,
+                            self.t.get(
+                                "done_av",
+                                "AV / Kaspersky trust done.\nSee Desktop KIS-WHITELIST if still blocked.",
+                            ),
+                        ),
+                    )
                 elif code == 0:
                     self.after(
                         0,

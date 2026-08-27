@@ -50,6 +50,14 @@ $helpLines = @(
     "Click More info -> Run anyway.",
     "A paid OV/EV code-signing certificate (CODESIGN_PFX_* secrets) removes most prompts.",
     "",
+    "Kaspersky Internet Security (KIS) false positive",
+    "------------------------------------------------",
+    "1) Prefer this ZIP. Extract, then right-click Fix-KIS.cmd -> Run as administrator.",
+    "2) Or in the app: Fix AV / KIS button, or: Win11MagicUpgrade.exe --cli --declare-av",
+    "3) If EXE was deleted: KIS Quarantine -> Restore -> Trusted application.",
+    "4) Desktop guide: Win11MagicUpgrade-KIS-WHITELIST.txt",
+    "5) Submit FP: https://opentip.kaspersky.com/  or  newvirus@kaspersky.com",
+    "",
     "Source: https://github.com/dlnraja/win11-magic-upgrade",
     "Security notes: SECURITY.md"
 )

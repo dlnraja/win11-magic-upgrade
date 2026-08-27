@@ -79,9 +79,13 @@ Copy-Item (Join-Path $Root "python") $portable -Recurse -Force
 Copy-Item (Join-Path $Root "i18n") $portable -Recurse -Force
 Copy-Item (Join-Path $Root "Win11MagicUpgrade.cmd") $portable -Force
 Copy-Item (Join-Path $Root "Diagnose.cmd") $portable -Force
+Copy-Item (Join-Path $Root "Fix-KIS.cmd") $portable -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $Root "Fix-KIS.ps1") $portable -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Root "README.md") $portable -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Root "LICENSE") $portable -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Root "NOTICE") $portable -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $Root "docs\DOWNLOAD.md") (Join-Path $portable "DOWNLOAD.md") -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $Root "SECURITY.md") $portable -Force -ErrorAction SilentlyContinue
 
 # Authenticode sign as publisher "dlnraja"
 # Prefers MAGIC_CODESIGN_PFX (+ MAGIC_CODESIGN_PASSWORD) for SmartScreen-ready CA certs.
