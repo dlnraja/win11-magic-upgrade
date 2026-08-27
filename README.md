@@ -43,6 +43,7 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 | Boot Manager 32↔64 | Detect ESP PE bitness; repair x64 OS + IA32 bootmgr via bcdboot; **hybrid CSMWrap** for IA32-only UEFI |
 | Migration logs | Panther-style `setupact.log` / `setuperr.log` + Desktop `MigrationReport.txt` |
 | Extra SetupDiag errors | CompatData scan, ProfileList, WU reset, Safe/Audit mode, VHD, CSC, dirty disk, EDR |
+| Patch / Enrich / Support | Dedicated mode: restore point, EspPadding, LP trim, DISM cleanup, SupportGuide.txt |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
 ## Logs (Windows Migration / Setup style)
@@ -69,6 +70,8 @@ After each ISO step, **RunOnce** resumes the next chain step automatically.
 CLI extras (admin):
 
 ```text
+Win11MagicUpgrade.exe --cli --patch            # Remediate + enrich + SupportGuide (no ISO)
+Win11MagicUpgrade.exe --cli --patch-deep       # + DISM RestoreHealth / SFC
 Win11MagicUpgrade.exe --cli --hybrid           # Stage CSMWrap IA32 hybrid on ESP
 Win11MagicUpgrade.exe --cli --hybrid-activate  # Replace bootia32.efi (stock backed up)
 Win11MagicUpgrade.exe --cli --srp      # Fix System Reserved / EFI only

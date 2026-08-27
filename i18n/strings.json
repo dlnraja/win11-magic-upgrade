@@ -1,34 +1,36 @@
 {
   "en": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "Auto-diag · smart registry · MBR→GPT+boot · ESP/SRP · hybrid IA32 · Panther logs",
+    "app_sub": "Auto-diag · patch/enrich · ESP/SRP · hybrid IA32 · support logs",
     "btn_oneclick": "One-Click (intelligent)",
     "btn_diagnose": "Auto-diagnose",
     "btn_bypass": "Registry pack",
     "btn_mbr": "MBR→GPT + Boot",
     "btn_srp": "Fix ESP/SRP",
-    "note": "Keeps files & apps · Smart bypass · MBR→GPT · ESP/SRP · Hybrid IA32 · Errors in setuperr.log + MigrationReport.txt (Desktop) · Pure Python — NO .NET 4.x / NO PowerShell",
-    "confirm_upgrade": "Run stepped migration (intermediate versions if needed)?\nExample: Win10 1511 -> 22H2 -> Win11 latest.\nMBR converted without wipe when required. ESP/SRP enlarged if needed. Files and apps kept.\nA MigrationReport.txt is written (Desktop + Panther folder).",
+    "btn_patch": "Patch / Enrich",
+    "note": "Keeps files & apps · Patch/Enrich mode · ESP padding · language-pack trim · restore point · SupportGuide.txt · Pure Python — NO .NET 4.x / NO PowerShell",
+    "confirm_upgrade": "Run stepped migration (intermediate versions if needed)?\nExample: Win10 1511 -> 22H2 -> Win11 latest.\nPatches + enrichment run first. Files and apps kept.\nMigrationReport + SupportGuide written to Desktop.",
     "need_admin": "Administrator rights are required.\nRelaunch as admin?",
-    "ready": "Ready. Click One-Click — auto-diag chooses the safest max path.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
-    "done_ok": "Pipeline finished / setup launched.\nSee Desktop MigrationReport.txt and Panther\\setuperr.log",
-    "done_warn": "Finished with code {code}.\nSee Desktop MigrationReport.txt and Panther\\setuperr.log",
-    "logs_hint": "Logs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\ (setupact.log / setuperr.log) + MigrationReport.txt"
+    "ready": "Ready. Use Patch/Enrich to remediate without upgrading, or One-Click for full chain.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
+    "done_ok": "Done.\nSee Desktop MigrationReport.txt + SupportGuide.txt and Panther\\setuperr.log",
+    "done_warn": "Finished with code {code}.\nSee Desktop MigrationReport.txt + SupportGuide.txt",
+    "logs_hint": "Logs: Panther\\setupact.log / setuperr.log + MigrationReport.txt + SupportGuide.txt"
   },
   "fr": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "Auto-diag · registres · MBR→GPT · ESP/SRP · hybride IA32 · logs Panther",
+    "app_sub": "Auto-diag · patch/enrich · ESP/SRP · hybride IA32 · support",
     "btn_oneclick": "One-Click (intelligent)",
     "btn_diagnose": "Auto-diagnostic",
     "btn_bypass": "Pack registre",
     "btn_mbr": "MBR→GPT + Boot",
     "btn_srp": "Corriger ESP/SRP",
-    "note": "Conserve fichiers & apps · Bypass · MBR→GPT · ESP/SRP · Hybride IA32 · Erreurs dans setuperr.log + MigrationReport.txt (Bureau) · Python pur — PAS de .NET 4.x / PAS de PowerShell",
-    "confirm_upgrade": "Lancer la migration par paliers (versions intermediaires si besoin) ?\nExemple: Win10 1511 -> 22H2 -> Win11 latest.\nMBR converti sans perte si necessaire. ESP/SRP agrandie si besoin. Fichiers et apps conserves.\nUn MigrationReport.txt est ecrit (Bureau + dossier Panther).",
+    "btn_patch": "Patch / Enrich",
+    "note": "Conserve fichiers & apps · Mode Patch/Enrich · Padding ESP · language packs · point de restauration · SupportGuide.txt · Python pur — PAS de .NET 4.x / PAS de PowerShell",
+    "confirm_upgrade": "Lancer la migration par paliers ?\nExemple: Win10 1511 -> 22H2 -> Win11 latest.\nPatches + enrichissement d'abord. Fichiers et apps conserves.\nMigrationReport + SupportGuide sur le Bureau.",
     "need_admin": "Des droits Administrateur sont requis.\nRelancer en admin ?",
-    "ready": "Pret. Cliquez One-Click — l'auto-diag choisit le chemin max le plus sur.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
-    "done_ok": "Pipeline termine / setup lance.\nVoir MigrationReport.txt sur le Bureau et Panther\\setuperr.log",
-    "done_warn": "Termine avec code {code}.\nVoir MigrationReport.txt sur le Bureau et Panther\\setuperr.log",
-    "logs_hint": "Logs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\ (setupact.log / setuperr.log) + MigrationReport.txt"
+    "ready": "Pret. Patch/Enrich pour remedier sans upgrader, ou One-Click pour la chaine complete.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\Panther\\",
+    "done_ok": "Termine.\nVoir MigrationReport.txt + SupportGuide.txt sur le Bureau et Panther\\setuperr.log",
+    "done_warn": "Termine avec code {code}.\nVoir MigrationReport.txt + SupportGuide.txt",
+    "logs_hint": "Logs: Panther\\setupact.log / setuperr.log + MigrationReport.txt + SupportGuide.txt"
   }
 }

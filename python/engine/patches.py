@@ -468,6 +468,13 @@ def apply_migration_patches() -> None:
     except Exception as e:
         log(f"Extra error fixes skipped: {e}", "WARN")
 
+    try:
+        from .enrich import apply_forum_enrichments
+
+        apply_forum_enrichments(deep_heal=False)
+    except Exception as e:
+        log(f"Forum enrichment skipped: {e}", "WARN")
+
     free = shutil.disk_usage(os.environ.get("SystemDrive", "C:\\")).free / (1024**3)
     if free < 12:
         raise RuntimeError(f"Not enough free disk space ({free:.1f} GB). Need ~20 GB.")

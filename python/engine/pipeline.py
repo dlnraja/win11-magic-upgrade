@@ -218,6 +218,12 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
             'CanWin11': plan.can_win11,
         },
     )
+    try:
+        from .support import write_support_pack
+
+        write_support_pack(extra={"Mode": "DIAGNOSE", "Target": plan.target})
+    except Exception as e:
+        log(f"Support pack: {e}", "WARN")
     return payload
 
 
@@ -291,6 +297,40 @@ def deploy_hybrid_only(sink: Callable[[str], None] | None = None, *, activate: b
         log(str(e), 'ERROR')
         write_migration_report(extra={'Result': 'HYBRID_FAILED', 'Exception': str(e)})
         raise
+
+
+def run_patch_enrichment(
+    sink: Callable[[str], None] | None = None,
+    *,
+    deep_heal: bool = False,
+) -> None:
+    """
+    Patch / enrich / support mode: full remediation without launching setup ISO.
+    """
+    init_logging(sink)
+    if not is_admin():
+        raise PermissionError("Administrator required")
+    log("=== PATCH / ENRICH / SUPPORT mode (no ISO upgrade) ===", "STEP")
+    r = collect_report()
+    print_report(r)
+    plan = build_plan(r)
+    print_plan(plan)
+    apply_hardware_bypass()
+    apply_migration_patches()
+    if deep_heal:
+        from .enrich import dism_component_cleanup_and_heal
+
+        dism_component_cleanup_and_heal()
+    from .support import write_support_pack
+
+    write_support_pack(
+        extra={
+            "Mode": "PATCH_DEEP" if deep_heal else "PATCH",
+            "Target": plan.target,
+            "Chain": format_chain(build_version_chain(r)),
+        }
+    )
+    log("Patch/enrichment complete. Review SupportGuide.txt and MigrationReport.txt", "OK")
 
 
 def run_pipeline(

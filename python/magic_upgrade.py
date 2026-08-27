@@ -162,6 +162,17 @@ class App(tk.Tk):
             pady=8,
             command=lambda: self.start("srp"),
         ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            btns,
+            text=self.t.get("btn_patch", "Patch / Enrich"),
+            font=("Segoe UI", 10),
+            bg="#334155",
+            fg="#e2e8f0",
+            relief="flat",
+            padx=12,
+            pady=8,
+            command=lambda: self.start("patch"),
+        ).pack(side="left", padx=(8, 0))
 
         tk.Label(
             self,
@@ -213,6 +224,7 @@ class App(tk.Tk):
                     convert_mbr_only,
                     fix_system_reserved_only,
                     run_diagnose,
+                    run_patch_enrichment,
                     run_pipeline,
                 )
 
@@ -228,6 +240,9 @@ class App(tk.Tk):
                     code = 0
                 elif action == "srp":
                     fix_system_reserved_only(sink)
+                    code = 0
+                elif action == "patch":
+                    run_patch_enrichment(sink, deep_heal=False)
                     code = 0
                 else:
                     code = run_pipeline(sink)
@@ -271,6 +286,8 @@ def main() -> None:
             "--srp",
             "--hybrid",
             "--hybrid-activate",
+            "--patch",
+            "--patch-deep",
         )
     )
     if cli:
@@ -280,6 +297,7 @@ def main() -> None:
             deploy_hybrid_only,
             fix_system_reserved_only,
             run_diagnose,
+            run_patch_enrichment,
             run_pipeline,
         )
 
@@ -303,6 +321,12 @@ def main() -> None:
             return
         if "--hybrid" in argv:
             deploy_hybrid_only(activate=False)
+            return
+        if "--patch-deep" in argv:
+            run_patch_enrichment(deep_heal=True)
+            return
+        if "--patch" in argv:
+            run_patch_enrichment(deep_heal=False)
             return
         code = run_pipeline(resume="--resume" in argv)
         raise SystemExit(code)
