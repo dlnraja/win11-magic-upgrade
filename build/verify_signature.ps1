@@ -4,6 +4,10 @@
 param(
     [Parameter(Mandatory = $true)][string]$ExePath,
     [string]$ExpectPublisher = "dlnraja",
+    # Extra CN substrings accepted (e.g. SignPath Foundation after OSS signing)
+    [string[]]$AlsoAllowCn = @(),
+    # Skip CN check; only Status / trusted-chain gates apply
+    [switch]$AnyPublisher,
     [switch]$RequireTrusted
 )
 
@@ -29,8 +33,15 @@ if ($sig.TimeStamperCertificate) {
 if (-not $sig.SignerCertificate) {
     throw "EXE is not Authenticode-signed"
 }
-if ($sig.SignerCertificate.Subject -notmatch [regex]::Escape("CN=$ExpectPublisher")) {
-    throw ("Signer CN mismatch - expected CN={0}, got {1}" -f $ExpectPublisher, $sig.SignerCertificate.Subject)
+if (-not $AnyPublisher) {
+    $subj = [string]$sig.SignerCertificate.Subject
+    $cnOk = ($ExpectPublisher -and ($subj -match [regex]::Escape("CN=$ExpectPublisher")))
+    foreach ($alt in $AlsoAllowCn) {
+        if ($alt -and ($subj -match [regex]::Escape($alt))) { $cnOk = $true }
+    }
+    if (-not $cnOk) {
+        throw ("Signer CN mismatch - expected CN={0} (or AlsoAllowCn), got {1}" -f $ExpectPublisher, $subj)
+    }
 }
 if ($sig.Status -eq "HashMismatch" -or $sig.Status -eq "NotSigned") {
     throw ("Bad Authenticode status: {0}" -f $sig.Status)
@@ -65,4 +76,4 @@ if (Test-Path -LiteralPath $jsonPath) {
     } catch { }
 }
 
-Write-Host ("Authenticode verify OK for publisher {0} (smartscreen_ready={1})" -f $ExpectPublisher, $smartReady) -ForegroundColor Green
+Write-Host ("Authenticode verify OK (publisher_gate={0}, smartscreen_ready={1})" -f $(if ($AnyPublisher) { "any" } else { $ExpectPublisher }), $smartReady) -ForegroundColor Green

@@ -91,6 +91,103 @@ jobs:
           if (Test-Path .\dist\SHA256SUMS.txt) { Get-Content .\dist\SHA256SUMS.txt }
           Get-ChildItem .\dist\*.zip | ForEach-Object { $_.FullName; $_.Length }
 
+      # Optional: SignPath Foundation (free OV for OSS) — linked to your GitHub account.
+      # Apply at https://signpath.org / https://signpath.io then set:
+      #   secret SIGNPATH_API_TOKEN
+      #   vars  SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG
+      # Skipped when your own CODESIGN_PFX_BASE64 is already present (prefer your PFX).
+      - name: Detect SignPath OSS signing
+        id: signpath
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          ORG_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          HAS_PFX: ${{ secrets.CODESIGN_PFX_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${HAS_PFX:-}" && ${#HAS_PFX} -gt 80 ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Own CODESIGN_PFX_BASE64 present - skipping SignPath"
+            exit 0
+          fi
+          if [[ -n "${TOKEN:-}" && -n "${ORG_ID:-}" && -n "${PROJECT:-}" && -n "${POLICY:-}" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "SignPath OSS signing enabled"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "SignPath not configured (optional). See docs/CODESIGN.md"
+          fi
+
+      - name: Upload EXE for SignPath
+        if: steps.signpath.outputs.enabled == 'true'
+        id: upload-for-signpath
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Win11MagicUpgrade-unsigned-for-signpath
+          path: dist/Win11MagicUpgrade.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign with SignPath (GitHub-linked OSS cert)
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-for-signpath.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/
+
+      - name: Repackage after SignPath
+        if: steps.signpath.outputs.enabled == 'true'
+        shell: powershell
+        run: |
+          $exe = Join-Path $PWD "dist\Win11MagicUpgrade.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "SignPath did not produce dist/Win11MagicUpgrade.exe" }
+          $portable = Join-Path $PWD "dist\Win11MagicUpgrade-Portable"
+          if (Test-Path -LiteralPath $portable) {
+            Copy-Item -LiteralPath $exe -Destination (Join-Path $portable "Win11MagicUpgrade.exe") -Force
+          }
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          $self = ($sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer)
+          $smart = (($sig.Status -eq "Valid") -and (-not $self) -and $null -ne $sig.SignerCertificate)
+          $pubTxt = @(
+            "Publisher: dlnraja (SignPath OSS)",
+            "GitHub: https://github.com/dlnraja/win11-magic-upgrade",
+            ("Signed: {0}" -f (Get-Date).ToString("o")),
+            "Mode: signpath",
+            ("SmartScreenReady: {0}" -f $smart),
+            ("Thumbprint: {0}" -f $sig.SignerCertificate.Thumbprint),
+            ("Subject: {0}" -f $sig.SignerCertificate.Subject),
+            ("Issuer: {0}" -f $sig.SignerCertificate.Issuer),
+            ("Status: {0}" -f $sig.Status),
+            "PFX: signpath"
+          )
+          $pubTxt -join "`n" | Set-Content -LiteralPath (Join-Path $PWD "dist\PUBLISHER.txt") -Encoding ASCII
+          @{
+            publisher = "dlnraja"
+            mode = "signpath"
+            smartscreen_ready = $smart
+            subject = $sig.SignerCertificate.Subject
+            issuer = $sig.SignerCertificate.Issuer
+            thumbprint = $sig.SignerCertificate.Thumbprint
+            status = [string]$sig.Status
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PWD "dist\PUBLISHER.json") -Encoding ASCII
+          if (Test-Path -LiteralPath $portable) {
+            Copy-Item (Join-Path $PWD "dist\PUBLISHER.txt") (Join-Path $portable "PUBLISHER.txt") -Force
+            Copy-Item (Join-Path $PWD "dist\PUBLISHER.json") (Join-Path $portable "PUBLISHER.json") -Force
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\package_release.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\verify_signature.ps1 `
+            -ExePath $exe `
+            -AnyPublisher `
+            -RequireTrusted
+          if (Test-Path .\dist\PUBLISHER.txt) { Get-Content .\dist\PUBLISHER.txt }
+
       - name: Submit to VirusTotal (optional reputation)
         shell: powershell
         env:
@@ -141,8 +238,8 @@ jobs:
             ## Publisher
 
             Authenticode: **dlnraja** (Release workflow).
-            SmartScreen: set secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD` (real OV/EV .pfx).
-            Local: `MAGIC_CODESIGN_PFX` + `MAGIC_CODESIGN_PASSWORD` - see [docs/CODESIGN.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN.md).
+            SmartScreen: real OV/EV `.pfx` secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`, or free SignPath OSS (GitHub-linked) — see [docs/CODESIGN.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN.md).
+            Upload PFX with your GitHub login: `build/upload_codesign_github.ps1`.
             Optional VirusTotal submit: secret `VIRUSTOTAL_API_KEY`.
 
             Not malware - open source MIT. See SECURITY.md.

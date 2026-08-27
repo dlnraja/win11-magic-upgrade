@@ -42,14 +42,18 @@ Unblock-File .\Win11MagicUpgrade.exe
 
 **More info** → **Run anyway**.
 
-For a **known publisher** signature (real fix), configure a trusted OV/EV `.pfx`:
+For a **known publisher** signature (real fix), configure a trusted OV/EV `.pfx` or free SignPath OSS (GitHub-linked) — see [CODESIGN.md](CODESIGN.md).
 
 ```powershell
+# Own PFX -> upload with your GitHub account
+.\build\upload_codesign_github.ps1 -PfxPath "C:\path\to\codesign.pfx" -Password "***" -RequireTrustedChain
+
+# Or local only:
 $env:MAGIC_CODESIGN_PFX = "C:\path\to\codesign.pfx"
 $env:MAGIC_CODESIGN_PASSWORD = "your-password"
 ```
 
-Full guide: [CODESIGN.md](CODESIGN.md) (`setup_codesign.ps1`, GitHub secrets `CODESIGN_PFX_BASE64`).
+Full guide: [CODESIGN.md](CODESIGN.md) (`upload_codesign_github.ps1`, SignPath, secrets `CODESIGN_PFX_BASE64`).
 
 ## Verify integrity
 

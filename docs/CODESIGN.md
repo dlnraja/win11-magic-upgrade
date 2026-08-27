@@ -3,10 +3,38 @@
 **Publisher:** `dlnraja`  
 Goal: Windows SmartScreen shows a **known publisher** instead of “Windows protected your PC”.
 
-Self-signed builds (default CI without secrets) are still signed, but **not** SmartScreen-trusted.  
-You need a real **OV or EV code-signing** `.pfx` from a CA (DigiCert, Sectigo, SSL.com, GlobalSign, …).
+## Important: GitHub alone cannot trust an EXE
 
-## Local (recommended env vars)
+Your GitHub account (`dlnraja`) is used to:
+
+1. Build + publish Releases  
+2. Store signing secrets (`gh secret set`)  
+3. Optionally link **SignPath Foundation** (free OV for open source)
+
+It does **not** issue a Windows Authenticode certificate.  
+Self-signed `CN=dlnraja` (current default without secrets) is signed, but **SmartScreen still warns**.
+
+You need one of:
+
+| Path | Cost | How it uses GitHub |
+|------|------|--------------------|
+| Your own OV/EV `.pfx` | Paid CA | Secrets on this repo; CI signs |
+| [SignPath Foundation](https://signpath.org/) | Free for OSS | Sign up with GitHub; CI submits EXE to SignPath |
+
+## A) Own `.pfx` → upload with your GitHub account
+
+```powershell
+gh auth login
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build\upload_codesign_github.ps1 `
+  -PfxPath "C:\path\to\your-codesign.pfx" `
+  -Password "your-pfx-password" `
+  -RequireTrustedChain
+```
+
+This sets repo secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD` via `gh` (your login).  
+Then tag a new release so Actions signs with that PFX.
+
+### Local build (without uploading)
 
 ```powershell
 $env:MAGIC_CODESIGN_PFX = "C:\path\to\your-codesign.pfx"
@@ -31,28 +59,36 @@ powershell -File .\build\setup_codesign.ps1 -PfxPath "...\cert.pfx" -Password "*
 
 Aliases also accepted: `CODESIGN_PFX` / `CODESIGN_PASSWORD`.
 
-## GitHub Actions (Release + CI)
-
-Never commit the `.pfx`. Store secrets:
+Manual secrets (Settings → Secrets → Actions):
 
 | Secret | Value |
 |--------|--------|
 | `CODESIGN_PFX_BASE64` | Base64 of the `.pfx` file |
 | `CODESIGN_PASSWORD` | PFX password |
 
-Generate base64 safely:
-
 ```powershell
 powershell -File .\build\setup_codesign.ps1 -PfxPath "...\cert.pfx" -Password "***" -ExportBase64
 ```
 
-Then: GitHub → **Settings → Secrets and variables → Actions** → New repository secret.
-
-Optional strict gate on Release (fails if only self-signed):
-
-- Secret / env `MAGIC_REQUIRE_TRUSTED_CODESIGN=1`
-
+Optional strict gate: `MAGIC_REQUIRE_TRUSTED_CODESIGN=1`  
 Aliases: `MAGIC_CODESIGN_PFX_BASE64` / `MAGIC_CODESIGN_PASSWORD`.
+
+## B) Free SignPath (recommended if you have no `.pfx`)
+
+1. Open https://signpath.org / https://signpath.io and sign in with **GitHub account `dlnraja`**
+2. Apply for **Open Source / Foundation** tier (approval can take days)
+3. Link repo `dlnraja/win11-magic-upgrade` as a trusted build system
+4. Create a project + signing policy for the Windows EXE
+5. Add to this repo:
+
+| Kind | Name | Source |
+|------|------|--------|
+| Secret | `SIGNPATH_API_TOKEN` | SignPath → API Tokens |
+| Variable | `SIGNPATH_ORGANIZATION_ID` | SignPath org |
+| Variable | `SIGNPATH_PROJECT_SLUG` | Project slug |
+| Variable | `SIGNPATH_SIGNING_POLICY_SLUG` | Policy slug |
+
+Release workflow will submit `Win11MagicUpgrade.exe` to SignPath after the build (skipped if your own PFX secret is already set).
 
 ## What “intelligent” signing does
 
@@ -61,18 +97,19 @@ Aliases: `MAGIC_CODESIGN_PFX_BASE64` / `MAGIC_CODESIGN_PASSWORD`.
 3. Validate code-signing EKU + private key + expiry  
 4. Inspect certificate chain (`smartscreen_ready` in `PUBLISHER.json`)  
 5. Sign with multiple timestamp servers (DigiCert / Sectigo / GlobalSign / Apple)  
-6. Fall back to self-signed only when no PFX is configured  
+6. Optional SignPath re-sign for OSS (CA-trusted)  
+7. Fall back to self-signed only when no PFX / SignPath is configured  
 
 Artifacts after build:
 
 - `dist/PUBLISHER.txt` — human summary (`SmartScreenReady: True/False`)  
 - `dist/PUBLISHER.json` — machine fields (`smartscreen_ready`, `mode`, `issuer`)
 
-## After you install a trusted PFX
+## After trusted signing is configured
 
 1. Rebuild / re-tag a release so CI signs with the CA cert  
 2. Prefer the **ZIP** download for Chrome ([DOWNLOAD.md](DOWNLOAD.md))  
-3. Reputation still builds over downloads — EV is fastest for SmartScreen  
+3. Reputation still builds over downloads — EV / established OV is fastest for SmartScreen  
 
 ## Buy a certificate
 

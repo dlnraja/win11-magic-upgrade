@@ -57,11 +57,13 @@ If Kaspersky still quarantines the EXE:
   2. `build/sign_exe.ps1` signs the EXE (timestamped when possible) and reports `smartscreen_ready`
   3. `build/verify_signature.ps1` gates the Release job (`Valid` required when a trusted PFX secret is present)
 - **SmartScreen (trusted cert)** — see [docs/CODESIGN.md](docs/CODESIGN.md):
-  - Local: `MAGIC_CODESIGN_PFX` = path to `.pfx`, `MAGIC_CODESIGN_PASSWORD` = password
-  - Helper: `build/setup_codesign.ps1 -PfxPath ... -Password ... -ExportBase64`
-  - CI secrets: `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD` (aliases `MAGIC_CODESIGN_*`)
+  - GitHub account alone cannot issue Authenticode trust; it stores secrets / links SignPath
+  - Local: `MAGIC_CODESIGN_PFX` + `MAGIC_CODESIGN_PASSWORD`
+  - Upload PFX with your GitHub login: `build/upload_codesign_github.ps1`
+  - CI secrets: `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`
+  - Optional free OSS: SignPath Foundation (`SIGNPATH_*` secret/vars) linked to GitHub
   - Optional hard gate: `MAGIC_REQUIRE_TRUSTED_CODESIGN=1`
-- Without a CA-issued OV/EV PFX, CI falls back to self-signed `CN=dlnraja` (signed, but SmartScreen still warns)
+- Without a CA-issued OV/EV PFX (or SignPath), CI falls back to self-signed `CN=dlnraja` (signed, but SmartScreen still warns)
 - Portable package includes `PUBLISHER.txt` / `PUBLISHER.json` / ZIP / `SHA256SUMS.txt`
 - **Chrome tip:** download the **ZIP** from Releases, not the raw EXE — see [docs/DOWNLOAD.md](docs/DOWNLOAD.md)
 
