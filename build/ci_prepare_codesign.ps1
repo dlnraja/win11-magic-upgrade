@@ -13,8 +13,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not $OutDir) {
-    $OutDir = Join-Path $env:RUNNER_TEMP "codesign"
-    if (-not $OutDir -or $OutDir -eq "codesign") {
+    if ($env:RUNNER_TEMP) {
+        $OutDir = Join-Path $env:RUNNER_TEMP "codesign"
+    } else {
         $OutDir = Join-Path ([System.IO.Path]::GetTempPath()) "win11magic-codesign"
     }
 }
