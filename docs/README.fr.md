@@ -9,6 +9,10 @@ Inspiré de **Flyby11 / FlyOOBE**, sans dépendance .NET moderne.
 1. Télécharger l’artifact **Portable** depuis les Releases, ou builder localement.
 2. Exécuter en Administrateur : `Win11MagicUpgrade.exe` ou `Win11MagicUpgrade.cmd`.
 
+## Partition reservee / EFI
+
+Erreur **Impossible de mettre a jour la partition reservee au systeme** : le programme nettoie l’ESP / System Reserved (polices, dumps OEM) et, si besoin, agrandit via une nouvelle partition boot ~512 Mo (shrink de C: + `bcdboot`), sans effacer les donnees. Bouton **Corriger ESP/SRP** ou `--cli --srp`.
+
 ## Documentation
 
 - [Architecture](ARCHITECTURE.md)

@@ -15,6 +15,7 @@ from .iso import get_iso
 from .logutil import STATE_DIR, init_logging, load_state, log, save_state
 from .mbrgpt import convert_mbr_to_gpt, repair_boot_manager
 from .patches import apply_migration_patches
+from .sysreserved import inspect_and_fix_system_reserved
 from .virtdisk import mount_iso
 
 
@@ -138,6 +139,10 @@ def _execute_step(
         log(step.label, "OK")
         return None
 
+    if step.kind == "fix_srp":
+        inspect_and_fix_system_reserved(force_expand=False)
+        return None
+
     if step.kind == "mbr2gpt":
         if not report.mbr2gpt_available:
             log("mbr2gpt not available yet - will retry after Win10 intermediate", "WARN")
@@ -211,6 +216,18 @@ def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
         raise RuntimeError(f"MBR2GPT failed: {msg} ({code})")
 
 
+def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
+    init_logging(sink)
+    if not is_admin():
+        raise PermissionError("Administrator required")
+    from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
+
+    force = scan_logs_for_srp_error()
+    result = inspect_and_fix_system_reserved(force_expand=force)
+    if not result.get("ok"):
+        raise RuntimeError("System Reserved / EFI fix did not complete successfully")
+
+
 def run_pipeline(
     sink: Callable[[str], None] | None = None,
     *,
@@ -263,7 +280,7 @@ def run_pipeline(
         # ISO upgrades need RunOnce if more steps follow
         remaining_after = steps[i + 1 :]
         needs_resume = step.kind == "iso_upgrade" and any(
-            s.kind in ("iso_upgrade", "mbr2gpt") for s in remaining_after
+            s.kind in ("iso_upgrade", "mbr2gpt", "fix_srp") for s in remaining_after
         )
         if needs_resume:
             _runonce_register()

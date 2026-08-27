@@ -1,13 +1,14 @@
 {
   "en": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "Auto-diag · smart registry · MBR→GPT+boot · 32-bit max path",
+    "app_sub": "Auto-diag · smart registry · MBR→GPT+boot · ESP/SRP fix · 32-bit max path",
     "btn_oneclick": "One-Click (intelligent)",
     "btn_diagnose": "Auto-diagnose",
     "btn_bypass": "Registry pack",
     "btn_mbr": "MBR→GPT + Boot",
-    "note": "Keeps files & apps · Smart bypass for unsupported PCs · Safe MBR→GPT + bootmgr repair · 32-bit → Win10 22H2 max · Obsolete Win10 stepping · Pure Python — NO .NET 4.x / NO PowerShell",
-    "confirm_upgrade": "Run stepped migration (intermediate versions if needed)?\nExample: Win10 1511 -> 22H2 -> Win11 latest.\nMBR converted without wipe when required. Files and apps kept.",
+    "btn_srp": "Fix ESP/SRP",
+    "note": "Keeps files & apps · Smart bypass · Safe MBR→GPT + bootmgr · Fixes System Reserved / EFI space · 32-bit → Win10 22H2 max · Obsolete Win10 stepping · Pure Python — NO .NET 4.x / NO PowerShell",
+    "confirm_upgrade": "Run stepped migration (intermediate versions if needed)?\nExample: Win10 1511 -> 22H2 -> Win11 latest.\nMBR converted without wipe when required. ESP/SRP enlarged if needed. Files and apps kept.",
     "need_admin": "Administrator rights are required.\nRelaunch as admin?",
     "ready": "Ready. Click One-Click — auto-diag chooses the safest max path.",
     "done_ok": "Pipeline finished / setup launched. See the log.",
@@ -15,16 +16,17 @@
   },
   "fr": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "Auto-diag · registres intelligents · MBR→GPT+boot · chemin 32-bit",
+    "app_sub": "Auto-diag · registres · MBR→GPT+boot · fix ESP/SRP · chemin 32-bit",
     "btn_oneclick": "One-Click (intelligent)",
     "btn_diagnose": "Auto-diagnostic",
     "btn_bypass": "Pack registre",
     "btn_mbr": "MBR→GPT + Boot",
-    "note": "Conserve fichiers & apps · Bypass PC non compatible · MBR→GPT + bootmgr sans perte · 32-bit → Win10 22H2 max · Win10 obsolète en paliers · Python pur — PAS de .NET 4.x / PAS de PowerShell",
-    "confirm_upgrade": "Lancer la migration par paliers (versions intermediaires si besoin) ?\nExemple: Win10 1511 -> 22H2 -> Win11 latest.\nMBR converti sans perte si necessaire. Fichiers et apps conserves.",
+    "btn_srp": "Corriger ESP/SRP",
+    "note": "Conserve fichiers & apps · Bypass PC non compatible · MBR→GPT + bootmgr · Corrige partition reservee / EFI · 32-bit → Win10 22H2 max · Win10 obsolete en paliers · Python pur — PAS de .NET 4.x / PAS de PowerShell",
+    "confirm_upgrade": "Lancer la migration par paliers (versions intermediaires si besoin) ?\nExemple: Win10 1511 -> 22H2 -> Win11 latest.\nMBR converti sans perte si necessaire. ESP/SRP agrandie si besoin. Fichiers et apps conserves.",
     "need_admin": "Des droits Administrateur sont requis.\nRelancer en admin ?",
-    "ready": "Prêt. Cliquez One-Click — l'auto-diag choisit le chemin max le plus sûr.",
-    "done_ok": "Pipeline terminé / setup lancé. Voir le journal.",
-    "done_warn": "Terminé avec code {code}. Voir le journal."
+    "ready": "Pret. Cliquez One-Click — l'auto-diag choisit le chemin max le plus sur.",
+    "done_ok": "Pipeline termine / setup lance. Voir le journal.",
+    "done_warn": "Termine avec code {code}. Voir le journal."
   }
 }

@@ -42,6 +42,14 @@ def build_plan(report: Report | None = None) -> Plan:
     # Always useful prep
     actions.append(
         Action(
+            "fix_srp",
+            "Fix System Reserved / EFI partition",
+            "Free ESP/SRP space (fonts/OEM) or enlarge via new 512 MB boot partition + bcdboot",
+            "medium",
+        )
+    )
+    actions.append(
+        Action(
             "patches",
             "Apply migration safety patches",
             "Clear stale upgrade leftovers, stop risky filters, free space, clear appraiser",

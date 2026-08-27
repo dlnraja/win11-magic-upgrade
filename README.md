@@ -38,21 +38,31 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 | 32-bit | Win11 impossible → max path **Win10 22H2 x86** (keep apps) |
 | No SSE4.2 | Win11 24H2+ won't boot → max path **Win10 22H2 x64** |
 | Obsolete / not-22H2 Win10 | **Always** intermediate **Win10 22H2**, then Win11 (auto-resume) |
-| Multi-step chain | Explicit chain e.g. `1511 -> 22H2 -> MBR/GPT -> Win11` across reboots |
+| ESP / System Reserved full | Auto cleanup fonts/OEM + enlarge via new 512 MB boot partition + bcdboot |
+| SafeOS / WIM / WinRE / filters | WIMMount repair, WinRE enable, fltmc + VPN/VeraCrypt/AV detection, SetupConfig.ini cleanup |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
 ## Intermediate versions
 
 Any Windows 10 build **below 22H2** automatically steps through **Windows 10 22H2** before Windows 11 (keeps files/apps). Example:
 
-`1511 -> Win10 22H2 -> (MBR to GPT if needed) -> Win11 latest`
+`1511 -> Fix ESP/SRP -> Win10 22H2 -> (MBR to GPT if needed) -> Win11 latest`
 
 After each ISO step, **RunOnce** resumes the next chain step automatically.
+
+CLI extras (admin):
+
+```text
+Win11MagicUpgrade.exe --cli --srp      # Fix System Reserved / EFI only
+Win11MagicUpgrade.exe --cli --mbr      # MBR→GPT + bootmgr only
+Win11MagicUpgrade.exe --cli --diagnose
+```
 
 
 | Situation | What the app does |
 |-----------|-------------------|
 | Unsupported TPM/CPU/Secure Boot | Full registry pack + `setup /product server` |
+| ESP / System Reserved full | Cleanup + enlarge (new 512 MB boot partition) — `--cli --srp` |
 | MBR disk | Auto `mbr2gpt` (no wipe) + `bcdboot` bootmgr repair; remind UEFI firmware |
 | Win10 1511 / obsolete | Intermediate Win10 22H2 then Win11 |
 | 32-bit Windows | **Cannot** install Win11; upgrades to **Win10 22H2 x86** (keep files/apps) |

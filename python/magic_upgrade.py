@@ -151,6 +151,17 @@ class App(tk.Tk):
             pady=8,
             command=lambda: self.start("mbr"),
         ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            btns,
+            text=self.t.get("btn_srp", "Fix ESP/SRP"),
+            font=("Segoe UI", 10),
+            bg="#1e293b",
+            fg="#e2e8f0",
+            relief="flat",
+            padx=12,
+            pady=8,
+            command=lambda: self.start("srp"),
+        ).pack(side="left", padx=(8, 0))
 
         tk.Label(
             self,
@@ -200,6 +211,7 @@ class App(tk.Tk):
                 from engine import (  # type: ignore
                     apply_bypass_only,
                     convert_mbr_only,
+                    fix_system_reserved_only,
                     run_diagnose,
                     run_pipeline,
                 )
@@ -213,6 +225,9 @@ class App(tk.Tk):
                     code = 0
                 elif action == "mbr":
                     convert_mbr_only(sink)
+                    code = 0
+                elif action == "srp":
+                    fix_system_reserved_only(sink)
                     code = 0
                 else:
                     code = run_pipeline(sink)
@@ -253,10 +268,17 @@ def main() -> None:
             "--bypass",
             "--resume",
             "--mbr",
+            "--srp",
         )
     )
     if cli:
-        from engine import apply_bypass_only, convert_mbr_only, run_diagnose, run_pipeline
+        from engine import (
+            apply_bypass_only,
+            convert_mbr_only,
+            fix_system_reserved_only,
+            run_diagnose,
+            run_pipeline,
+        )
 
         if "--diagnose" in argv:
             run_diagnose()
@@ -269,6 +291,9 @@ def main() -> None:
             return
         if "--mbr" in argv:
             convert_mbr_only()
+            return
+        if "--srp" in argv:
+            fix_system_reserved_only()
             return
         code = run_pipeline(resume="--resume" in argv)
         raise SystemExit(code)

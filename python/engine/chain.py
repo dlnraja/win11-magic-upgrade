@@ -84,6 +84,14 @@ def build_version_chain(r: Report) -> list[ChainStep]:
 
     # 32-bit: only Win10 22H2 x86 is a safe max destination
     if r.architecture != "x64":
+        steps.append(
+            ChainStep(
+                id="fix_srp",
+                label="Fix System Reserved / EFI partition (free space or enlarge)",
+                kind="fix_srp",
+                note="Prevents reserved-partition upgrade failures",
+            )
+        )
         if r.build < WIN10_22H2_BUILD:
             steps.append(
                 ChainStep(
@@ -108,6 +116,14 @@ def build_version_chain(r: Report) -> list[ChainStep]:
 
     # No SSE4.2: cannot boot Win11 24H2+
     if r.sse42 is False:
+        steps.append(
+            ChainStep(
+                id="fix_srp",
+                label="Fix System Reserved / EFI partition (free space or enlarge)",
+                kind="fix_srp",
+                note="Prevents reserved-partition upgrade failures",
+            )
+        )
         if r.is_win10 and r.build < WIN10_22H2_BUILD:
             steps.append(
                 ChainStep(
@@ -130,6 +146,16 @@ def build_version_chain(r: Report) -> list[ChainStep]:
         return steps
 
     # --- Path toward Windows 11 ---
+
+    # Always fix System Reserved / EFI before feature upgrades (common setup blocker)
+    steps.append(
+        ChainStep(
+            id="fix_srp",
+            label="Fix System Reserved / EFI partition (free space or enlarge)",
+            kind="fix_srp",
+            note="Prevents 'We could not update the system reserved partition' / FR equivalent",
+        )
+    )
 
     # Step A: any Win10 below 22H2 must pass by 22H2 first (1511, 1607, 1809, 21H2, ...)
     if r.is_win10 and r.build < WIN10_22H2_BUILD:
