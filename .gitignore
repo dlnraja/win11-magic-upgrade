@@ -1,0 +1,12 @@
+dist/
+build/pyi/
+build/*.spec
+build/build_log.txt
+**/__pycache__/
+*.pyc
+.firecrawl/
+*.iso
+*.exe
+!**/placeholder
+.DS_Store
+Thumbs.db

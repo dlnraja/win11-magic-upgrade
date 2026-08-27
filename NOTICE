@@ -1,0 +1,21 @@
+# Third-party notices
+
+## Fido (ISO download helper)
+
+- Project: https://github.com/pbatard/Fido
+- Author: Pete Batard / Rufus project
+- License: GPLv3 (see upstream repository)
+- Bundled file: `vendor/Fido.ps1`
+- Purpose: Obtain official Microsoft Windows retail ISO download URLs
+
+Fido is included as a vendored script. Modifications, if any, are noted in
+git history. When redistributing this project, retain Fido's license obligations.
+
+## Method acknowledgements (not code dependencies)
+
+- Flyby11 / FlyOOBE (`/product server` upgrade path): https://github.com/builtbybel/FlyOOBE
+- Microsoft documented registry bypass: `AllowUpgradesWithUnsupportedTPMOrCPU`
+- Microsoft MBR2GPT: https://learn.microsoft.com/windows/deployment/mbr-to-gpt
+
+Windows is a trademark of Microsoft Corporation. This project is not affiliated
+with Microsoft.

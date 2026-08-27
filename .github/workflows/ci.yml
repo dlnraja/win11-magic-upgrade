@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  powershell-syntax:
+    name: PowerShell syntax
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse all scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Path src, build -Filter *.ps1 -Recurse
+          $failed = $false
+          foreach ($f in $files) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              Write-Host "FAIL $($f.FullName)"
+              $errors | ForEach-Object { Write-Host $_ }
+              $failed = $true
+            } else {
+              Write-Host "OK   $($f.Name)"
+            }
+          }
+          # Fido is third-party; skip strict parse failures unless file missing
+          if (-not (Test-Path vendor/Fido.ps1)) { throw 'vendor/Fido.ps1 missing' }
+          if ($failed) { throw 'PowerShell parse errors' }
+
+  python-compile:
+    name: Python compile
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m py_compile python/magic_upgrade.py
+
+  i18n-json:
+    name: i18n JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate strings.json
+        run: python -c "import json; d=json.load(open('i18n/strings.json',encoding='utf-8')); assert 'en' in d and 'fr' in d; assert d['en'].keys()==d['fr'].keys()"
