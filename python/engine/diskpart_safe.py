@@ -233,13 +233,55 @@ def ensure_select_disk(disk_n: int) -> tuple[bool, str]:
 
 
 def disk_number_from_detail(detail_out: str) -> int | None:
-    """Parse Disk #N from `detail volume` (EN/FR)."""
-    m = re.search(r"Disk(?:e)?\s*#?\s*:?\s*(\d+)", detail_out, re.I)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"Disk\s+(\d+)", detail_out, re.I)
-    if m:
-        return int(m.group(1))
+    """Parse Disk #N from `detail volume` (EN Disk / FR Disque / variants)."""
+    if not detail_out:
+        return None
+    patterns = (
+        # FR: Disque n° : 0 | Disque #: 0 | Disque : 0 | Disque n°0
+        r"Disque\s*(?:n[°ºo.]?\s*)?#?\s*:?\s*(\d+)",
+        # EN: Disk #: 0 | Disk # : 0 | Disk: 0
+        r"Disk\s*(?:#\s*)?:?\s*(\d+)",
+        # list-style: Disk ###  or Disque ###
+        r"Dis(?:k|que)\s*#+\s*(\d+)",
+        # "on Disk 0" / "sur le disque 0"
+        r"(?:on\s+disk|sur\s+le\s+disque)\s+(\d+)",
+    )
+    for pat in patterns:
+        m = re.search(pat, detail_out, re.I)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _disk_number_from_wmic(letter: str) -> int | None:
+    """Fallback: Win32_LogicalDiskToPartition (works when diskpart text is exotic)."""
+    L = letter.upper()[:1]
+    code, out = _run(
+        [
+            "wmic",
+            "path",
+            "Win32_LogicalDiskToPartition",
+            "get",
+            "Antecedent,Dependent",
+        ],
+        timeout=60,
+    )
+    if code != 0 or not out:
+        return None
+    # Antecedent ... Disk #0, Partition #2  Dependent ... DeviceID="C:"
+    for line in out.splitlines():
+        if f'DeviceID="{L}:"' not in line and f"DeviceID='{L}:'" not in line:
+            # some locales omit quotes / use DeviceID=C:
+            if f"{L}:" not in line.replace(" ", ""):
+                continue
+            if "LogicalDisk" not in line and "DeviceID" not in line:
+                continue
+        m = re.search(r"Disk\s*#\s*(\d+)", line, re.I)
+        if m:
+            return int(m.group(1))
+        m = re.search(r'Disk\s+(\d+)', line, re.I)
+        if m:
+            return int(m.group(1))
     return None
 
 
@@ -249,14 +291,54 @@ def get_system_disk_number(letter: str | None = None) -> int | None:
     (never invent 0).
     """
     L = (letter or os.environ.get("SystemDrive", "C:")[:1]).upper()[:1]
+    n: int | None = None
+    detail = ""
+
     ok, detail = ensure_select_volume(L)
-    if not ok:
-        log(f"Cannot select system volume {L}: — refuse disk# guess", "WARN")
-        return None
-    n = disk_number_from_detail(detail)
+    if ok:
+        n = disk_number_from_detail(detail)
+        if n is None:
+            log(f"Cannot parse Disk # from volume {L}: detail (trying WMIC fallback)", "WARN")
+    else:
+        log(f"Cannot select system volume {L}: — trying WMIC fallback", "WARN")
+
     if n is None:
-        log(f"Cannot parse Disk # from volume {L}: detail", "WARN")
+        try:
+            n = _disk_number_from_wmic(L)
+            if n is not None:
+                log(f"System volume {L}: disk #{n} via WMIC fallback", "OK")
+        except Exception as e:
+            log(f"WMIC disk# fallback: {e}", "WARN")
+
+    if n is None:
+        # Last resort: PowerShell Get-Partition (optional; many PCs have it)
+        try:
+            ps = (
+                f"(Get-Partition -DriveLetter {L} -ErrorAction Stop).DiskNumber"
+            )
+            code, out = _run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    ps,
+                ],
+                timeout=45,
+            )
+            m = re.search(r"(\d+)", (out or "").strip())
+            if code == 0 and m:
+                n = int(m.group(1))
+                log(f"System volume {L}: disk #{n} via Get-Partition fallback", "OK")
+        except Exception as e:
+            log(f"Get-Partition disk# fallback: {e}", "WARN")
+
+    if n is None:
+        log(f"Cannot resolve Disk # for volume {L}:", "WARN")
         return None
+
     # Cross-check disk select works
     ok2, _ = ensure_select_disk(n)
     if not ok2:

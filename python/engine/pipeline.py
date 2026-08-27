@@ -107,10 +107,64 @@ def _runonce_unregister() -> None:
 SETUP_OK_CODES = {0, 3010, 3011, -2147021886}
 
 
+def _cleanup_stale_windows_setup_dirs() -> list[str]:
+    """
+    Remove leftover $WINDOWS.~BT / $WINDOWS.~WS that cause Setup ERROR_ALREADY_EXISTS (183).
+    Only when no setuphost/setupprep is running.
+    """
+    cleaned: list[str] = []
+    try:
+        # Refuse if Setup is already mid-flight
+        task = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq setuphost.exe"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=30,
+        )
+        if "setuphost.exe" in (task.stdout or "").lower():
+            log("Skip BT cleanup — setuphost.exe is running", "INFO")
+            return cleaned
+    except Exception:
+        pass
+
+    drive = Path(os.environ.get("SystemDrive", "C:") + "\\")
+    for name in ("$WINDOWS.~BT", "$WINDOWS.~WS", "$Windows.~BT"):
+        p = drive / name
+        if not p.exists():
+            continue
+        try:
+            import shutil
+
+            shutil.rmtree(p, ignore_errors=True)
+            if not p.exists():
+                cleaned.append(str(p))
+                log(f"Removed stale Setup folder (fixes exit 183): {p}", "OK")
+            else:
+                # retry via cmd rmdir
+                subprocess.run(
+                    ["cmd", "/c", "rmdir", "/s", "/q", str(p)],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    timeout=120,
+                )
+                if not p.exists():
+                    cleaned.append(str(p))
+                    log(f"Removed stale Setup folder via rmdir: {p}", "OK")
+                else:
+                    log(f"Could not fully remove {p} (in use?) — reboot then retry", "WARN")
+        except Exception as e:
+            log(f"BT cleanup {p}: {e}", "WARN")
+    return cleaned
+
+
 def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     """
     Launch Setup (Flyby11/FlyOOBE style) and return promptly.
     Prefer sources\\setupprep.exe + /Product Server like Flyby11 IsoHandler.
+    Exit 183 (ERROR_ALREADY_EXISTS) often means a leftover $WINDOWS.~BT — clean + one retry.
     """
     root = Path(setup_root)
     setup = root / "setup.exe"
@@ -145,23 +199,50 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     if not exe.exists():
         raise FileNotFoundError(exe)
 
-    cmd = [str(exe), *args]
-    log(" ".join(cmd), "INFO")
-    save_state({"Phase": "SetupRunning", "Cmd": cmd, "Method": "Flyby11Parity"})
-    try:
-        proc = subprocess.Popen(cmd)
-    except OSError as e:
-        raise RuntimeError(f"Failed to launch Setup: {e}") from e
+    def _launch_once() -> int:
+        cmd = [str(exe), *args]
+        log(" ".join(cmd), "INFO")
+        save_state({"Phase": "SetupRunning", "Cmd": cmd, "Method": "Flyby11Parity"})
+        try:
+            proc = subprocess.Popen(cmd)
+        except OSError as e:
+            raise RuntimeError(f"Failed to launch Setup: {e}") from e
+        try:
+            code = proc.wait(timeout=8)
+            log(
+                f"Setup exited quickly with code {code}",
+                "WARN" if code not in SETUP_OK_CODES else "OK",
+            )
+            save_state({"Phase": "SetupExitedEarly", "SetupPid": proc.pid, "ExitCode": code})
+            return int(code)
+        except subprocess.TimeoutExpired:
+            save_state({"Phase": "SetupRunning", "SetupPid": proc.pid})
+            log(f"Setup running (pid={proc.pid}) — chain will resume after reboot via RunOnce", "OK")
+            return 0
 
-    try:
-        code = proc.wait(timeout=8)
-        log(f"Setup exited quickly with code {code}", "WARN" if code not in SETUP_OK_CODES else "OK")
-        save_state({"Phase": "SetupExitedEarly", "SetupPid": proc.pid, "ExitCode": code})
-        return int(code)
-    except subprocess.TimeoutExpired:
-        save_state({"Phase": "SetupRunning", "SetupPid": proc.pid})
-        log(f"Setup running (pid={proc.pid}) — chain will resume after reboot via RunOnce", "OK")
-        return 0
+    code = _launch_once()
+    if code == 183:
+        log(
+            "Setup exit 183 = ERROR_ALREADY_EXISTS (leftover $WINDOWS.~BT / stuck WIM mount / ISO). "
+            "Cleaning stale Setup folders and retrying once…",
+            "WARN",
+        )
+        cleaned = _cleanup_stale_windows_setup_dirs()
+        try:
+            from .patches import repair_wimmount_service
+
+            repair_wimmount_service()
+        except Exception as e:
+            log(f"WIMMount repair: {e}", "WARN")
+        save_state({"Phase": "SetupRetry183", "Cleaned": cleaned})
+        code = _launch_once()
+        if code == 183:
+            log(
+                "Setup still exit 183 after cleanup. Manual: reboot, delete C:\\$WINDOWS.~BT "
+                "and C:\\$WINDOWS.~WS if present, eject any mounted ISO, then re-run One-Click.",
+                "ERROR",
+            )
+    return code
 
 
 def _persist_chain(steps: list[ChainStep], index: int) -> None:
@@ -873,6 +954,12 @@ def run_pipeline(
             if step.kind == 'iso_upgrade':
                 code = int(result if result is not None else -1)
                 if code not in SETUP_OK_CODES:
+                    hint = ""
+                    if code == 183:
+                        hint = (
+                            " Win32 ERROR_ALREADY_EXISTS: leftover C:\\$WINDOWS.~BT "
+                            "(or stuck ISO/WIM). Reboot, delete those folders, eject ISO, retry."
+                        )
                     save_state(
                         {
                             'Phase': 'SetupFailed',
@@ -889,12 +976,18 @@ def run_pipeline(
                             'Step': step.label,
                             'Chain': format_chain(steps),
                             'Mode': 'ONECLICK',
+                            'Hint': hint.strip() if hint else '',
+                            'Note_SSE42': (
+                                'CPU without SSE4.2/POPCNT: chain correctly targets Win10 22H2 '
+                                '(not Win11 24H2+).'
+                                if getattr(r, 'sse42', None) is False
+                                else ''
+                            ),
                         }
                     )
-                    log(f'Setup failed (exit {code}) — chain index not advanced', 'ERROR')
+                    log(f'Setup failed (exit {code}) — chain index not advanced.{hint}', 'ERROR')
                     end_session(success=False)
                     return code
-
                 save_state(
                     {
                         'Phase': 'WaitingReboot',
