@@ -339,7 +339,27 @@ def _execute_step(
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
-        root = mount_iso(iso)
+        try:
+            root = mount_iso(iso)
+        except OSError as e:
+            code = int(getattr(e, "winerror", None) or getattr(e, "errno", 0) or 0)
+            if code == 183:
+                # ERROR_ALREADY_EXISTS — retry after finding/reusing mount helper
+                from .virtdisk import find_existing_setup_mount, mount_iso as _mount
+
+                existing = find_existing_setup_mount()
+                if existing:
+                    log(f"ISO already mounted (Win32 183) — using {existing}", "OK")
+                    root = existing
+                else:
+                    log(
+                        "Win32 183 ERROR_ALREADY_EXISTS during ISO attach — "
+                        "eject ISO in Explorer, then retry mount",
+                        "WARN",
+                    )
+                    root = _mount(iso)
+            else:
+                raise
         # Win11: writable stage + Appraiser neutralize (works when /product server is blocked)
         if win == "11":
             try:

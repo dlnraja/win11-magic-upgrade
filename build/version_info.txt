@@ -20,12 +20,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'dlnraja'),
             StringStruct('FileDescription', 'Win11 Magic Upgrade by dlnraja - Open-source Windows 11 migration helper (NOT malware)'),
-            StringStruct('FileVersion', '1.34.5.0'),
+            StringStruct('FileVersion', '1.34.6.0'),
             StringStruct('InternalName', 'Win11MagicUpgrade'),
             StringStruct('LegalCopyright', 'Copyright (c) 2026 dlnraja. MIT License. https://github.com/dlnraja/win11-magic-upgrade'),
             StringStruct('OriginalFilename', 'Win11MagicUpgrade.exe'),
             StringStruct('ProductName', 'Win11 Magic Upgrade'),
-            StringStruct('ProductVersion', '1.34.5.0'),
+            StringStruct('ProductVersion', '1.34.6.0'),
             StringStruct('Comments', 'Publisher: dlnraja. Source: github.com/dlnraja/win11-magic-upgrade. Official Microsoft ISOs only. No PDF/Trojan code. Prefer ZIP download from GitHub Releases.'),
             StringStruct('LegalTrademarks', 'dlnraja'),
           ]

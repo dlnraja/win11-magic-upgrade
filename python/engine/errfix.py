@@ -31,7 +31,8 @@ EXTRA_ERROR_PATTERNS = (
     r"0xC1900101\s*-\s*0x[0-9A-Fa-f]+|DuplicateUserProfile|CompatBlocked|"
     r"BlockMigration|DT_ANY_FMC_BlockingApplication|InsufficientSystemPartition|"
     r"BitLockerHardblock|VHDHardblock|AuditMode|SafeModeHardblock|"
-    r"InstallPathTooLong|OfflineFiles|CrowdStrike|CSAgent"
+    r"InstallPathTooLong|OfflineFiles|CrowdStrike|CSAgent|"
+    r"ERROR_ALREADY_EXISTS|AttachVirtualDisk failed:\s*183"
 )
 
 
