@@ -28,7 +28,8 @@ Mitigations shipped in the build / release:
 - Optional **VirusTotal CI submit** (`VIRUSTOTAL_API_KEY` secret)
 - At runtime, **autonomous trust declarations**:
   - Windows Defender path exclusions
-  - Local Kaspersky trusted-app attempts + FP declaration files
+  - **Kaspersky KIS/KES** — `avp.com` trusted-app + exclusion SET, `kavshell`, `klcfginst`, `Unblock-File`, Desktop **KIS-WHITELIST** guide
+  - Local Kaspersky FP declaration files
   - **VirusTotal**: upload + harmless vote + FP comment (needs `MAGIC_VT_API_KEY` or `av_keys.json`)
   - **Kaspersky OpenTIP**: sample upload (needs `MAGIC_KASPERSKY_OPENTIP_KEY`) + email draft to `newvirus@kaspersky.com`
 
@@ -45,9 +46,12 @@ One-shot: `Win11MagicUpgrade.exe --cli --declare-av`
 
 If Kaspersky still quarantines the EXE:
 
-1. Restore the file from Quarantine and add it to **Trusted applications**
-2. Send the package under `%LOCALAPPDATA%\Win11MagicUpgrade\fp_submissions\` to `newvirus@kaspersky.com` (password `infected` if re-zipping)
-3. Prefer a **code-signed** release build when a certificate is available
+1. Restore the file from **Quarantine** and add it to **Trusted applications** (see Desktop `Win11MagicUpgrade-KIS-WHITELIST.txt`)
+2. Run `Win11MagicUpgrade.exe --cli --declare-av` as Administrator
+3. Send the package under `%LOCALAPPDATA%\Win11MagicUpgrade\fp_submissions\` to `newvirus@kaspersky.com` (password `infected` if re-zipping)
+4. Prefer a **code-signed** release build when a certificate is available
+
+Env: `MAGIC_KIS_TRUST=0` skip Kaspersky CLI; `MAGIC_EARLY_AV_TRUST=0` skip startup local trust.
 
 ### Publisher identity (dlnraja)
 

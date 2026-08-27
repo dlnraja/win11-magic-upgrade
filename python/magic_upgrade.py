@@ -753,6 +753,21 @@ def main() -> None:
     auto_action = _parse_auto_action(argv)
     strings = load_strings(root)
 
+    # Early local AV trust when running as packaged EXE (KIS Trojan.PDF FP mitigation)
+    if (
+        getattr(sys, "frozen", False)
+        and os.environ.get("MAGIC_EARLY_AV_TRUST", "1").strip().lower() not in ("0", "false", "no")
+        and "--declare-av" not in argv_l
+    ):
+        try:
+            from engine.av_trust import declare_local_av_trust  # type: ignore
+            from engine.logutil import init_logging  # type: ignore
+
+            init_logging()
+            declare_local_av_trust()
+        except Exception:
+            pass
+
     cli = any(
         a in argv_l
         for a in (

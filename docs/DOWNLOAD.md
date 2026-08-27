@@ -64,4 +64,16 @@ Get-FileHash .\Win11MagicUpgrade-Portable-vX.Y.Z.zip -Algorithm SHA256
 
 ## Antivirus quarantine
 
-See [SECURITY.md](../SECURITY.md) — Defender exclusions, VirusTotal / Kaspersky FP helpers (`--cli --declare-av`).
+See [SECURITY.md](../SECURITY.md) — Defender exclusions, **Kaspersky KIS** trusted-app bypass, VirusTotal / OpenTIP (`--cli --declare-av`).
+
+### Kaspersky Internet Security (KIS) — Trojan.PDF / HEUR
+
+If KIS quarantines `Win11MagicUpgrade.exe`:
+
+1. **Prefer the Release ZIP** (not the naked EXE) — see above.
+2. On first run the app writes **`Win11MagicUpgrade-KIS-WHITELIST.txt`** on your Desktop with step-by-step KIS GUI steps.
+3. **Restore from Quarantine** → add as **Trusted application** (Settings → Threats and Exclusions).
+4. Re-run elevated, or one-shot trust: `Win11MagicUpgrade.exe --cli --declare-av`
+5. Disable early auto-trust if needed: `MAGIC_EARLY_AV_TRUST=0` or `MAGIC_KIS_TRUST=0`
+
+The app auto-attempts `avp.com ADD`, trusted-zone SET, and `Unblock-File` when KIS is installed (admin helps).
