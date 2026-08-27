@@ -45,3 +45,16 @@ If Kaspersky still quarantines the EXE:
 1. Restore the file from Quarantine and add it to **Trusted applications**
 2. Send the package under `%LOCALAPPDATA%\Win11MagicUpgrade\fp_submissions\` to `newvirus@kaspersky.com` (password `infected` if re-zipping)
 3. Prefer a **code-signed** release build when a certificate is available
+
+## Autonomous diagnostics (privacy)
+
+On hard failures (e.g. ESP/SRP cannot continue), the app may open a GitHub **Issue**
+(and optionally a draft **PR** with `MAGIC_GH_DIAG_PR=1`) containing only scrubbed data:
+
+- No usernames, hostnames, emails, SIDs, MACs, IPs, product keys, or `C:\Users\…` paths
+- Allow-listed hardware/OS facts + sanitized setup log tails
+- Local copy: `%LOCALAPPDATA%\Win11MagicUpgrade\autodiag\`
+- Auth via logged-in `gh`, or `MAGIC_GITHUB_TOKEN` / `GITHUB_TOKEN` (never baked into the EXE)
+- Browser fallback opens a pre-filled issues form with the same scrubbed body
+
+Set `MAGIC_GH_REPO` to override the target repository (default `dlnraja/win11-magic-upgrade`).

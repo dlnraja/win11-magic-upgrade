@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .autodiag import build_plan, print_plan
 from .bypass import apply_hardware_bypass, setup_bypass_args
@@ -19,6 +20,44 @@ from .patches import AutonomousRebootRequired, apply_migration_patches
 from .progress import end_session, report_progress, set_phase, set_step, start_session
 from .sysreserved import inspect_and_fix_system_reserved
 from .virtdisk import mount_iso
+
+
+def _autodiag_links(
+    *,
+    kind: str,
+    message: str,
+    report: Any = None,
+    srp_result: dict | None = None,
+    extra: dict | None = None,
+) -> dict[str, str | None]:
+    """Privacy-scrubbed GitHub issue (+ optional PR). Never raises."""
+    try:
+        from .gh_report import report_failure_to_github
+
+        rep = None
+        if report is not None:
+            rep = report.as_dict() if hasattr(report, "as_dict") else report
+        return report_failure_to_github(
+            kind=kind,
+            message=message,
+            report=rep if isinstance(rep, dict) else None,
+            srp_result=srp_result,
+            extra=extra,
+        )
+    except Exception as e:
+        log(f"autodiag report skipped: {e}", "WARN")
+        return {}
+
+
+def _links_hint(links: dict[str, str | None] | None) -> str:
+    if not links:
+        return ""
+    parts = []
+    if links.get("issue"):
+        parts.append(f"Issue: {links['issue']}")
+    if links.get("pr"):
+        parts.append(f"PR: {links['pr']}")
+    return (" " + " ".join(parts)) if parts else ""
 
 
 def _runonce_register() -> None:
@@ -194,7 +233,19 @@ def _execute_step(
             # Retry once with forced expand
             res = inspect_and_fix_system_reserved(force_expand=True, system_disk=disk)
             if isinstance(res, dict) and not res.get("ok", True):
-                raise RuntimeError("ESP/SRP fix failed — cannot continue autonomous upgrade")
+                msg = "ESP/SRP fix failed — cannot continue autonomous upgrade"
+                links = _autodiag_links(
+                    kind="esp-srp-failed",
+                    message=msg,
+                    report=report,
+                    srp_result=res if isinstance(res, dict) else None,
+                    extra={"step": step.as_dict() if hasattr(step, "as_dict") else str(step)},
+                )
+                hint = _links_hint(links)
+                if os.environ.get("MAGIC_SRP_CONTINUE", "").strip().lower() in ("1", "true", "yes"):
+                    log("ESP/SRP still failing — continuing because MAGIC_SRP_CONTINUE=1" + hint, "WARN")
+                    return None
+                raise RuntimeError(msg + "." + (hint or " (sanitized autodiag saved locally)"))
         return None
 
     if step.kind == "fix_bootmgr":
@@ -387,7 +438,14 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
             pass
         result = inspect_and_fix_system_reserved(force_expand=force, system_disk=disk)
         if not result.get('ok'):
-            raise RuntimeError('System Reserved / EFI fix did not complete successfully')
+            msg = 'System Reserved / EFI fix did not complete successfully'
+            links = _autodiag_links(
+                kind='esp-srp-failed',
+                message=msg,
+                report={'disk_number': disk} if disk is not None else None,
+                srp_result=result if isinstance(result, dict) else None,
+            )
+            raise RuntimeError(msg + '.' + (_links_hint(links) or ' (sanitized autodiag saved locally)'))
         write_migration_report(
             extra={
                 'Result': 'SRP_OK',
@@ -821,4 +879,8 @@ def run_pipeline(
             end_session(success=False)
         except Exception:
             pass
+        # File GitHub autodiag if this failure was not already reported (ESP/SRP path embeds Issue:)
+        msg = str(e)
+        if 'Issue:' not in msg and 'github.com/' not in msg.lower():
+            _autodiag_links(kind='oneclick-failed', message=msg[:500], extra={'mode': 'ONECLICK'})
         raise
