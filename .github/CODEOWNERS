@@ -1,5 +1,6 @@
 # Require human review for workflow / release surface (CI/CD + AI supply-chain).
-# See SECURITY.md — CI/CD & AI attack surface.
+# Dependabot PRs: no extra reviewers in dependabot.yml; grouped monthly PRs only.
+# See docs/DEPENDABOT.md — CODEOWNERS here may still request your review on workflow diffs.
 
 .github/workflows/ @dlnraja
 .github/dependabot.yml @dlnraja

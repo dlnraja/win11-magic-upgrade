@@ -1,6 +1,32 @@
+# Dependabot — low-noise config (one grouped PR/month, no major bumps).
+# Workflows use SHA-pinned actions; bump majors manually when ready.
+# See docs/DEPENDABOT.md for Gmail / GitHub notification filters.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+      day: monday
+      time: "09:00"
+      timezone: Europe/Brussels
+    # At most one open Dependabot PR (grouped below)
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
+    reviewers: []
+    assignees: []
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    ignore:
+      # Major action rewrites are noisy; security advisories still open separate PRs
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major

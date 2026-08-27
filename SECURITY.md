@@ -108,6 +108,7 @@ This is defense-in-depth, not a hard security boundary against a malicious admin
 - Conversations must be resolved before merge
 - Admins retain bypass for automated release pushes
 - Secret scanning + push protection + Dependabot security updates enabled
+- Dependabot **version** PRs: grouped monthly, max 1 open, majors ignored — [docs/DEPENDABOT.md](docs/DEPENDABOT.md)
 - Release tags `v*` protected against deletion / non-fast-forward
 
 Settings: https://github.com/dlnraja/win11-magic-upgrade/settings/branches
