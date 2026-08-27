@@ -45,6 +45,11 @@ class Report:
     cpu_name: str
     sse42: bool | None
     tpm_present: bool
+    cpu_64bit: bool = True
+    bootmgr_arch: str | None = None
+    firmware_likely_ia32: bool = False
+    bootmgr_mismatch: bool = False
+    boot_strategy: str = "ok"
 
     def as_dict(self):
         return asdict(self)
@@ -247,6 +252,24 @@ def collect_report() -> Report:
     disk_n, style = _disk_style()
     sse = has_sse42()
     locale = str(_reg_get(winreg.HKEY_CURRENT_USER, r"Control Panel\International", "LocaleName", "en-US"))
+    is_uefi = _firmware_uefi()
+
+    bootmgr_arch = None
+    firmware_ia32 = False
+    boot_mismatch = False
+    boot_strategy = "ok"
+    cpu64 = arch == "x64"
+    try:
+        from .bootmgr import analyze_boot_environment, cpu_is_64bit
+
+        cpu64 = cpu_is_64bit()
+        env = analyze_boot_environment(arch, is_uefi)
+        bootmgr_arch = env.bootmgr_arch
+        firmware_ia32 = env.firmware_likely_ia32
+        boot_mismatch = env.mismatch
+        boot_strategy = env.strategy
+    except Exception as e:
+        log(f"Boot env probe skipped: {e}", "WARN")
 
     return Report(
         product_name=product,
@@ -264,11 +287,16 @@ def collect_report() -> Report:
         locale=locale,
         disk_number=disk_n,
         partition_style=style,
-        is_uefi=_firmware_uefi(),
+        is_uefi=is_uefi,
         secure_boot=_secure_boot(),
         cpu_name=_cpu_name(),
         sse42=sse,
         tpm_present=_tpm_present(),
+        cpu_64bit=cpu64,
+        bootmgr_arch=bootmgr_arch,
+        firmware_likely_ia32=firmware_ia32,
+        bootmgr_mismatch=boot_mismatch,
+        boot_strategy=boot_strategy,
     )
 
 
@@ -280,7 +308,15 @@ def print_report(r: Report) -> None:
     log(f"Edition: {r.edition_id} | Locale: {r.locale} | RAM: {r.ram_gb} GB | Free: {r.free_gb} GB")
     log(f"Disk #{r.disk_number}: {r.partition_style} | UEFI={r.is_uefi} SecureBoot={r.secure_boot}")
     log(f"CPU: {r.cpu_name} | SSE4.2/POPCNT={r.sse42} | TPM={r.tpm_present}")
+    log(
+        f"Boot: OS={r.architecture} CPU64={r.cpu_64bit} bootmgr={r.bootmgr_arch or '?'} "
+        f"IA32fw={r.firmware_likely_ia32} strategy={r.boot_strategy}"
+    )
     log("Runtime: pure Python (no PowerShell, no .NET Framework 4.x required)", "OK")
+    if r.bootmgr_mismatch:
+        log("Boot Manager bitness mismatch - will repair before Win11 upgrade.", "WARN")
+    if r.firmware_likely_ia32:
+        log("32-bit UEFI firmware detected - Win11 x64 cannot boot (hard limit).", "ERROR")
     if r.needs_intermediate:
         log("Obsolete Win10 - intermediate Win10 22H2 required before Win11.", "WARN")
     if r.partition_style == "MBR":

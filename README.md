@@ -40,6 +40,7 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 | Obsolete / not-22H2 Win10 | **Always** intermediate **Win10 22H2**, then Win11 (auto-resume) |
 | ESP / System Reserved full | Auto cleanup fonts/OEM + enlarge via new 512 MB boot partition + bcdboot |
 | SafeOS / WIM / WinRE / filters | WIMMount repair, WinRE enable, fltmc + VPN/VeraCrypt/AV detection, SetupConfig.ini cleanup |
+| Boot Manager 32↔64 | Detect ESP PE bitness; repair x64 OS + IA32 bootmgr via bcdboot; block IA32-only UEFI for Win11 |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
 ## Intermediate versions

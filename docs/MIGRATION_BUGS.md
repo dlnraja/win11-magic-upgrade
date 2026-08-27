@@ -31,6 +31,18 @@ Research notes (Microsoft Support, SetupDiag, FlyOOBE issues, forums) and what t
 | Problem devices / `0x80070490` | Bad PnP drivers | `pnputil /enum-devices /problem` warn |
 | USB storage during setup | External disks | Warn to unplug removable drives |
 | Component store (`0x800F081F`) | Corruption | DISM `/CheckHealth` (warn only) |
+| Win11 x64 + 32-bit Boot Manager on ESP | Stale `bootia32` / wrong PE after repairs | Detect PE machine of `bootmgfw.efi`; `bcdboot` rewrite + `bootx64.efi` |
+| Win11 on IA32-only UEFI (Atom tablets) | Firmware bitness must match OS | **Hard limit** — no supported bypass; max Win10 22H2 x86; clean Win11 only if firmware is x64/CSM |
+| 32-bit Windows + 64-bit CPU | Architecture change not inplace | Max Win10 22H2 x86 keep-apps; Win11 = clean install x64 only |
+
+## Boot Manager / UEFI bitness (smart)
+
+Windows UEFI boot requires **firmware bitness == OS bitness**. The app:
+
+1. Mounts ESP and reads PE machine type of `bootmgfw.efi` / `bootx64.efi` / `bootia32.efi`  
+2. If **OS is x64** but ESP still has **32-bit** boot files → **`bcdboot` repair** (safe bypass for mismatch)  
+3. If firmware is **IA32-only** (typical Bay/Cherry Trail tablets) → **honest block**: Win11 x64 cannot load `winload.efi`; stay on Win10 22H2 x86  
+4. Never ships third-party IA32→x64 chainloaders (unsupported / brick risk)
 
 ## System Reserved / EFI (SRP) fix
 

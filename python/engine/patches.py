@@ -470,4 +470,24 @@ def apply_migration_patches() -> None:
     except Exception as e:
         log(f"System Reserved / EFI fix skipped: {e}", "WARN")
 
+    # Align Boot Manager bitness when OS is x64 but ESP still has IA32 boot files
+    try:
+        import platform
+
+        from .bootmgr import apply_smart_boot_strategy
+
+        os_arch = "x64" if platform.machine().endswith("64") else "x86"
+        is_uefi = False
+        try:
+            import ctypes
+
+            ft = ctypes.c_uint(0)
+            if ctypes.windll.kernel32.GetFirmwareType(ctypes.byref(ft)):
+                is_uefi = ft.value == 2
+        except Exception:
+            pass
+        apply_smart_boot_strategy(os_arch=os_arch, is_uefi=is_uefi)
+    except Exception as e:
+        log(f"Boot Manager smart fix skipped: {e}", "WARN")
+
     log("Migration patches done.", "OK")

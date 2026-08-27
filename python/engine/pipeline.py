@@ -143,6 +143,12 @@ def _execute_step(
         inspect_and_fix_system_reserved(force_expand=False)
         return None
 
+    if step.kind == "fix_bootmgr":
+        from .bootmgr import apply_smart_boot_strategy
+
+        apply_smart_boot_strategy(os_arch=report.architecture, is_uefi=report.is_uefi)
+        return None
+
     if step.kind == "mbr2gpt":
         if not report.mbr2gpt_available:
             log("mbr2gpt not available yet - will retry after Win10 intermediate", "WARN")

@@ -77,7 +77,15 @@ def build_plan(report: Report | None = None) -> Plan:
 
     # 32-bit: Win11 impossible; max = Win10 22H2 x86 inplace
     if r.architecture != "x64":
-        blockers.append("Windows 11 does not exist as 32-bit. In-place Win11 upgrade is impossible.")
+        if getattr(r, "firmware_likely_ia32", False):
+            blockers.append(
+                "UEFI firmware is 32-bit (bootia32). Win11 x64 cannot boot - no supported bypass."
+            )
+        elif getattr(r, "cpu_64bit", False):
+            blockers.append("32-bit Windows cannot inplace-upgrade to 64-bit Win11.")
+            warnings.append("CPU is 64-bit: only a clean install of Win11 x64 can reach Windows 11.")
+        else:
+            blockers.append("Windows 11 does not exist as 32-bit. In-place Win11 upgrade is impossible.")
         warnings.append("Best safe path: upgrade this 32-bit OS to Windows 10 22H2 x86 (keep files/apps).")
         if r.is_win10 and r.build < 19045:
             actions.append(
@@ -90,13 +98,25 @@ def build_plan(report: Report | None = None) -> Plan:
             )
         return Plan(
             target="win10_22h2",
-            summary="32-bit Windows detected - targeting Windows 10 22H2 x86 (max without wipe). Win11 requires clean x64 install on 64-bit capable CPU.",
+            summary="32-bit Windows / IA32 boot path - targeting Windows 10 22H2 x86 (max without wipe).",
             can_win11=False,
             actions=actions,
             blockers=blockers,
             warnings=warnings,
             report=r.as_dict(),
         )
+
+    if getattr(r, "bootmgr_mismatch", False):
+        actions.insert(
+            0,
+            Action(
+                "fix_bootmgr",
+                "Repair Boot Manager to x64",
+                "ESP has 32-bit/stale boot files while OS is x64 - bcdboot rewrite",
+                "medium",
+            ),
+        )
+        warnings.append("Boot Manager bitness mismatch detected - will realign before Win11.")
 
     # No SSE4.2/POPCNT: Win11 24H2+ won't boot
     if r.sse42 is False:

@@ -82,7 +82,7 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             )
         ]
 
-    # 32-bit: only Win10 22H2 x86 is a safe max destination
+    # 32-bit OS: Win11 inplace impossible. Smart max path by CPU/firmware.
     if r.architecture != "x64":
         steps.append(
             ChainStep(
@@ -92,6 +92,18 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 note="Prevents reserved-partition upgrade failures",
             )
         )
+        if getattr(r, "firmware_likely_ia32", False):
+            note_max = (
+                "CPU may be 64-bit but UEFI firmware is 32-bit (bootia32) - "
+                "Win11 x64 cannot boot (no supported bypass). Max: Win10 22H2 x86."
+            )
+        elif getattr(r, "cpu_64bit", False):
+            note_max = (
+                "32-bit Windows cannot inplace to Win11 x64. "
+                "CPU is 64-bit: after backup, clean-install Win11 x64 is the only path."
+            )
+        else:
+            note_max = "Cannot upgrade 32-bit OS to Windows 11 inplace"
         if r.build < WIN10_22H2_BUILD:
             steps.append(
                 ChainStep(
@@ -100,18 +112,29 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                     kind="iso_upgrade",
                     win="10",
                     arch="x86",
-                    note="Win11 does not exist for 32-bit; 22H2 is the final safe step",
+                    note=note_max,
                 )
             )
-        else:
-            steps.append(
-                ChainStep(
-                    id="done",
-                    label="Max reached: Windows 10 22H2 x86",
-                    kind="done",
-                    note="Cannot upgrade 32-bit OS to Windows 11 inplace",
-                )
+        steps.append(
+            ChainStep(
+                id="done",
+                label="Max reached: Windows 10 22H2 x86 (no inplace Win11)",
+                kind="done",
+                note=note_max,
             )
+        )
+        return steps
+
+    # IA32 UEFI + somehow x64 OS shouldn't happen; if flagged, stop before Win11
+    if getattr(r, "firmware_likely_ia32", False):
+        steps.append(
+            ChainStep(
+                id="done",
+                label="Blocked: 32-bit UEFI firmware cannot boot Win11 x64",
+                kind="done",
+                note="Hard firmware limit - no safe bypass for bootia32-only systems",
+            )
+        )
         return steps
 
     # No SSE4.2: cannot boot Win11 24H2+
@@ -156,6 +179,17 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             note="Prevents 'We could not update the system reserved partition' / FR equivalent",
         )
     )
+
+    # x64 OS with 32-bit / missing bootx64 Boot Manager -> rewrite ESP via bcdboot
+    if getattr(r, "bootmgr_mismatch", False) or getattr(r, "boot_strategy", "") == "repair_bootmgr_x64":
+        steps.append(
+            ChainStep(
+                id="fix_bootmgr",
+                label="Align Boot Manager to x64 (bcdboot UEFI)",
+                kind="fix_bootmgr",
+                note="Fixes stale bootia32 / wrong bitness so Win11 x64 can reboot",
+            )
+        )
 
     # Step A: any Win10 below 22H2 must pass by 22H2 first (1511, 1607, 1809, 21H2, ...)
     if r.is_win10 and r.build < WIN10_22H2_BUILD:
