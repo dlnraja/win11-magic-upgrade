@@ -20,6 +20,8 @@ from pathlib import Path
 
 from .diskpart_safe import (
     assign_letter_to_volume,
+    ensure_select_disk,
+    ensure_select_volume,
     find_esp_candidates,
     find_system_reserved_candidates,
     find_volume_by_letter,
@@ -301,8 +303,14 @@ def create_larger_esp(
         log(f"Abort ESP expand: disk mismatch C:→{verified} vs expected {disk_n}", "ERROR")
         return None
 
+    ok_sel, sel_out = ensure_select_disk(int(disk_n))
+    if not ok_sel:
+        log(f"Abort ESP expand: cannot select disk {disk_n}: {sel_out[-160:]}", "ERROR")
+        return None
+
     script = (
         f"select disk {int(disk_n)}\n"
+        f"detail disk\n"
         f"create partition efi size={int(size_mb)}\n"
         "format fs=fat32 quick label=ESP\n"
         f"assign letter={letter}\n"
@@ -363,8 +371,19 @@ def create_larger_system_reserved_mbr(
         log("C: shrink failed — abort MBR system expand", "ERROR")
         return None
 
+    verified = get_system_disk_number("C")
+    if verified is not None and verified != disk_n:
+        log(f"Abort MBR expand: disk mismatch C:→{verified} vs expected {disk_n}", "ERROR")
+        return None
+
+    ok_sel, sel_out = ensure_select_disk(int(disk_n))
+    if not ok_sel:
+        log(f"Abort MBR expand: cannot select disk {disk_n}: {sel_out[-160:]}", "ERROR")
+        return None
+
     ok, out = run_diskpart(
         f"select disk {int(disk_n)}\n"
+        f"detail disk\n"
         f"create partition primary size={int(size_mb)}\n"
         "format fs=ntfs quick label=System\n"
         f"assign letter={letter}\n"
@@ -386,14 +405,29 @@ def create_larger_system_reserved_mbr(
         log("bcdboot BIOS failed — leaving new partition without active flag (old SRP intact)", "WARN")
         return root
 
-    # Only mark active after boot files are present
+    # Mark active only after bcdboot OK — select by volume index (never letter-after-dismount)
+    vol = find_volume_by_letter(letter)
+    if vol is None:
+        log(f"Cannot resolve volume for {letter}: to mark active", "WARN")
+        return root
+    ok_sel_v, _ = ensure_select_volume(vol.index)
+    if not ok_sel_v:
+        log(f"Cannot select volume {vol.index} for active", "WARN")
+        return root
     ok_act, act_out = run_diskpart(
-        f"select volume {letter}\nactive\nexit\n"
+        f"select volume {int(vol.index)}\n"
+        f"detail volume\n"
+        f"active\n"
+        f"exit\n"
     )
-    if ok_act:
-        log(f"Marked {letter}: active after successful bcdboot", "OK")
+    if ok_act and not re.search(
+        r"No volume selected|Aucun volume|error|failed|échec|echec|erreur",
+        act_out or "",
+        re.I,
+    ):
+        log(f"Marked volume {vol.index} ({letter}:) active after successful bcdboot", "OK")
     else:
-        log(f"Could not mark active (non-fatal): {act_out[-160:]}", "WARN")
+        log(f"Could not mark active (non-fatal): {(act_out or '')[-160:]}", "WARN")
     return root
 
 

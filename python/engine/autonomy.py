@@ -133,34 +133,41 @@ def offline_secondary_fixed_disks(system_disk: int | None = None) -> int:
     """
     Offline non-system fixed disks to avoid 0x80070002-0x20009 style Setup confusion.
     Safety: refuse if system_disk unknown / negative; never offline the boot/system disk.
+    Uses verified diskpart select (EN/FR) — never invent disk 0.
     """
+    from .diskpart_safe import NO_DISK_RE, ensure_select_disk, run_diskpart
+
     if system_disk is None or int(system_disk) < 0:
         log("system_disk unknown — skipping secondary disk offline (safety)", "WARN")
         return 0
-    # List disks via diskpart
-    script = "list disk\n"
-    tmp = STATE_DIR / "list-disk.txt"
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(script, encoding="utf-8")
-    code, out = _run(["diskpart", "/s", str(tmp)])
+
+    ok_sys, _ = ensure_select_disk(int(system_disk))
+    if not ok_sys:
+        log(f"Cannot verify system disk #{system_disk} — skip offline others", "WARN")
+        return 0
+
+    _, out = run_diskpart("list disk\nexit\n")
     nums = [int(x) for x in re.findall(r"Disk\s+(\d+)", out or "", re.I)]
     offlined = 0
     for n in sorted(set(nums)):
         if n == int(system_disk):
             continue
-        detail_script = STATE_DIR / f"detail-disk-{n}.txt"
-        detail_script.write_text(f"select disk {n}\ndetail disk\n", encoding="utf-8")
-        _, detail = _run(["diskpart", "/s", str(detail_script)])
-        if re.search(r"\b(Boot|System|Pagefile|Hibernation|Crashdump|D[eé]marrage|Syst[eè]me)\b", detail or "", re.I):
+        ok_sel, detail = ensure_select_disk(n)
+        if not ok_sel:
+            log(f"Skip disk {n}: cannot select", "INFO")
+            continue
+        if re.search(
+            r"\b(Boot|System|Pagefile|Hibernation|Crashdump|D[eé]marrage|Syst[eè]me)\b",
+            detail or "",
+            re.I,
+        ):
             log(f"Keep disk {n} online (system-related volume)", "INFO")
             continue
         if re.search(r"Status\s*:\s*Offline|Hors connexion", detail or "", re.I):
             continue
-        off_script = STATE_DIR / f"offline-disk-{n}.txt"
-        off_script.write_text(f"select disk {n}\ndetail disk\noffline disk\n", encoding="utf-8")
-        c, o = _run(["diskpart", "/s", str(off_script)])
-        if c == 0 and not re.search(
-            r"No disk selected|Aucun disque|error|failed|échec|echec|erreur",
+        c_ok, o = run_diskpart(f"select disk {n}\ndetail disk\noffline disk\nexit\n")
+        if c_ok and not NO_DISK_RE.search(o or "") and not re.search(
+            r"error|failed|échec|echec|erreur",
             o or "",
             re.I,
         ):
