@@ -126,6 +126,16 @@ class App(tk.Tk):
             fg="#94a3b8",
             bg="#0f172a",
         ).pack(anchor="w")
+        tk.Label(
+            header,
+            text=self.t.get(
+                "app_publisher",
+                "Publisher: dlnraja · https://github.com/dlnraja/win11-magic-upgrade",
+            ),
+            font=("Segoe UI", 9),
+            fg="#64748b",
+            bg="#0f172a",
+        ).pack(anchor="w", pady=(2, 0))
 
         btns = tk.Frame(self, bg="#0f172a")
         btns.pack(fill="x", padx=20, pady=8)

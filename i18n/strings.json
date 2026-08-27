@@ -1,7 +1,8 @@
 {
   "en": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "1-Click full migration · diag · preventives · bypass · ISO · Setup · RunOnce",
+    "app_sub": "by dlnraja · 1-Click full migration · diag · preventives · bypass · ISO · Setup · RunOnce",
+    "app_publisher": "Publisher: dlnraja · https://github.com/dlnraja/win11-magic-upgrade",
     "btn_oneclick": "ONE-CLICK — Full migration",
     "btn_diagnose": "Diagnose only",
     "btn_bypass": "Bypass only",
@@ -39,7 +40,8 @@
   },
   "fr": {
     "app_title": "Win11 Magic Upgrade",
-    "app_sub": "1-Click migration complete · diag · preventifs · bypass · ISO · Setup · RunOnce",
+    "app_sub": "par dlnraja · 1-Click migration complete · diag · preventifs · bypass · ISO · Setup · RunOnce",
+    "app_publisher": "Editeur: dlnraja · https://github.com/dlnraja/win11-magic-upgrade",
     "btn_oneclick": "ONE-CLICK — Migration complete",
     "btn_diagnose": "Diag seul",
     "btn_bypass": "Bypass seul",

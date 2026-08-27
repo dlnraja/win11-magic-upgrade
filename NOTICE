@@ -1,5 +1,11 @@
 # Third-party notices
 
+## Publisher
+
+- **Publisher / author:** dlnraja
+- Repository: https://github.com/dlnraja/win11-magic-upgrade
+- EXE Authenticode subject: `CN=dlnraja` (self-signed by default; replace with a trusted PFX via `MAGIC_CODESIGN_PFX`)
+
 ## Fido (ISO download helper)
 
 - Project: https://github.com/pbatard/Fido

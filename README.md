@@ -4,6 +4,8 @@
 [![Latest release](https://img.shields.io/github/v/release/dlnraja/win11-magic-upgrade)](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+**Publisher:** [dlnraja](https://github.com/dlnraja) · signed EXE / version resources identify `dlnraja`
+
 Portable **autonomous one-click** upgrader: Windows 10 (including **1511** and other obsolete builds) and older Windows 11 → **Windows 11 latest**, keeping **files and apps**.
 
 Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller)**:

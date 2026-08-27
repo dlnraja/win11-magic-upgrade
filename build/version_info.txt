@@ -1,11 +1,11 @@
 # UTF-8
 #
-# PyInstaller version resource — clear product identity reduces AV heuristics
+# PyInstaller version resource — publisher identity: dlnraja
 # (unsigned UPX-packed onefile binaries are often mislabeled e.g. Trojan.PDF).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 22, 0, 0),
-    prodvers=(1, 22, 0, 0),
+    filevers=(1, 23, 0, 0),
+    prodvers=(1, 23, 0, 0),
     mask=0x3F,
     flags=0x0,
     OS=0x40004,
@@ -19,15 +19,16 @@ VSVersionInfo(
         StringTable(
           '040904B0',
           [
-            StringStruct('CompanyName', 'Win11 Magic Upgrade Project'),
-            StringStruct('FileDescription', 'Win11 Magic Upgrade - One-Click Windows migration (NOT malware)'),
-            StringStruct('FileVersion', '1.22.0.0'),
+            StringStruct('CompanyName', 'dlnraja'),
+            StringStruct('FileDescription', 'Win11 Magic Upgrade by dlnraja - One-Click Windows migration (NOT malware)'),
+            StringStruct('FileVersion', '1.23.0.0'),
             StringStruct('InternalName', 'Win11MagicUpgrade'),
-            StringStruct('LegalCopyright', 'Open source - legitimate system upgrade helper'),
+            StringStruct('LegalCopyright', 'Copyright (c) 2026 dlnraja. MIT License. https://github.com/dlnraja/win11-magic-upgrade'),
             StringStruct('OriginalFilename', 'Win11MagicUpgrade.exe'),
             StringStruct('ProductName', 'Win11 Magic Upgrade'),
-            StringStruct('ProductVersion', '1.22.0.0'),
-            StringStruct('Comments', 'Downloads official Microsoft ISOs only. No PDF/Trojan code.'),
+            StringStruct('ProductVersion', '1.23.0.0'),
+            StringStruct('Comments', 'Publisher: dlnraja. Official Microsoft ISOs only. No PDF/Trojan code.'),
+            StringStruct('LegalTrademarks', 'dlnraja'),
           ]
         )
       ]

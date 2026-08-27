@@ -46,6 +46,14 @@ If Kaspersky still quarantines the EXE:
 2. Send the package under `%LOCALAPPDATA%\Win11MagicUpgrade\fp_submissions\` to `newvirus@kaspersky.com` (password `infected` if re-zipping)
 3. Prefer a **code-signed** release build when a certificate is available
 
+### Publisher identity (dlnraja)
+
+- Version resource / LegalCopyright / CompanyName: **dlnraja**
+- Authenticode: build signs with `CN=dlnraja` (self-signed) or a trusted PFX:
+  - `MAGIC_CODESIGN_PFX` = path to `.pfx`
+  - `MAGIC_CODESIGN_PASSWORD` = PFX password
+- Portable package includes `PUBLISHER.txt`
+
 ## Autonomous diagnostics (privacy)
 
 On hard failures (e.g. ESP/SRP cannot continue), the app may open a GitHub **Issue**

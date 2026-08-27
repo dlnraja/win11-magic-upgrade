@@ -81,7 +81,18 @@ Copy-Item (Join-Path $Root "README.md") $portable -Force -ErrorAction SilentlyCo
 Copy-Item (Join-Path $Root "LICENSE") $portable -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Root "NOTICE") $portable -Force -ErrorAction SilentlyContinue
 
+# Authenticode sign as publisher "dlnraja" (self-signed or MAGIC_CODESIGN_PFX)
+$exe = Join-Path $dist "Win11MagicUpgrade.exe"
+$signScript = Join-Path $Root "build\sign_exe.ps1"
+if (Test-Path $signScript) {
+    Write-Host "Signing EXE as dlnraja..." -ForegroundColor Cyan
+    powershell -NoProfile -ExecutionPolicy Bypass -File $signScript -ExePath $exe -Publisher "dlnraja"
+    Copy-Item $exe (Join-Path $portable "Win11MagicUpgrade.exe") -Force
+    $pub = Join-Path $dist "PUBLISHER.txt"
+    if (Test-Path $pub) { Copy-Item $pub $portable -Force }
+}
+
 Write-Host ""
 Write-Host "OK: $portable\Win11MagicUpgrade.exe" -ForegroundColor Green
-Write-Host "AV notes: UPX disabled + UAC manifest + version resource. Rebuild required for Kaspersky FP reduction." -ForegroundColor DarkGray
+Write-Host "Publisher: dlnraja | AV notes: UPX off + UAC manifest + version resource + Authenticode." -ForegroundColor DarkGray
 Write-Host "Target PCs need NO .NET Framework 4.x and NO working PowerShell for the upgrade engine." -ForegroundColor DarkGray

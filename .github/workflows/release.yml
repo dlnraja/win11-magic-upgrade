@@ -79,5 +79,7 @@ jobs:
             Prefer the `Win11MagicUpgrade-Portable` artifact (EXE + src + vendor + cmd).
 
             Built with SHA-pinned Actions; see SECURITY.md (CI/CD hardening).
+            Publisher / Authenticode subject: **dlnraja**
+            (`CN=dlnraja` — use a trusted PFX via `MAGIC_CODESIGN_PFX` for SmartScreen).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

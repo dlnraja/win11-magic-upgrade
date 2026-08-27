@@ -1,5 +1,7 @@
 # Win11 Magic Upgrade (FR)
 
+**Editeur :** [dlnraja](https://github.com/dlnraja) · EXE / ressources de version signes `dlnraja`
+
 Programme **portable one-click autonome** pour migrer Windows 10 (y compris **1511**) et Windows 11 anciens vers **Windows 11 latest**, **sans perdre fichiers ni applications**.
 
 Inspiré de **Flyby11 / FlyOOBE**, runtime **Python pur** (PyInstaller) :
