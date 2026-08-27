@@ -141,9 +141,10 @@ Boot layout changes use `engine/boot_safe.py`:
 
 1. **Preflight** — verify system disk #, firmware, BitLocker, C: free space; export BCD;
    snapshot ESP critical files; **full ESP/SRP partition backup** (file tree + optional WIM + metadata)
-2. **Native tiers** — cleanup → **smart partition planner** (in-place grow, smart
-   shrink C:/data, create in free space, GRUB preserve) → `bcdboot` → verified
-   `diskpart` expand (never invent disk 0)
+2. **Native tiers** — cleanup (OEM-aware ESP policy) → **smart partition planner** (extend /
+   smart shrink / create; Acer/Asus/Toshiba prefer new ESP) → `bcdboot` → verified
+   `diskpart` expand (never invent disk 0). BitLocker / Device Encryption suspended;
+   Toshiba HDD Password / locked volumes hard-block until unlocked. OEM MSDM/OA3 license preserved.
 3. **Retries** — failed ESP/SRP expands re-run after restore
 4. **Guarantee bootable** — on success *or* failure intelligent ladder:
    **partition restore / dynamic regenerate** → BCD import → ESP file restore → `bcdboot` →
@@ -159,6 +160,7 @@ Boot layout changes use `engine/boot_safe.py`:
    - `%LOCALAPPDATA%\\Win11MagicUpgrade\\partition-backups\\` (generations, LAST.txt)
    - Desktop `Win11MagicUpgrade-GParted-Rescue.txt` / `GParted-Smart` / FreeDOS / GRUB guides
 8. Env:
+   - `MAGIC_OEM_ADAPT=0` disable Acer/Asus/Toshiba/… brand profiling
    - `MAGIC_SMART_PARTITION=0` skip intelligent planner
    - `MAGIC_SMART_SHRINK_DATA=0` never shrink non-C: data volumes
    - `MAGIC_GRUB_PRESERVE=0` skip Linux GRUB detection scripts

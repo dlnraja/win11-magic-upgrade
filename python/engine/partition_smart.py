@@ -543,8 +543,15 @@ def detect_linux_efi(esp_root: str | None = None) -> dict[str, Any]:
             if not child.is_dir():
                 continue
             name = child.name.lower()
-            if name in ("microsoft", "boot", "dell", "hp", "lenovo", "asus", "oem"):
+            if name in ("microsoft", "boot", "dell", "hp", "lenovo", "asus", "acer", "toshiba", "dynabook", "msi", "oem", "samsung", "sony", "fujitsu"):
                 continue
+            try:
+                from .oem_adapt import OEM_EFI_VENDORS
+
+                if name in OEM_EFI_VENDORS:
+                    continue
+            except Exception:
+                pass
             if name in LINUX_EFI_VENDORS or any(v in name for v in LINUX_EFI_VENDORS):
                 info["vendors"].append(child.name)
                 for pattern in ("grubx64.efi", "shimx64.efi", "mmx64.efi", "grub.efi"):
@@ -1073,6 +1080,30 @@ def run_smart_partition_magic(
     target = _valid_mb(target_mb, minimum=100, maximum=2048) or TARGET_BOOT_MB
 
     plan = plan_smart_layout(layout, prefer_uefi=prefer_uefi_eff, target_mb=target)
+    # OEM quirks (Acer/Asus/Toshiba/...): prefer new ESP; block if HDD password locked
+    try:
+        from .oem_adapt import apply_oem_to_partition_plan, get_oem_profile
+
+        oem = get_oem_profile()
+        plan = apply_oem_to_partition_plan(plan, oem)
+        summary["oem"] = {
+            "family": oem.family,
+            "prefer_new_esp": oem.prefer_new_esp_over_grow,
+            "msdm": oem.msdm_present,
+        }
+        if plan.get("strategy") == "blocked_encryption":
+            summary["actions"].append("blocked_oem_encryption")
+            summary["ok"] = False
+            summary["plan"] = {
+                "strategy": plan.get("strategy"),
+                "reasons": plan.get("reasons"),
+                "steps": plan.get("steps"),
+                "gparted": plan.get("gparted"),
+            }
+            return summary
+    except Exception as e:
+        summary["actions"].append(f"oem_plan_skip:{type(e).__name__}")
+
     summary["plan"] = {
         "strategy": plan.get("strategy"),
         "reasons": plan.get("reasons"),

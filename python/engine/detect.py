@@ -301,6 +301,21 @@ def print_report(r: Report) -> None:
         f"Boot: OS={r.architecture} CPU64={r.cpu_64bit} bootmgr={r.bootmgr_arch or '?'} "
         f"IA32fw={r.firmware_likely_ia32} strategy={r.boot_strategy}"
     )
+    try:
+        from .oem_adapt import get_oem_profile
+
+        oem = get_oem_profile()
+        log(
+            f"OEM: {oem.family} | {oem.manufacturer} {oem.model} | "
+            f"BitLocker={oem.bitlocker} DevEnc={oem.device_encryption} "
+            f"MSDM={oem.msdm_present} ToshibaHDDpw={oem.toshiba_hdd_password_likely}"
+        )
+        if oem.toshiba_hdd_password_likely:
+            log("Toshiba/Dynabook: unlock HDD Password in BIOS if disk edits fail.", "WARN")
+        if oem.encryption_blocks_mutate:
+            log("Encryption locked — unlock BitLocker/HDD password before ESP/MBR edits.", "ERROR")
+    except Exception as e:
+        log(f"OEM probe skipped: {e}", "WARN")
     log("Runtime: pure Python (no PowerShell, no .NET Framework 4.x required)", "OK")
     if r.bootmgr_mismatch:
         log("Boot Manager bitness mismatch - will repair before Win11 upgrade.", "WARN")

@@ -50,6 +50,17 @@ def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
 
 
 def suspend_bitlocker() -> None:
+    # Prefer OEM-aware path (Device Encryption + Toshiba warnings)
+    try:
+        from .oem_adapt import get_oem_profile, prepare_encryption_for_mutate
+
+        oem = get_oem_profile()
+        enc = prepare_encryption_for_mutate(oem)
+        if enc.get("blocked"):
+            log("BitLocker/HDD encryption locked — cannot suspend; unlock first", "ERROR")
+        return
+    except Exception:
+        pass
     manage = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "manage-bde.exe"
     if not manage.exists():
         return
@@ -65,6 +76,20 @@ def prepare_layout_for_mbr2gpt(disk_number: int) -> None:
     log("Preparing partition layout for MBR2GPT (no wipe)...", "STEP")
     letter = os.environ.get("SystemDrive", "C:")[:1].upper()
 
+    # OEM: always try WinRE disable early on crowded Acer/HP/Lenovo layouts
+    force_winre = False
+    try:
+        from .oem_adapt import get_oem_profile
+
+        oem = get_oem_profile()
+        force_winre = bool(oem.mbr2gpt_disable_winre_first and oem.family in (
+            "acer", "asus", "toshiba", "hp", "dell", "lenovo",
+        ))
+        if oem.msdm_present:
+            log("OEM digital license (MSDM/OA3) detected — keeping disk (no wipe)", "OK")
+    except Exception:
+        pass
+
     ok, out = ensure_select_disk(int(disk_number))
     if not ok:
         log(f"Cannot select disk {disk_number} for mbr2gpt prep — abort shrink", "ERROR")
@@ -72,8 +97,8 @@ def prepare_layout_for_mbr2gpt(disk_number: int) -> None:
     # Count partitions on that disk
     ok_lp, lp = run_diskpart(f"select disk {int(disk_number)}\nlist partition\nexit\n")
     parts = len(re.findall(r"Partition\s+\d+", lp or "", re.I)) if ok_lp or lp else 0
-    if parts >= 4:
-        log(f"Disk shows ~{parts} partitions - disabling WinRE to free a slot", "WARN")
+    if parts >= 4 or force_winre:
+        log(f"Disk shows ~{parts} partitions - disabling WinRE to free a slot (OEM-aware)", "WARN")
         reagentc = Path(os.environ["SystemRoot"]) / "System32" / "reagentc.exe"
         if reagentc.exists():
             code, o = _run([str(reagentc), "/disable"])

@@ -956,6 +956,34 @@ def preflight_boot_edit(
     fw = _firmware()
     style = _partition_style(disk)
     bl = _bitlocker_status(drive)
+    # OEM / Device Encryption / Toshiba HDD password awareness
+    oem_info: dict = {}
+    try:
+        from .oem_adapt import get_oem_profile, prepare_encryption_for_mutate, write_oem_guidance_file
+
+        oem = get_oem_profile()
+        oem_info = {
+            "family": oem.family,
+            "manufacturer": oem.manufacturer,
+            "model": oem.model,
+            "device_encryption": oem.device_encryption,
+            "toshiba_hdd_password_likely": oem.toshiba_hdd_password_likely,
+            "msdm_present": oem.msdm_present,
+            "encryption_blocks": oem.encryption_blocks_mutate,
+        }
+        write_oem_guidance_file(oem)
+        enc = prepare_encryption_for_mutate(oem)
+        if enc.get("blocked"):
+            snap_block_oem = True
+        else:
+            snap_block_oem = False
+        if oem.device_encryption and bl == "unknown":
+            bl = "on"  # treat Device Encryption like BitLocker On for notes
+    except Exception as e:
+        log(f"OEM adapt probe: {e}", "WARN")
+        snap_block_oem = False
+        enc = {"actions": []}
+
     snap = BootSnapshot(
         utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         firmware=fw,
@@ -967,11 +995,20 @@ def preflight_boot_edit(
         esp_candidates=len(find_esp_candidates()),
         srp_candidates=len(find_system_reserved_candidates()),
     )
+    if oem_info:
+        snap.notes.append("oem:" + str(oem_info.get("family")))
+        for k, v in oem_info.items():
+            if k != "family" and v not in (None, "", False):
+                snap.notes.append(f"oem_{k}:{v}")
+    for a in (enc.get("actions") if isinstance(enc, dict) else []) or []:
+        snap.notes.append(str(a))
 
     if require_disk and (disk is None or int(disk) < 0):
         snap.block_reasons.append("system_disk_unknown")
-    if bl == "locked":
+    if bl == "locked" or snap_block_oem:
         snap.block_reasons.append("bitlocker_locked")
+        if oem_info.get("toshiba_hdd_password_likely"):
+            snap.block_reasons.append("toshiba_hdd_password")
     if snap.c_free_gb is not None and snap.c_free_gb < 2.0 and intend in (
         "esp-expand",
         "mbr2gpt",
@@ -983,8 +1020,9 @@ def preflight_boot_edit(
     if snap.esp_candidates > 3:
         snap.notes.append("many_esp_like_volumes")
 
-    # Suspend BitLocker protectors when On (non-destructive)
-    if bl == "on":
+    # Suspend BitLocker protectors when On (non-destructive) — skip if OEM helper already did
+    already = any("protectors_disable" in str(n) for n in snap.notes)
+    if bl == "on" and not already:
         manage = Path(os.environ.get("SystemRoot", r"C:\\Windows")) / "System32" / "manage-bde.exe"
         if manage.exists():
             log("Suspending BitLocker protectors before boot edit...", "STEP")

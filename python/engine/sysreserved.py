@@ -187,29 +187,44 @@ def cleanup_boot_volume(root: str) -> dict:
         if n:
             actions.append(f"Deleted {n} BIOS Boot\\Fonts files")
 
-    # OEM firmware / recovery dumps often stuffed into ESP (HP, Dell, Lenovo, Acer...)
+    # OEM firmware / recovery dumps often stuffed into ESP (HP, Dell, Lenovo, Acer, Asus, Toshiba...)
+    # Policy is brand-aware via oem_adapt (keep .efi loaders; drop bulky capsules).
     efi = base / "EFI"
+    oem_profile = None
+    try:
+        from .oem_adapt import get_oem_profile, should_delete_oem_efi_file
+
+        oem_profile = get_oem_profile()
+        actions.append(f"oem_cleanup_policy:{oem_profile.family}")
+    except Exception:
+        oem_profile = None
+
     if efi.is_dir():
         for oem in efi.iterdir():
             if not oem.is_dir():
                 continue
             name = oem.name.lower()
-            if name in {"microsoft", "boot", "ubuntu", "centos", "redhat", "debian"}:
+            if name in {"microsoft", "boot", "ubuntu", "centos", "redhat", "debian", "fedora", "arch"}:
                 continue
-            # Remove large firmware update payloads, keep folder structure light
             removed = 0
             for f in oem.rglob("*"):
                 if not f.is_file():
                     continue
-                # Keep tiny marker files; remove large bins/imgs/capsules
-                if f.suffix.lower() in {".bin", ".img", ".cap", ".fd", ".rom", ".exe", ".zip", ".cab", ".wim"} or f.stat().st_size > 512_000:
-                    try:
-                        sz = f.stat().st_size
+                try:
+                    if oem_profile is not None:
+                        do_del = should_delete_oem_efi_file(f, oem_profile)
+                    else:
+                        do_del = (
+                            f.suffix.lower()
+                            in {".bin", ".img", ".cap", ".fd", ".rom", ".exe", ".zip", ".cab", ".wim"}
+                            or f.stat().st_size > 512_000
+                        ) and f.suffix.lower() != ".efi"
+                    if do_del:
                         f.unlink()
                         removed += 1
                         freed_files += 1
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
             if removed:
                 actions.append(f"Removed {removed} OEM payload files under EFI\\{oem.name}")
 
