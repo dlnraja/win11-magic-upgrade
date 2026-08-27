@@ -464,6 +464,32 @@ def install_preventive_only(sink: Callable[[str], None] | None = None) -> None:
     log("All preventive patches installed persistently on this PC.", "OK")
 
 
+def _prefetch_chain_isos(
+    steps: list[ChainStep],
+    report,
+    win10_iso: str | None,
+    win11_iso: str | None,
+) -> dict[str, str]:
+    """Download/reuse every ISO the chain will need before the first Setup (intelligent)."""
+    cached: dict[str, str] = {}
+    for step in steps:
+        if step.kind != "iso_upgrade":
+            continue
+        win = step.win or "11"
+        arch = step.arch or "x64"
+        key = f"{win}:{arch}"
+        if key in cached:
+            continue
+        log(f"Prefetch ISO for chain step [{step.label}] ({win}/{arch})...", "STEP")
+        if win == "10":
+            iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
+        else:
+            iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
+        cached[key] = str(iso)
+        log(f"ISO ready: {iso}", "OK")
+    return cached
+
+
 def run_pipeline(
     sink: Callable[[str], None] | None = None,
     *,
@@ -475,29 +501,63 @@ def run_pipeline(
     resume: bool = False,
 ) -> int:
     """
-    Fully autonomous One-Click: preventives + runtime remediations + quiet setup.
-    Reboots/resumes via RunOnce when needed. Default quiet=True (no Setup UI).
+    ONE-CLICK intelligent full migration:
+
+      1) Diagnose + plan
+      2) Install ALL preventive patches (persistent)
+      3) Flyby11/FlyOOBE compat bypass engine
+      4) Runtime remediations + enrich + SupportGuide
+      5) Prefetch all needed ISOs
+      6) Execute version chain (SRP / MBR / hybrid / mount ISO / Setup)
+      7) Auto-reboot + RunOnce until Done
+
+    Quiet Setup by default. No extra clicks.
     """
     init_logging(sink)
-    log('Engine: pure Python — autonomous intermediate version chain', 'OK')
+    log("=" * 60, "STEP")
+    log("ONE-CLICK INTELLIGENT MIGRATION — full pipeline", "STEP")
+    log("=" * 60, "STEP")
 
     try:
         if not is_admin():
             raise PermissionError('Administrator required for upgrade pipeline')
 
+        # ---- Phase 1: Diagnose ----
+        log(">>> PHASE 1/7 — Auto-diagnose", "STEP")
         r = collect_report()
         print_report(r)
-
+        plan = build_plan(r)
+        print_plan(plan)
         steps = build_version_chain(r)
         if skip_mbr:
             steps = [s for s in steps if s.id != 'mbr2gpt']
         if skip_intermediate:
             steps = [s for s in steps if s.id != 'win10_22h2']
-
-        plan = build_plan(r)
-        print_plan(plan)
         log('=== Intermediate version chain ===', 'STEP')
         log(format_chain(steps), 'OK')
+        try:
+            out = STATE_DIR / 'last-diagnose.json'
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                json.dumps(
+                    {
+                        'report': r.as_dict(),
+                        'plan': plan.as_dict(),
+                        'chain': [s.as_dict() for s in steps],
+                        'chain_path': format_chain(steps),
+                        'mode': 'ONECLICK',
+                    },
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+            log(f'Diagnose saved: {out}', 'OK')
+        except Exception as e:
+            log(f'Diagnose save skip: {e}', 'WARN')
+
+        if plan.target == 'blocked' and plan.blockers:
+            for b in plan.blockers:
+                log(f'Plan note: {b}', 'WARN')
 
         state = load_state()
         saved_index = int(state.get('ChainIndex', 0) or 0) if resume else 0
@@ -506,8 +566,12 @@ def run_pipeline(
             start_index = _next_pending_index(steps, saved_index, r)
         else:
             start_index = _next_pending_index(steps, 0, r)
-
         _persist_chain(steps, start_index)
+
+        # ---- Phase 2+3+4: Preventives + bypass + runtime (inside apply_migration_patches) ----
+        log(">>> PHASE 2/7 — Install preventive patches (persistent)", "STEP")
+        log(">>> PHASE 3/7 — Flyby11/FlyOOBE compat + HwReqChk bypass", "STEP")
+        log(">>> PHASE 4/7 — Runtime remediations / enrich / SRP prep", "STEP")
         has_srp_step = any(s.kind == 'fix_srp' for s in steps)
         try:
             apply_migration_patches(
@@ -515,7 +579,7 @@ def run_pipeline(
                 allow_auto_reboot=not resume,
                 system_disk=getattr(r, 'disk_number', None),
                 resume=resume,
-                skip_srp=has_srp_step,  # chain owns SRP — avoid double shrink
+                skip_srp=has_srp_step,
             )
         except AutonomousRebootRequired as ar:
             write_migration_report(
@@ -523,30 +587,57 @@ def run_pipeline(
                     'Result': 'AUTO_REBOOT',
                     'Reason': ar.reason,
                     'Chain': format_chain(steps),
+                    'Mode': 'ONECLICK',
                 }
             )
-            log('Exiting for autonomous reboot; RunOnce continues the chain.', 'OK')
-            return 3010  # conventional "reboot required" style code
+            log('Exiting for autonomous reboot; RunOnce continues One-Click.', 'OK')
+            return 3010
 
         try:
             from .support import write_support_pack
 
             write_support_pack(
                 extra={
-                    'Mode': 'ONECLICK_AUTONOMOUS',
+                    'Mode': 'ONECLICK_FULL_MIGRATION',
                     'Target': plan.target,
                     'Chain': format_chain(steps),
                     'QuietSetup': quiet,
+                    'Phases': 'diag→preventives→compat→runtime→prefetch→chain→setup',
                 }
             )
         except Exception as e:
             log(f'Support pack: {e}', 'WARN')
+
+        # Already latest: still applied bypasses above; exit cleanly
+        if all(s.kind == 'done' for s in steps) or (
+            plan.target == 'already_done' and start_index >= len(steps)
+        ):
+            log('Already on target OS class — preventives/compat applied. Nothing left to upgrade.', 'OK')
+            save_state({'Phase': 'Done', 'ChainIndex': len(steps)})
+            write_migration_report(
+                extra={'Result': 'ALREADY_DONE', 'Chain': format_chain(steps), 'Mode': 'ONECLICK'}
+            )
+            return 0
+
+        # ---- Phase 5: Prefetch ISOs ----
+        log(">>> PHASE 5/7 — Prefetch / reuse Microsoft ISOs for the whole chain", "STEP")
+        iso_cache: dict[str, str] = {}
+        if not resume:
+            try:
+                iso_cache = _prefetch_chain_isos(steps[start_index:], r, win10_iso, win11_iso)
+            except Exception as e:
+                log(f'ISO prefetch partial ({e}) — will download on demand per step', 'WARN')
+
+        # ---- Phase 6+7: Execute chain ----
+        log(">>> PHASE 6/7 — Execute migration chain (ESP/MBR/hybrid/ISO/Setup)", "STEP")
+        log(">>> PHASE 7/7 — Quiet Setup + RunOnce auto-resume across reboots", "STEP")
 
         total = len(steps)
         i = start_index
         while i < total:
             step = steps[i]
             _persist_chain(steps, i)
+            log(f"--- Chain {i + 1}/{total}: {step.label} ---", "STEP")
 
             remaining_after = steps[i + 1 :]
             needs_resume = step.kind in (
@@ -562,6 +653,17 @@ def run_pipeline(
             if needs_resume or step.kind in ('iso_upgrade', 'mbr2gpt'):
                 _runonce_register()
 
+            # Prefer prefetched ISO paths
+            w10 = win10_iso
+            w11 = win11_iso
+            if step.kind == 'iso_upgrade':
+                key = f"{step.win or '11'}:{step.arch or 'x64'}"
+                if key in iso_cache:
+                    if (step.win or '11') == '10':
+                        w10 = iso_cache[key]
+                    else:
+                        w11 = iso_cache[key]
+
             try:
                 result = _execute_step(
                     step,
@@ -569,8 +671,8 @@ def run_pipeline(
                     total=total,
                     report=r,
                     quiet=quiet,
-                    win10_iso=win10_iso,
-                    win11_iso=win11_iso,
+                    win10_iso=w10,
+                    win11_iso=w11,
                 )
             except AutonomousRebootRequired as ar:
                 write_migration_report(
@@ -580,10 +682,11 @@ def run_pipeline(
                         'Step': step.label,
                         'Chain': format_chain(steps),
                         'ChainIndex': i + 1,
+                        'Mode': 'ONECLICK',
                     }
                 )
                 save_state({'Phase': 'AutoReboot', 'ChainIndex': i + 1, 'Reason': ar.reason})
-                log('Exiting for autonomous reboot; RunOnce continues the chain.', 'OK')
+                log('Exiting for autonomous reboot; RunOnce continues One-Click.', 'OK')
                 return 3010
 
             if step.kind == 'iso_upgrade':
@@ -592,7 +695,7 @@ def run_pipeline(
                     save_state(
                         {
                             'Phase': 'SetupFailed',
-                            'ChainIndex': i,  # do NOT advance — retry same step
+                            'ChainIndex': i,
                             'LastExitCode': code,
                             'LastStep': step.as_dict(),
                         }
@@ -604,6 +707,7 @@ def run_pipeline(
                             'ExitCode': code,
                             'Step': step.label,
                             'Chain': format_chain(steps),
+                            'Mode': 'ONECLICK',
                         }
                     )
                     log(f'Setup failed (exit {code}) — chain index not advanced', 'ERROR')
@@ -618,8 +722,8 @@ def run_pipeline(
                     }
                 )
                 log(
-                    f'Setup launched quietly ({step.label}). '
-                    'After reboot the tool continues the next step automatically (RunOnce).',
+                    f'Setup launched ({step.label}). '
+                    'PC will reboot; One-Click resumes automatically (RunOnce).',
                     'OK',
                 )
                 write_migration_report(
@@ -629,6 +733,7 @@ def run_pipeline(
                         'Step': step.label,
                         'Chain': format_chain(steps),
                         'Autonomous': True,
+                        'Mode': 'ONECLICK',
                     }
                 )
                 return code
@@ -638,20 +743,21 @@ def run_pipeline(
             i = _next_pending_index(steps, i, r)
 
         save_state({'Phase': 'Done', 'ChainIndex': total})
-        log('Version chain completed.', 'OK')
+        log('ONE-CLICK migration chain completed.', 'OK')
         write_migration_report(
             extra={
                 'Result': 'DONE',
                 'Chain': format_chain(steps),
                 'Target': plan.target,
                 'Autonomous': True,
+                'Mode': 'ONECLICK',
             }
         )
         return 0
     except Exception as e:
         log(str(e), 'ERROR')
         try:
-            write_migration_report(extra={'Result': 'FAILED', 'Exception': str(e)})
+            write_migration_report(extra={'Result': 'FAILED', 'Exception': str(e), 'Mode': 'ONECLICK'})
         except Exception:
             pass
         raise

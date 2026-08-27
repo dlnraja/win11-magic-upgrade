@@ -12,22 +12,15 @@ Inspiré de **Flyby11 / FlyOOBE**, runtime **Python pur** (PyInstaller) :
 
 ## Démarrage rapide
 
-1. Télécharger le ZIP **Portable** (ou l’EXE) depuis les [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest).
+1. Télécharger le ZIP **Portable** depuis les [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest).
 2. Lancer en Administrateur : `Win11MagicUpgrade.exe` ou `Win11MagicUpgrade.cmd`.
-3. Bouton **One-Click (autonome)** — sans confirmation (sauf si `MAGIC_CONFIRM=1`).
+3. Cliquer **ONE-CLICK — Migration complete** (c’est tout).
 
 ```text
 Win11MagicUpgrade.exe --cli --oneclick
 ```
 
-## Ce que fait One-Click
-
-1. Élévation admin automatique  
-2. Installation de **tous les patches préventifs** (persistants)  
-3. **Moteur de compatibilité intelligent** (LabConfig, HwReqChk, CompatData…)  
-4. Remédiations runtime (filtres, USB, ESP/SRP, bootmgr…)  
-5. Setup silencieux + chaîne intermédiaire si besoin (ex. 1511 → 22H2 → Win11)  
-6. Reboot auto + reprise **RunOnce**  
+En un clic : diagnostic → preventifs → bypass Flyby11/FlyOOBE → patches → téléchargement/montage ISO → Setup silencieux → reboot/RunOnce jusqu’à Win11.
 
 ## Partition réservée / EFI
 

@@ -19,23 +19,25 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 
 ## Quick start
 
-1. Download **Win11MagicUpgrade-Portable-*.zip** (or the EXE) from [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest).
+1. Download **Win11MagicUpgrade-Portable-*.zip** from [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest).
 2. Run as Administrator: `Win11MagicUpgrade.exe` or `Win11MagicUpgrade.cmd`
-3. Click **One-Click (autonomous)** — no confirmation by default (set `MAGIC_CONFIRM=1` to ask).
+3. Click **ONE-CLICK — Full migration** (that’s it).
 
 ```text
 Win11MagicUpgrade.exe --cli --oneclick
 ```
 
-## What One-Click does (autonomous)
+## What One-Click does (full intelligent migration)
 
-1. Auto-elevate to Administrator  
-2. Install **all preventive patches** (persistent registry / services)  
-3. **Intelligent compatibility engine** — bypass soft HW/app checks + HwReqChk spoof  
-4. Runtime remediations (filters, USB, WU soft reset, ESP/SRP, bootmgr…)  
-5. Quiet Setup (`/quiet`) with `/product server` + `/compat IgnoreWarning`  
-6. Intermediate versions if needed (e.g. 1511 → Win10 22H2 → Win11)  
-7. Auto-reboot + **RunOnce resume** across reboots  
+1. Auto-elevate + **auto-diagnose** + plan  
+2. Install **all preventive patches** (persistent)  
+3. **Flyby11/FlyOOBE** compat bypass (LabConfig / HwReqChk / unattend / setupprep)  
+4. Runtime remediations / enrich / SupportGuide  
+5. **Prefetch all needed Microsoft ISOs** for the chain  
+6. Chain: ESP/SRP → Win10 22H2 (if needed) → MBR→GPT → hybrid → **mount ISO** → quiet Setup  
+7. Auto-reboot + **RunOnce** until finished  
+
+Secondary GUI buttons (Diagnose / Patch / …) are optional only — One-Click already includes them.
 
 ## Features
 
