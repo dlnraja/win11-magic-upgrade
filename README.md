@@ -1,101 +1,89 @@
 # Win11 Magic Upgrade
 
 [![CI](https://github.com/dlnraja/win11-magic-upgrade/actions/workflows/ci.yml/badge.svg)](https://github.com/dlnraja/win11-magic-upgrade/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/dlnraja/win11-magic-upgrade)](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Portable **one-click** upgrader: Windows 10 (including **1511** and other obsolete builds) and older Windows 11 → **Windows 11 latest**, keeping **files and apps**.
+Portable **autonomous one-click** upgrader: Windows 10 (including **1511** and other obsolete builds) and older Windows 11 → **Windows 11 latest**, keeping **files and apps**.
 
 Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller)**:
 
-- **No .NET Framework 4.x** required on the target PC  
-- **No PowerShell** engine (FlyOOBE/.NET failures on 1511 do not apply)  
-- **No FlyOOBE** GUI
+- **No .NET Framework 4.x** on the target PC  
+- **No PowerShell** engine  
+- **No FlyOOBE** GUI  
 
 > **English** · [Français](docs/README.fr.md)
 
+**Docs:** [Architecture](docs/ARCHITECTURE.md) · [Migration bugs & patches](docs/MIGRATION_BUGS.md) · [Latest release](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
+
 ## Quick start
 
-1. Download the latest **Portable** artifact from [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases) or build locally.
-2. Run as Administrator:
-   - `Win11MagicUpgrade.exe` **or**
-   - `Win11MagicUpgrade.cmd`
-3. Confirm → automated pipeline.
+1. Download **Win11MagicUpgrade-Portable-*.zip** (or the EXE) from [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest).
+2. Run as Administrator: `Win11MagicUpgrade.exe` or `Win11MagicUpgrade.cmd`
+3. Click **One-Click (autonomous)** — no confirmation by default (set `MAGIC_CONFIRM=1` to ask).
 
-```powershell
-# From source
-.\Diagnose.cmd
-.\Win11MagicUpgrade.cmd
+```text
+Win11MagicUpgrade.exe --cli --oneclick
 ```
+
+## What One-Click does (autonomous)
+
+1. Auto-elevate to Administrator  
+2. Install **all preventive patches** (persistent registry / services)  
+3. **Intelligent compatibility engine** — bypass soft HW/app checks + HwReqChk spoof  
+4. Runtime remediations (filters, USB, WU soft reset, ESP/SRP, bootmgr…)  
+5. Quiet Setup (`/quiet`) with `/product server` + `/compat IgnoreWarning`  
+6. Intermediate versions if needed (e.g. 1511 → Win10 22H2 → Win11)  
+7. Auto-reboot + **RunOnce resume** across reboots  
 
 ## Features
 
 | Area | Behavior |
 |------|----------|
-| Auto-diag | Builds an action plan (32-bit / MBR / obsolete / no SSE4.2 / unsupported HW) |
-| Bypass | Embedded intelligent registry pack (LabConfig, MoSetup, HwReqChk, PCHC, …) |
+| Auto-diag | Action plan (32-bit / MBR / obsolete / no SSE4.2 / unsupported HW) |
+| Compat engine | LabConfig + MoSetup + HwReqChk spoof + CompatData soften + SetupConfig.ini |
+| Preventives | Durable pack installed on the PC (`--install-patches`) |
 | ISO | Official Microsoft CDN via urllib (Fido-compatible API) |
-| MBR→GPT | `mbr2gpt` without wipe + layout prep + **bcdboot bootmgr repair** |
-| 32-bit | Win11 impossible → max path **Win10 22H2 x86** (keep apps) |
-| No SSE4.2 | Win11 24H2+ won't boot → max path **Win10 22H2 x64** |
-| Obsolete / not-22H2 Win10 | **Always** intermediate **Win10 22H2**, then Win11 (auto-resume) |
-| ESP / System Reserved full | Auto cleanup fonts/OEM + enlarge via new 512 MB boot partition + bcdboot |
-| SafeOS / WIM / WinRE / filters | WIMMount repair, WinRE enable, fltmc + VPN/VeraCrypt/AV detection, SetupConfig.ini cleanup |
-| Boot Manager 32↔64 | Detect ESP PE bitness; repair x64 OS + IA32 bootmgr via bcdboot; **hybrid CSMWrap** for IA32-only UEFI |
-| Migration logs | Panther-style `setupact.log` / `setuperr.log` + Desktop `MigrationReport.txt` |
-| Extra SetupDiag errors | CompatData scan, ProfileList, WU reset, Safe/Audit mode, VHD, CSC, dirty disk, EDR |
-| Patch / Enrich / Support | Dedicated mode: restore point, EspPadding, LP trim, DISM cleanup, SupportGuide.txt |
+| MBR→GPT | `mbr2gpt` without wipe + bcdboot repair |
+| ESP / SRP | Cleanup + enlarge (~512 MB) — idempotent, resume-safe |
+| Boot 32/64 | PE detect; bcdboot repair; **hybrid CSMWrap** for IA32-only UEFI |
+| Stability | Resume-safe `$WINDOWS.~BT`, no reboot loops, timeouts, atomic state |
+| Logs | Panther-style `setupact` / `setuperr` + Desktop `MigrationReport` + `SupportGuide` |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
-## Logs (Windows Migration / Setup style)
-
-Like Windows Setup Panther logs:
-
-| File | Location |
-|------|----------|
-| `setupact.log` | `%LOCALAPPDATA%\Win11MagicUpgrade\Panther\` — all actions |
-| `setuperr.log` | same folder — errors + warnings only |
-| `MigrationReport.txt` | `%LOCALAPPDATA%\Win11MagicUpgrade\` **and Desktop** — summary + harvested Windows setup errors |
-
-Also session transcripts under `...\logs\upgrade-YYYYMMDD-HHMMSS.log`.
-If Windows Setup itself failed, check `C:\$WINDOWS.~BT\Sources\Panther\setuperr.log` (harvested into the report when present).
-
-## Intermediate versions
-
-Any Windows 10 build **below 22H2** automatically steps through **Windows 10 22H2** before Windows 11 (keeps files/apps). Example:
-
-`1511 -> Fix ESP/SRP -> Win10 22H2 -> (MBR to GPT if needed) -> Win11 latest`
-
-After each ISO step, **RunOnce** resumes the next chain step automatically.
-
-CLI extras (admin):
+## CLI (admin)
 
 ```text
-Win11MagicUpgrade.exe --cli --oneclick         # Fully autonomous (quiet Setup + RunOnce)
-Win11MagicUpgrade.exe --cli --install-patches  # Install ALL preventive patches (persistent)
-Win11MagicUpgrade.exe --cli --patch            # Preventives + runtime remediate + SupportGuide (no ISO)
+Win11MagicUpgrade.exe --cli --oneclick         # Fully autonomous
+Win11MagicUpgrade.exe --cli --install-patches  # Persistent preventive pack only
+Win11MagicUpgrade.exe --cli --patch            # Preventives + runtime + SupportGuide
 Win11MagicUpgrade.exe --cli --patch-deep       # + DISM RestoreHealth / SFC
-Win11MagicUpgrade.exe --cli --hybrid           # Stage CSMWrap IA32 hybrid on ESP
-Win11MagicUpgrade.exe --cli --hybrid-activate  # Replace bootia32.efi (stock backed up)
-Win11MagicUpgrade.exe --cli --srp      # Fix System Reserved / EFI only
-Win11MagicUpgrade.exe --cli --mbr      # MBR→GPT + bootmgr only
+Win11MagicUpgrade.exe --cli --srp              # Fix ESP / System Reserved only
+Win11MagicUpgrade.exe --cli --mbr              # MBR→GPT + bootmgr
+Win11MagicUpgrade.exe --cli --hybrid           # Stage CSMWrap IA32 hybrid
 Win11MagicUpgrade.exe --cli --diagnose
 ```
 
-One-Click is **maximally autonomous**: auto-elevate, install preventives, unload risky filters, dismount USB, offline secondary disks, quiet Setup (`/quiet`), auto-reboot when pending/MBR2GPT, resume via RunOnce. Set `MAGIC_CONFIRM=1` only if you want a GUI confirmation.
-
+## Situation → action
 
 | Situation | What the app does |
 |-----------|-------------------|
-| Unsupported TPM/CPU/Secure Boot | **Intelligent compat engine**: LabConfig + MoSetup + HwReqChk spoof + CompatData soften + `/product server` + `/compat IgnoreWarning` |
-| ESP / System Reserved full | Cleanup + enlarge (new 512 MB boot partition) — `--cli --srp` |
-| MBR disk | Auto `mbr2gpt` (no wipe) + `bcdboot` bootmgr repair; remind UEFI firmware |
-| Win10 1511 / obsolete | Intermediate Win10 22H2 then Win11 |
-| 32-bit Windows | **Cannot** install Win11; upgrades to **Win10 22H2 x86** (keep files/apps) |
-| CPU without SSE4.2/POPCNT | **Cannot** boot Win11 24H2+; upgrades to **Win10 22H2 x64** |
-| Already Win11 24H2+ | Re-applies registry pack for future feature updates |
+| Unsupported TPM / CPU / Secure Boot | Compat engine + `/product server` + `/compat IgnoreWarning` |
+| ESP / System Reserved full | Cleanup + enlarge (`--cli --srp`) |
+| MBR disk | Auto `mbr2gpt` (no wipe) + bcdboot |
+| Win10 1511 / obsolete | Intermediate **Win10 22H2** then Win11 (RunOnce) |
+| 32-bit Windows | Max **Win10 22H2 x86** (keep apps) — Win11 needs clean x64 |
+| No SSE4.2 / POPCNT | Max **Win10 22H2 x64** — cannot boot Win11 24H2+ |
 
-Registry keys are embedded in `python/engine/bypass.py` (`REGISTRY_PACK`) — no external `.reg` file required.
+## Logs
 
+| File | Location |
+|------|----------|
+| `setupact.log` / `setuperr.log` | `%LOCALAPPDATA%\Win11MagicUpgrade\Panther\` |
+| `MigrationReport.txt` | same folder **and Desktop** |
+| `SupportGuide.txt` | state folder **and Desktop** |
+| `compat-engine.json` | `%LOCALAPPDATA%\Win11MagicUpgrade\` |
+| `installed-preventive-patches.json` | same |
 
 ## Build
 
@@ -107,8 +95,8 @@ Output: `dist\Win11MagicUpgrade-Portable\`
 
 ## CI/CD
 
-- **CI** (`.github/workflows/ci.yml`): PowerShell parse, Python compile, i18n key parity
-- **Release** (`.github/workflows/release.yml`): build portable package on `v*` tags
+- **CI** (`.github/workflows/ci.yml`): Python compile, i18n parity  
+- **Release** (`.github/workflows/release.yml`): portable package on `v*` tags  
 
 ## License
 
@@ -116,4 +104,4 @@ MIT — see [LICENSE](LICENSE). Vendored Fido remains under its upstream license
 
 ## Disclaimer
 
-Unsupported-hardware installs are not guaranteed by Microsoft. Always back up first. POPCNT/SSE4.2 cannot be bypassed for Windows 11 24H2+.
+Unsupported-hardware installs are not guaranteed by Microsoft. Always back up first. **POPCNT/SSE4.2 cannot be spoofed** for Windows 11 24H2+.

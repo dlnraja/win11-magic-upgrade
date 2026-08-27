@@ -1,24 +1,52 @@
 # Win11 Magic Upgrade (FR)
 
-Programme **portable one-click** pour migrer Windows 10 (y compris **1511**) et Windows 11 anciens vers **Windows 11 latest**, **sans perdre fichiers ni applications**.
+Programme **portable one-click autonome** pour migrer Windows 10 (y compris **1511**) et Windows 11 anciens vers **Windows 11 latest**, **sans perdre fichiers ni applications**.
 
-Inspiré de **Flyby11 / FlyOOBE**, sans dépendance .NET moderne.
+Inspiré de **Flyby11 / FlyOOBE**, runtime **Python pur** (PyInstaller) :
 
-## Démarrage
+- **Pas de .NET Framework 4.x**
+- **Pas de PowerShell**
+- **Pas de FlyOOBE**
 
-1. Télécharger l’artifact **Portable** depuis les Releases, ou builder localement.
-2. Exécuter en Administrateur : `Win11MagicUpgrade.exe` ou `Win11MagicUpgrade.cmd`.
+**Docs :** [Architecture](ARCHITECTURE.md) · [Bugs & patches](MIGRATION_BUGS.md) · [README EN](../README.md) · [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
 
-## Partition reservee / EFI
+## Démarrage rapide
 
-Erreur **Impossible de mettre a jour la partition reservee au systeme** : le programme nettoie l’ESP / System Reserved (polices, dumps OEM) et, si besoin, agrandit via une nouvelle partition boot ~512 Mo (shrink de C: + `bcdboot`), sans effacer les donnees. Bouton **Corriger ESP/SRP** ou `--cli --srp`.
+1. Télécharger le ZIP **Portable** (ou l’EXE) depuis les [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest).
+2. Lancer en Administrateur : `Win11MagicUpgrade.exe` ou `Win11MagicUpgrade.cmd`.
+3. Bouton **One-Click (autonome)** — sans confirmation (sauf si `MAGIC_CONFIRM=1`).
 
-## Documentation
+```text
+Win11MagicUpgrade.exe --cli --oneclick
+```
 
-- [Architecture](ARCHITECTURE.md)
-- [Bugs de migration & patches](MIGRATION_BUGS.md)
-- [README principal (EN)](../README.md)
+## Ce que fait One-Click
+
+1. Élévation admin automatique  
+2. Installation de **tous les patches préventifs** (persistants)  
+3. **Moteur de compatibilité intelligent** (LabConfig, HwReqChk, CompatData…)  
+4. Remédiations runtime (filtres, USB, ESP/SRP, bootmgr…)  
+5. Setup silencieux + chaîne intermédiaire si besoin (ex. 1511 → 22H2 → Win11)  
+6. Reboot auto + reprise **RunOnce**  
+
+## Partition réservée / EFI
+
+Erreur **Impossible de mettre à jour la partition réservée au système** : nettoyage ESP / System Reserved, puis agrandissement (~512 Mo) si besoin, **idempotent** (pas de double shrink). Bouton **Corriger ESP/SRP** ou `--cli --srp`.
+
+## CLI utiles
+
+```text
+--cli --oneclick           # Autonomie max
+--cli --install-patches    # Pack préventif seul
+--cli --patch              # Préventifs + runtime + SupportGuide
+--cli --srp / --mbr / --diagnose / --hybrid
+```
+
+## Limites honnêtes
+
+- Sans **SSE4.2 / POPCNT** → max **Win10 22H2** (Win11 24H2+ ne démarre pas).  
+- Windows **32-bit** → max **Win10 22H2 x86** (Win11 = install propre x64).  
 
 ## Licence
 
-MIT — voir `LICENSE`. Fido : voir `NOTICE`.
+MIT — voir `LICENSE`. Fido : voir `NOTICE`. Toujours faire une sauvegarde avant.

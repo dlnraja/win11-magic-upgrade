@@ -4,34 +4,53 @@
 Win11MagicUpgrade.exe / .cmd
         │
         ▼
-python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x
+python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerShell
         │
         └── python/engine/         Pure Python pipeline (stdlib + Win32)
               ├── detect.py        winreg + ctypes + diskpart/wmic
-              ├── bypass.py        winreg LabConfig / MoSetup / HwReqChk
-              ├── patches.py       AV/filters/caches / mapped drives
+              ├── compat.py        Intelligent HW/app compatibility engine
+              ├── bypass.py        LabConfig / MoSetup / HwReqChk entrypoint
+              ├── preventive.py    Durable preventive pack install
+              ├── patches.py       Runtime remediations + AutonomousReboot
+              ├── autonomy.py      Auto filters / USB / disks / reboot+RunOnce
+              ├── errfix.py       SetupDiag-class extra fixes
+              ├── enrich.py        Forum enrichments + DISM heal
+              ├── support.py       SupportGuide.txt checklist
               ├── sysreserved.py   ESP / System Reserved cleanup + enlarge
+              ├── bootmgr.py       PE bitness + bcdboot / hybrid handoff
+              ├── hybrid_uefi.py   CSMWrap IA32 → SeaBIOS → BIOS bootmgr
               ├── mbrgpt.py        mbr2gpt.exe + diskpart
               ├── iso.py           Microsoft CDN API (Fido-compatible, urllib)
               ├── virtdisk.py      Mount ISO via virtdisk.dll
               ├── chain.py         Intermediate version plan across reboots
-              └── pipeline.py      Orchestration + setup.exe /product server
-
-Legacy PowerShell under src/ is optional/reference only — not required at runtime.
+              ├── logutil.py       Panther logs + MigrationReport + state.json
+              └── pipeline.py      Orchestration + quiet setup + resume
 ```
+
+Legacy PowerShell under `src/` is reference only — **not** used at runtime.
 
 ## Upgrade decision tree
 
-1. Fix System Reserved / EFI (cleanup fonts/OEM; enlarge via new 512 MB boot partition if needed).
-2. If CPU lacks SSE4.2/POPCNT → **max Win10 22H2** (24H2+ will not boot).
-3. If Win10 build &lt; 19045 → download Win10 22H2 ISO → inplace → RunOnce resume.
-4. If system disk is MBR and `mbr2gpt` exists → convert (no wipe) → remind UEFI firmware.
-5. Apply registry bypasses + migration patches.
-6. Download Win11 latest ISO (Fido) → `setupprep.exe` / `setup.exe` **`/product server`** `/auto upgrade`.
+1. Preventive pack + intelligent compat engine (LabConfig / HwReqChk / CompatData).  
+2. Fix System Reserved / EFI (cleanup; enlarge ~512 MB if needed — idempotent).  
+3. If CPU lacks SSE4.2/POPCNT → **max Win10 22H2** (24H2+ will not boot).  
+4. If Win10 build &lt; 19045 → Win10 22H2 ISO → inplace → RunOnce resume.  
+5. If system disk is MBR and `mbr2gpt` exists → convert (no wipe) → reboot resume.  
+6. Boot Manager / hybrid IA32 path when firmware bitness requires it.  
+7. Win11 latest ISO → `setupprep` / `setup` with **`/product server`** + `/compat IgnoreWarning` + `/quiet`.  
+
 ## Why `/product server`
 
 Documented community / Flyby11 approach: Server setup path skips client TPM/Secure Boot/CPU allow-list checks while still installing client Windows 11 from a client ISO.
 
 ## State / resume
 
-`%LOCALAPPDATA%\Win11MagicUpgrade\state.json` + `HKLM\...\RunOnce\Win11MagicUpgrade` after intermediate upgrades.
+| Item | Path |
+|------|------|
+| State | `%LOCALAPPDATA%\Win11MagicUpgrade\state.json` |
+| RunOnce | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce\Win11MagicUpgrade` |
+| Compat inventory | `...\compat-engine.json` |
+| Preventive inventory | `...\installed-preventive-patches.json` |
+| Panther logs | `...\Panther\setupact.log` / `setuperr.log` |
+
+Resume is **safe**: live `$WINDOWS.~BT` is not deleted mid-Setup; failed Setup does not advance the chain index.
