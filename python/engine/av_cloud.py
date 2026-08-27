@@ -89,8 +89,11 @@ def load_api_keys() -> dict[str, str]:
                         keys[k.strip().lower()] = v.strip()
         except Exception as e:
             log(f"av_keys.json read: {e}", "WARN")
-    vt = os.environ.get("MAGIC_VT_API_KEY", "").strip()
-    kp = os.environ.get("MAGIC_KASPERSKY_OPENTIP_KEY", "").strip()
+    vt = os.environ.get("MAGIC_VT_API_KEY", "").strip() or os.environ.get("VIRUSTOTAL_API_KEY", "").strip()
+    kp = (
+        os.environ.get("MAGIC_KASPERSKY_OPENTIP_KEY", "").strip()
+        or os.environ.get("KASPERSKY_OPENTIP_KEY", "").strip()
+    )
     if vt:
         keys["virustotal"] = vt
     if kp:
@@ -448,8 +451,9 @@ def _maybe_open_browser(url: str) -> None:
 
 def declare_virustotal_and_kaspersky(path: Path | None = None) -> dict[str, str]:
     """
-    Autonomous cloud FP declarations for VirusTotal + Kaspersky.
-    Safe to call on every One-Click; skips duplicate SHA256 submissions.
+    Cloud FP declarations for VirusTotal + Kaspersky.
+    Intended for CI/CD Release (build/ci_declare_av.ps1), not One-Click.
+    Skips duplicate SHA256 submissions.
     """
     ensure_keys_template()
     path = path or target_binary()

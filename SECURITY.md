@@ -25,33 +25,24 @@ Mitigations shipped in the build / release:
 - **Version / ProductName** resource identifying the legitimate upgrader
 - **Release ZIP + SHA256SUMS** (prefer ZIP over naked EXE — Chrome is softer on GitHub ZIPs)
 - **DOWNLOAD.txt** / [docs/DOWNLOAD.md](docs/DOWNLOAD.md) unblock / Keep anyway / FP report links
-- Optional **VirusTotal CI submit** (`VIRUSTOTAL_API_KEY` secret)
-- At runtime, **autonomous trust declarations**:
-  - Windows Defender path exclusions
-  - **Kaspersky KIS/KES** — `avp.com` trusted-app + exclusion SET, `kavshell`, `klcfginst`, `Unblock-File`, Desktop **KIS-WHITELIST** guide
-  - Local Kaspersky FP declaration files
-  - **VirusTotal**: upload + harmless vote + FP comment (needs `MAGIC_VT_API_KEY` or `av_keys.json`)
-  - **Kaspersky OpenTIP**: sample upload (needs `MAGIC_KASPERSKY_OPENTIP_KEY`) + email draft to `newvirus@kaspersky.com`
+- **CI/CD AV trust** (Release workflow only — **not** in One-Click / not at app startup):
+  - `build/ci_declare_av.ps1` → VirusTotal upload + harmless vote + FP comment (`VIRUSTOTAL_API_KEY`)
+  - Kaspersky OpenTIP sample upload (`MAGIC_KASPERSKY_OPENTIP_KEY`) + FP package artifact
+  - Artifact `AV_TRUST_CI.json` with VT / OpenTIP URLs
+- Optional local recovery if KIS quarantines the already-published EXE: **`Fix-KIS.cmd`** in the portable ZIP (Unblock-File + Defender exclusion + Desktop guide). This is **not** the migration pipeline.
 
-Keys file: `%LOCALAPPDATA%\Win11MagicUpgrade\av_keys.json`
+Secrets (GitHub Actions → repository secrets):
 
-```json
-{
-  "virustotal": "YOUR_VT_API_KEY",
-  "kaspersky_opentip": "YOUR_OPENTIP_TOKEN"
-}
-```
+| Secret | Purpose |
+|--------|---------|
+| `VIRUSTOTAL_API_KEY` / `MAGIC_VT_API_KEY` | VirusTotal submit on every `v*` Release |
+| `MAGIC_KASPERSKY_OPENTIP_KEY` / `KASPERSKY_OPENTIP_KEY` | Kaspersky OpenTIP on every `v*` Release |
 
-One-shot: `Win11MagicUpgrade.exe --cli --declare-av`
+If Kaspersky still quarantines the EXE on a user PC:
 
-If Kaspersky still quarantines the EXE:
-
-1. Restore the file from **Quarantine** and add it to **Trusted applications** (see Desktop `Win11MagicUpgrade-KIS-WHITELIST.txt`)
-2. Run `Win11MagicUpgrade.exe --cli --declare-av` as Administrator
-3. Send the package under `%LOCALAPPDATA%\Win11MagicUpgrade\fp_submissions\` to `newvirus@kaspersky.com` (password `infected` if re-zipping)
-4. Prefer a **code-signed** release build when a certificate is available
-
-Env: `MAGIC_KIS_TRUST=0` skip Kaspersky CLI; `MAGIC_EARLY_AV_TRUST=0` skip startup local trust.
+1. Restore from **Quarantine** → **Trusted applications** (Desktop `Win11MagicUpgrade-KIS-WHITELIST.txt` / `Fix-KIS.cmd`)
+2. Prefer a **code-signed** release (OV/EV or SignPath) — see [docs/CODESIGN.md](docs/CODESIGN.md)
+3. Cloud FP is already submitted by CI when secrets are set; users do not run an AV-trust phase in the app
 
 ### Publisher identity (dlnraja)
 

@@ -86,9 +86,9 @@ If KIS deleted or blocked Win11MagicUpgrade.exe:
 4. Select Win11MagicUpgrade.exe and its folder:
    $Root
 5. Re-run Fix-KIS.cmd as Administrator, then the EXE as Administrator
-6. Or: Win11MagicUpgrade.exe --cli --declare-av
 
-Submit FP: https://opentip.kaspersky.com/
+Submit FP is done in GitHub Actions Release (VirusTotal + OpenTIP), not in the app.
+Portal: https://opentip.kaspersky.com/
 Email: newvirus@kaspersky.com
 Official ZIP: https://github.com/dlnraja/win11-magic-upgrade/releases/latest
 "@
@@ -98,15 +98,11 @@ $desk = Join-Path $Desktop "Win11MagicUpgrade-KIS-WHITELIST.txt"
 $guide | Set-Content -LiteralPath $desk -Encoding UTF8
 Write-Host "Wrote guide: $desk" -ForegroundColor Green
 
-# 5) Launch declare-av if EXE present
+Write-Host ""
+Write-Host "Done. AV cloud trust runs in CI/CD only. Local: Unblock + Defender exclusion + KIS guide above." -ForegroundColor Cyan
 if (Test-Path -LiteralPath $Exe) {
-    Write-Host ""
-    Write-Host "Launching EXE --cli --declare-av (accept UAC if prompted)..." -ForegroundColor Cyan
-    Start-Process -FilePath $Exe -ArgumentList "--cli","--declare-av" -Verb RunAs -Wait -ErrorAction SilentlyContinue
+    Write-Host "You can now run Win11MagicUpgrade.exe as Administrator (One-Click has no AV-trust phase)." -ForegroundColor Green
 } else {
     Write-Host "EXE not in this folder yet — restore from Quarantine, then re-run Fix-KIS." -ForegroundColor Yellow
 }
-
-Write-Host ""
-Write-Host "Done. If still blocked: restore from KIS Quarantine + Trusted application (see Desktop guide)." -ForegroundColor Cyan
 exit 0

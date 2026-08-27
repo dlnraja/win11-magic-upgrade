@@ -218,17 +218,6 @@ class App(tk.Tk):
             pady=8,
             command=lambda: self.start("install-patches"),
         ).pack(side="left", padx=(8, 0))
-        tk.Button(
-            btns,
-            text=self.t.get("btn_declare_av", "Fix AV / KIS"),
-            font=("Segoe UI", 10),
-            bg="#7c2d12",
-            fg="#e2e8f0",
-            relief="flat",
-            padx=12,
-            pady=8,
-            command=lambda: self.start("declare-av"),
-        ).pack(side="left", padx=(8, 0))
 
         tk.Label(
             self,
@@ -546,13 +535,6 @@ class App(tk.Tk):
                 elif action == "install-patches":
                     install_preventive_only(sink)
                     code = 0
-                elif action == "declare-av":
-                    from engine.av_trust import declare_all_av_trust  # type: ignore
-
-                    declare_all_av_trust()
-                    sink("AV / Kaspersky KIS trust declarations finished (best-effort).\n")
-                    sink("If KIS still blocks: restore from Quarantine + Trusted apps (see Desktop KIS-WHITELIST).\n")
-                    code = 0
                 else:
                     code = run_pipeline(sink, quiet=True)
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
@@ -578,17 +560,6 @@ class App(tk.Tk):
                     body = _format_user_error(self.t, kind, detail)
                     self.after(0, self.append, body + "\n")
                     self.after(0, lambda b=body: messagebox.showerror(title, b))
-                elif code == 0 and action == "declare-av":
-                    self.after(
-                        0,
-                        lambda: messagebox.showinfo(
-                            title,
-                            self.t.get(
-                                "done_av",
-                                "AV / Kaspersky trust done.\nSee Desktop KIS-WHITELIST if still blocked.",
-                            ),
-                        ),
-                    )
                 elif code == 0:
                     self.after(
                         0,
@@ -782,21 +753,6 @@ def main() -> None:
     auto_action = _parse_auto_action(argv)
     strings = load_strings(root)
 
-    # Early local AV trust when running as packaged EXE (KIS Trojan.PDF FP mitigation)
-    if (
-        getattr(sys, "frozen", False)
-        and os.environ.get("MAGIC_EARLY_AV_TRUST", "1").strip().lower() not in ("0", "false", "no")
-        and "--declare-av" not in argv_l
-    ):
-        try:
-            from engine.av_trust import declare_local_av_trust  # type: ignore
-            from engine.logutil import init_logging  # type: ignore
-
-            init_logging()
-            declare_local_av_trust()
-        except Exception:
-            pass
-
     cli = any(
         a in argv_l
         for a in (
@@ -813,7 +769,6 @@ def main() -> None:
             "--patch",
             "--patch-deep",
             "--install-patches",
-            "--declare-av",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -833,17 +788,6 @@ def main() -> None:
 
             if "--diagnose" in argv_l:
                 run_diagnose()
-                return
-            if "--declare-av" in argv_l:
-                from engine.av_trust import declare_all_av_trust
-                from engine.logutil import init_logging
-
-                init_logging()
-                if not is_admin():
-                    if relaunch_as_admin(argv):
-                        raise SystemExit(0)
-                    print("WARN: continuing cloud declare without admin", flush=True)
-                declare_all_av_trust()
                 return
             if not is_admin():
                 if relaunch_as_admin(argv):

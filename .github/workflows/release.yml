@@ -188,15 +188,20 @@ jobs:
             -RequireTrusted
           if (Test-Path .\dist\PUBLISHER.txt) { Get-Content .\dist\PUBLISHER.txt }
 
-      - name: Submit to VirusTotal (optional reputation)
+      - name: Declare AV trust (VirusTotal + Kaspersky OpenTIP)
         shell: powershell
         env:
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           MAGIC_VT_API_KEY: ${{ secrets.MAGIC_VT_API_KEY }}
+          MAGIC_KASPERSKY_OPENTIP_KEY: ${{ secrets.MAGIC_KASPERSKY_OPENTIP_KEY }}
+          KASPERSKY_OPENTIP_KEY: ${{ secrets.KASPERSKY_OPENTIP_KEY }}
+          MAGIC_AV_OPEN_BROWSER: "0"
+          MAGIC_AV_OPEN_MAIL: "0"
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\submit_virustotal.ps1 `
+          # Cloud FP declarations belong in CI/CD — never in the desktop app / One-Click.
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\build\ci_declare_av.ps1 `
             -ExePath .\dist\Win11MagicUpgrade.exe `
-            -VoteHarmless
+            -OutDir .\dist\fp_ci
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -210,6 +215,7 @@ jobs:
             dist/PUBLISHER.txt
             dist/PUBLISHER.json
             dist/RELEASE-ASSETS.json
+            dist/AV_TRUST_CI.json
           if-no-files-found: error
           retention-days: 14
 
@@ -235,12 +241,12 @@ jobs:
 
             If Chrome says "virus detected": see [docs/DOWNLOAD.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/DOWNLOAD.md) - Keep anyway / Unblock-File / report FP to Google.
 
-            ## Publisher
+            ## Publisher / AV trust (CI only)
 
             Authenticode: **dlnraja** (Release workflow).
-            SmartScreen: real OV/EV `.pfx` secrets `CODESIGN_PFX_BASE64` + `CODESIGN_PASSWORD`, or free SignPath OSS (GitHub-linked) — see [docs/CODESIGN.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN.md).
-            Upload PFX with your GitHub login: `build/upload_codesign_github.ps1`.
-            Optional VirusTotal submit: secret `VIRUSTOTAL_API_KEY`.
+            SmartScreen: OV/EV `.pfx` or SignPath — [docs/CODESIGN.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN.md).
+            **Antivirus trust** (VirusTotal + Kaspersky OpenTIP) runs in this Release job — **not** inside One-Click.
+            Secrets: `VIRUSTOTAL_API_KEY`, `MAGIC_KASPERSKY_OPENTIP_KEY`.
 
             Not malware - open source MIT. See SECURITY.md.
         env:

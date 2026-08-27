@@ -12,7 +12,6 @@ from .autodiag import build_plan, print_plan
 from .bypass import apply_hardware_bypass, setup_bypass_args
 from .chain import ChainStep, build_version_chain, format_chain
 from .detect import collect_report, is_admin, print_report
-from .av_trust import declare_all_av_trust
 from .errors import EXIT_BLOCKED, EXIT_FAILED, UpgradeBlockedError, remember_failure
 from .iso import get_iso
 from .logutil import STATE_DIR, init_logging, load_state, log, save_state, write_migration_report, get_log_paths
@@ -657,17 +656,8 @@ def run_pipeline(
         if not is_admin():
             raise PermissionError('Administrator required for upgrade pipeline')
 
-        # ---- Phase 0: AV trust (Kaspersky / Defender false-positive declarations) ----
-        set_phase("av", "Declaring app as safe (Defender + Kaspersky)…")
-        set_step(percent=10, detail="AV trust declarations…", indeterminate=True)
-        log(">>> PHASE 0/7 — Antivirus trust declarations", "STEP")
-        try:
-            declare_all_av_trust()
-            set_step(percent=100, detail="AV trust done", indeterminate=False)
-        except Exception as e:
-            log(f"AV trust skipped: {e}", "WARN")
-
         # ---- Phase 1: Diagnose ----
+        # AV / Kaspersky cloud trust runs in CI/CD Release only (not in One-Click).
         set_phase("diag", "Collecting system report…")
         set_step(percent=15, detail="Hardware / disk / boot mode…", indeterminate=True)
         log(">>> PHASE 1/7 — Auto-diagnose", "STEP")

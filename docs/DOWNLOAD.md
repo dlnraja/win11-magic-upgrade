@@ -64,17 +64,15 @@ Get-FileHash .\Win11MagicUpgrade-Portable-vX.Y.Z.zip -Algorithm SHA256
 
 ## Antivirus quarantine
 
-See [SECURITY.md](../SECURITY.md) — Defender exclusions, **Kaspersky KIS** trusted-app bypass, VirusTotal / OpenTIP (`--cli --declare-av`).
+See [SECURITY.md](../SECURITY.md). **Cloud AV trust (VirusTotal / Kaspersky OpenTIP) runs in GitHub Actions Release only** — not inside One-Click.
 
 ### Kaspersky Internet Security (KIS) — Trojan.PDF / HEUR
 
-If KIS quarantines `Win11MagicUpgrade.exe`:
+If KIS quarantines `Win11MagicUpgrade.exe` on a PC:
 
 1. **Prefer the Release ZIP** (not the naked EXE) — see above.
-2. Extract, then run **`Fix-KIS.cmd` as Administrator** (works even if the EXE is blocked).
-3. On first run the app writes **`Win11MagicUpgrade-KIS-WHITELIST.txt`** on your Desktop with step-by-step KIS GUI steps.
-4. **Restore from Quarantine** → add as **Trusted application** (Settings → Threats and Exclusions).
-5. In the GUI: **Fix AV / KIS**, or one-shot: `Win11MagicUpgrade.exe --cli --declare-av`
-6. Disable early auto-trust if needed: `MAGIC_EARLY_AV_TRUST=0` or `MAGIC_KIS_TRUST=0`
+2. Extract, then run **`Fix-KIS.cmd` as Administrator** (Unblock + Defender exclusion + Desktop guide).
+3. **Restore from Quarantine** → add as **Trusted application** (Settings → Threats and Exclusions).
+4. Re-run the EXE as Administrator (migration One-Click has **no** AV-trust phase).
 
-The app auto-attempts `avp.com ADD`, trusted-zone SET, and `Unblock-File` when KIS is installed (admin helps).
+The Release workflow submits samples to VirusTotal / OpenTIP when CI secrets are configured.
