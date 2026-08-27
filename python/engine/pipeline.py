@@ -188,10 +188,11 @@ def _execute_step(
         from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
 
         force = scan_logs_for_srp_error()
-        res = inspect_and_fix_system_reserved(force_expand=force)
+        disk = getattr(report, "disk_number", None)
+        res = inspect_and_fix_system_reserved(force_expand=force, system_disk=disk)
         if isinstance(res, dict) and not res.get("ok", True):
             # Retry once with forced expand
-            res = inspect_and_fix_system_reserved(force_expand=True)
+            res = inspect_and_fix_system_reserved(force_expand=True, system_disk=disk)
             if isinstance(res, dict) and not res.get("ok", True):
                 raise RuntimeError("ESP/SRP fix failed — cannot continue autonomous upgrade")
         return None
@@ -219,6 +220,8 @@ def _execute_step(
         if report.partition_style != "MBR":
             repair_boot_manager(prefer_uefi=True)
             return None
+        if getattr(report, "disk_number", -1) is None or int(report.disk_number) < 0:
+            raise RuntimeError("MBR→GPT refused: system disk # unknown (safety)")
         ok, code, msg = convert_mbr_to_gpt(report.disk_number)
         if not ok:
             raise RuntimeError(f"MBR→GPT failed ({msg}) — stop autonomous chain")
@@ -355,6 +358,8 @@ def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
             log(f'Disk already {r.partition_style} - repairing boot manager only', 'OK')
             repair_boot_manager(prefer_uefi=(r.partition_style == 'GPT' or r.is_uefi))
         else:
+            if r.disk_number is None or int(r.disk_number) < 0:
+                raise RuntimeError('MBR2GPT refused: system disk # unknown (safety)')
             ok, code, msg = convert_mbr_to_gpt(r.disk_number)
             if not ok:
                 raise RuntimeError(f'MBR2GPT failed: {msg} ({code})')
@@ -373,7 +378,14 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
 
     try:
         force = scan_logs_for_srp_error()
-        result = inspect_and_fix_system_reserved(force_expand=force)
+        from .detect import collect_report
+
+        disk = None
+        try:
+            disk = collect_report().disk_number
+        except Exception:
+            pass
+        result = inspect_and_fix_system_reserved(force_expand=force, system_disk=disk)
         if not result.get('ok'):
             raise RuntimeError('System Reserved / EFI fix did not complete successfully')
         write_migration_report(
@@ -382,6 +394,7 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
                 'mode': result.get('mode'),
                 'free_mb': result.get('free_mb'),
                 'expanded': result.get('expanded'),
+                'system_disk': result.get('system_disk'),
             }
         )
     except Exception as e:

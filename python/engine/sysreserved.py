@@ -18,6 +18,17 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .diskpart_safe import (
+    assign_letter_to_volume,
+    find_esp_candidates,
+    find_system_reserved_candidates,
+    find_volume_by_letter,
+    free_letter as _dp_free_letter,
+    get_system_disk_number,
+    remove_letter_from_volume,
+    run_diskpart,
+    shrink_volume_letter,
+)
 from .logutil import STATE_DIR, log
 
 # 24H2 needs ~20MB+ free; we target comfortable margin
@@ -49,15 +60,13 @@ def _run(cmd: list[str], input_text: str | None = None, timeout: int = 300) -> t
 
 
 def _diskpart(script: str) -> str:
-    _, out = _run(["diskpart"], input_text=script)
+    """Legacy wrapper — prefer diskpart_safe helpers for mutate ops."""
+    _, out = run_diskpart(script)
     return out
 
 
 def _free_letter() -> str | None:
-    for L in LETTER_CANDIDATES:
-        if not Path(f"{L}:\\").exists():
-            return L
-    return None
+    return _dp_free_letter(tuple(LETTER_CANDIDATES))
 
 
 def _mb(path: str | Path) -> tuple[float, float]:
@@ -96,35 +105,27 @@ def mount_esp(letter: str | None = None) -> str | None:
 
 
 def find_system_reserved_letter() -> str | None:
-    """Find MBR System Reserved / boot NTFS small partition and assign a letter."""
-    out = _diskpart("list volume\nexit\n")
-    # Look for small NTFS System / Reserved volumes without letter
-    for line in out.splitlines():
-        if not re.search(r"System|Reserved|Boot", line, re.I):
-            continue
-        if not re.search(r"NTFS|FAT", line, re.I):
-            continue
-        m = re.search(r"Volume\s+(\d+)\s+([A-Z])?\s+", line)
-        # diskpart list volume format varies: Volume ###  Ltr  Label  Fs  Type  Size
-        m2 = re.search(r"Volume\s+(\d+)", line, re.I)
-        if not m2:
-            continue
-        vol = m2.group(1)
-        # Size check: typically 50-550 MB
-        sm = re.search(r"(\d+)\s*MB", line, re.I)
-        if sm and int(sm.group(1)) > 2000:
-            continue
-        # Already has letter?
-        lm = re.search(r"Volume\s+\d+\s+([A-Z])\s+", line)
-        if lm:
-            return f"{lm.group(1)}:"
+    """Find MBR System Reserved / boot partition and assign a letter (EN+FR diskpart)."""
+    cands = find_system_reserved_candidates()
+    if not cands:
+        log("No System Reserved candidate in list volume (EN/FR)", "WARN")
+        return None
+    # Prefer already-lettered, then smallest
+    cands.sort(key=lambda v: (0 if v.letter else 1, v.size_mb or 9999, v.index))
+    for v in cands:
+        if v.letter:
+            root = f"{v.letter}:"
+            if Path(root + "\\").exists():
+                log(f"System Reserved already at {root}", "OK")
+                return root
         letter = _free_letter()
         if not letter:
+            log("No free letter for System Reserved", "ERROR")
             return None
-        _diskpart(f"select volume {vol}\nassign letter={letter}\nexit\n")
-        if Path(f"{letter}:\\").exists():
-            log(f"System Reserved assigned {letter}:", "OK")
+        if assign_letter_to_volume(v.index, letter):
+            log(f"System Reserved volume {v.index} assigned {letter}:", "OK")
             return f"{letter}:"
+        log(f"Could not assign letter to volume {v.index}", "WARN")
     return None
 
 
@@ -237,55 +238,86 @@ def cleanup_boot_volume(root: str) -> dict:
 
 
 def unmount_letter(letter_root: str) -> None:
-    L = letter_root.rstrip("\\").rstrip(":")
-    _run(["mountvol", f"{L}:", "/d"])
-    # Only remove letter via diskpart if volume looks like EFI/System
-    detail = _diskpart(f"select volume {L}\ndetail volume\nexit\n")
-    if re.search(r"\b(EFI|System|Reserved|ESP)\b", detail or "", re.I) or "FAT32" in (detail or "").upper():
-        _diskpart(f"select volume {L}\nremove letter={L}\nexit\n")
+    """
+    Safely hide a temporary ESP/SRP letter.
+    Order matters: resolve volume WHILE letter exists, remove via volume index,
+    then mountvol /d. Never `select volume L` after the letter is already gone
+    (causes FR: Aucun volume n'a été sélectionné).
+    """
+    L = letter_root.rstrip("\\").rstrip(":").upper()[:1]
+    if not L:
+        return
+
+    vol = find_volume_by_letter(L)
+    if vol is not None:
+        # Only strip letter from clear system/EFI/boot volumes
+        raw = vol.raw
+        is_sys = bool(
+            re.search(
+                r"EFI|ESP|System|Syst[eè]me|Reserved|R[eé]serv|Hidden|Cach[eé]|Boot|FAT32",
+                raw,
+                re.I,
+            )
+        )
+        if is_sys or (vol.fs or "").upper() in ("FAT32", "FAT"):
+            if remove_letter_from_volume(vol.index, L):
+                log(f"Removed letter {L}: from volume {vol.index}", "INFO")
+        else:
+            log(f"Skip diskpart remove letter {L}: (not clearly system/EFI volume)", "INFO")
     else:
-        log(f"Skip diskpart remove letter {L}: (not clearly system/EFI volume)", "INFO")
+        log(f"Letter {L}: already absent from list volume — mountvol cleanup only", "INFO")
+
+    # mountvol /d for mountvol-/s mounts and leftovers (ignore errors)
+    _run(["mountvol", f"{L}:", "/d"])
 
 
-def create_larger_esp(size_mb: int = TARGET_ESP_MB) -> str | None:
+def create_larger_esp(
+    size_mb: int = TARGET_ESP_MB,
+    *,
+    system_disk: int | None = None,
+) -> str | None:
     """
     Shrink C: and create a NEW EFI system partition (GPT) of size_mb.
     Then bcdboot Windows onto it. Does not wipe user data on C:.
-    Returns mounted letter of new ESP or None.
+    Refuses to proceed if system disk cannot be verified (no silent disk 0).
     """
     log(f"Creating new {size_mb} MB EFI System Partition (shrink C:, no data wipe)...", "STEP")
     letter = _free_letter()
     if not letter:
         return None
 
-    # Shrink C — verify success before create
-    shrink = _diskpart(
-        f"select volume C\n"
-        f"shrink desired={size_mb} minimum={max(300, size_mb - 50)}\n"
-        f"exit\n"
-    )
-    log(f"shrink C: {shrink.splitlines()[-1] if shrink else 'n/a'}")
-    if shrink and not re.search(r"successfully|complete|shrunk", shrink, re.I):
-        # diskpart English/localized: still proceed only if no explicit error
-        if re.search(r"error|failed|denied|not enough", shrink, re.I):
-            log(f"C: shrink failed — abort ESP expand: {shrink[-300:]}", "ERROR")
-            return None
+    disk_n = system_disk if system_disk is not None and system_disk >= 0 else get_system_disk_number("C")
+    if disk_n is None:
+        log("Abort ESP expand: system disk # unknown (safety)", "ERROR")
+        return None
 
-    detail = _diskpart("select volume C\ndetail volume\nexit\n")
-    dm = re.search(r"Disk\s+#?\s*(\d+)", detail, re.I)
-    disk_n = dm.group(1) if dm else "0"
+    if not shrink_volume_letter("C", size_mb, max(300, size_mb - 50)):
+        log("C: shrink failed — abort ESP expand", "ERROR")
+        return None
+
+    # Re-verify disk still matches C:
+    verified = get_system_disk_number("C")
+    if verified is not None and verified != disk_n:
+        log(f"Abort ESP expand: disk mismatch C:→{verified} vs expected {disk_n}", "ERROR")
+        return None
+
     script = (
-        f"select disk {disk_n}\n"
-        f"create partition efi size={size_mb}\n"
+        f"select disk {int(disk_n)}\n"
+        f"create partition efi size={int(size_mb)}\n"
         "format fs=fat32 quick label=ESP\n"
         f"assign letter={letter}\n"
+        "detail partition\n"
         "exit\n"
     )
-    create_out = _diskpart(script)
+    ok, create_out = run_diskpart(script)
     log(create_out[-500:] if create_out else "create done")
-    if create_out and re.search(r"error|failed|denied", create_out, re.I):
+    if not ok:
         log(f"EFI create failed: {create_out[-300:]}", "ERROR")
         return None
+    if create_out and re.search(r"error|failed|denied|échec|echec|erreur", create_out, re.I):
+        if not re.search(r"successfully|r[eé]ussi|termin[eé]", create_out, re.I):
+            log(f"EFI create failed: {create_out[-300:]}", "ERROR")
+            return None
 
     root = f"{letter}:"
     if not Path(root + "\\").exists():
@@ -296,7 +328,7 @@ def create_larger_esp(size_mb: int = TARGET_ESP_MB) -> str | None:
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "UEFI"], timeout=180)
     log(f"bcdboot -> {code}: {bout[:300]}")
-    if code != 0 and "successfully" not in bout.lower():
+    if code != 0 and "successfully" not in bout.lower() and "reussi" not in bout.lower().replace("é", "e"):
         code2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
         log(f"bcdboot ALL -> {code2}: {bout2[:300]}")
         if code2 != 0:
@@ -307,40 +339,69 @@ def create_larger_esp(size_mb: int = TARGET_ESP_MB) -> str | None:
     return root
 
 
-def create_larger_system_reserved_mbr(size_mb: int = TARGET_ESP_MB) -> str | None:
+def create_larger_system_reserved_mbr(
+    size_mb: int = TARGET_ESP_MB,
+    *,
+    system_disk: int | None = None,
+) -> str | None:
     """
-    BIOS/MBR: shrink C and create a new primary NTFS active system partition,
+    BIOS/MBR: shrink C and create a new primary NTFS system partition,
     then bcdboot /f BIOS. Old System Reserved left intact as fallback.
+    Does NOT set `active` until bcdboot succeeds (avoids stealing boot flag on failure).
     """
     log(f"Creating new {size_mb} MB System partition (MBR/BIOS path)...", "STEP")
     letter = _free_letter()
     if not letter:
         return None
-    detail = _diskpart("select volume C\ndetail volume\nexit\n")
-    dm = re.search(r"Disk\s+#?\s*(\d+)", detail, re.I)
-    disk_n = dm.group(1) if dm else "0"
 
-    _diskpart(f"select volume C\nshrink desired={size_mb} minimum={max(300, size_mb-50)}\nexit\n")
-    out = _diskpart(
-        f"select disk {disk_n}\n"
-        f"create partition primary size={size_mb}\n"
+    disk_n = system_disk if system_disk is not None and system_disk >= 0 else get_system_disk_number("C")
+    if disk_n is None:
+        log("Abort MBR system expand: system disk # unknown (safety)", "ERROR")
+        return None
+
+    if not shrink_volume_letter("C", size_mb, max(300, size_mb - 50)):
+        log("C: shrink failed — abort MBR system expand", "ERROR")
+        return None
+
+    ok, out = run_diskpart(
+        f"select disk {int(disk_n)}\n"
+        f"create partition primary size={int(size_mb)}\n"
         "format fs=ntfs quick label=System\n"
-        "active\n"
         f"assign letter={letter}\n"
         "exit\n"
     )
-    log(out[-400:])
+    log(out[-400:] if out else "")
+    if not ok:
+        log("MBR system partition create failed", "ERROR")
+        return None
     root = f"{letter}:"
     if not Path(root + "\\").exists():
         return None
+
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "BIOS"])
     log(f"bcdboot BIOS -> {code}: {bout[:300]}")
+    if code != 0 and "successfully" not in bout.lower():
+        log("bcdboot BIOS failed — leaving new partition without active flag (old SRP intact)", "WARN")
+        return root
+
+    # Only mark active after boot files are present
+    ok_act, act_out = run_diskpart(
+        f"select volume {letter}\nactive\nexit\n"
+    )
+    if ok_act:
+        log(f"Marked {letter}: active after successful bcdboot", "OK")
+    else:
+        log(f"Could not mark active (non-fatal): {act_out[-160:]}", "WARN")
     return root
 
 
-def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
+def inspect_and_fix_system_reserved(
+    force_expand: bool = False,
+    *,
+    system_disk: int | None = None,
+) -> dict:
     """
     Main entry: fix SRP/ESP space issues for Windows feature upgrades.
     Idempotent: skips re-expand if a prior successful expand is recorded.
@@ -355,7 +416,15 @@ def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
         "total_mb": None,
         "expanded": False,
         "actions": [],
+        "system_disk": system_disk,
     }
+
+    # Resolve / confirm system disk early
+    disk_n = system_disk if system_disk is not None and int(system_disk) >= 0 else get_system_disk_number()
+    result["system_disk"] = disk_n
+    if disk_n is None:
+        log("System disk # unresolved — cleanup-only mode (no expand)", "WARN")
+        result["actions"].append("disk_unknown_no_expand")
 
     # Idempotency: do not shrink C: repeatedly
     prior_path = STATE_DIR / "srp-fix.json"
@@ -377,10 +446,23 @@ def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
         if uefi:
             result["mode"] = "EFI"
             mounted = mount_esp()
+            if not mounted:
+                # Fallback: diskpart FAT32 ESP candidate
+                for v in find_esp_candidates():
+                    letter = v.letter or _free_letter()
+                    if not letter:
+                        break
+                    if v.letter:
+                        mounted = f"{v.letter}:"
+                        break
+                    if assign_letter_to_volume(v.index, letter):
+                        mounted = f"{letter}:"
+                        log(f"ESP via diskpart volume {v.index} → {letter}:", "OK")
+                        break
         else:
             result["mode"] = "SystemReserved"
             mounted = find_system_reserved_letter()
-            if not mounted and _is_uefi() is False:
+            if not mounted:
                 mounted = mount_esp()
                 if mounted:
                     result["mode"] = "EFI"
@@ -395,35 +477,38 @@ def inspect_and_fix_system_reserved(force_expand: bool = False) -> dict:
         result["total_mb"] = info["total_mb"]
         result["actions"].extend(info["actions"])
 
-        # Stale Panther logs alone must not force expand if space is already OK
         space_tight = info["free_mb"] < MIN_FREE_MB or info["total_mb"] < MIN_SIZE_MB_COMFORTABLE
         need_expand = space_tight or (force_expand and not prior_expanded and space_tight)
-        # Only honor force_expand when space is actually tight OR no prior expand
         if force_expand and not prior_expanded and not space_tight:
             log("Historical SRP error in logs but ESP space OK after cleanup — skip expand", "OK")
             need_expand = False
         if prior_expanded and not space_tight:
             need_expand = False
+        if need_expand and disk_n is None:
+            log("Need expand but system disk unknown — refuse (safety)", "ERROR")
+            need_expand = False
+            result["actions"].append("expand_refused_unknown_disk")
+            result["ok"] = False
 
         if need_expand:
             log(
                 f"Partition still tight (free={info['free_mb']:.1f} MB, size={info['total_mb']:.1f} MB) "
-                f"- expanding via new larger boot partition...",
+                f"- expanding via new larger boot partition on disk #{disk_n}...",
                 "WARN",
             )
             unmount_letter(mounted)
             mounted = None
 
             if result["mode"] == "EFI" or uefi:
-                new_root = create_larger_esp(TARGET_ESP_MB)
+                new_root = create_larger_esp(TARGET_ESP_MB, system_disk=disk_n)
                 if not new_root:
                     log("EFI create failed - trying primary system partition fallback", "WARN")
-                    new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB)
+                    new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
             else:
-                new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB)
+                new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
                 if not new_root:
                     log("MBR system create failed - trying EFI create fallback", "WARN")
-                    new_root = create_larger_esp(TARGET_ESP_MB)
+                    new_root = create_larger_esp(TARGET_ESP_MB, system_disk=disk_n)
 
             if new_root:
                 result["expanded"] = True

@@ -6,7 +6,19 @@ import re
 import subprocess
 from pathlib import Path
 
+from .diskpart_safe import (
+    assign_letter_to_volume,
+    ensure_select_disk,
+    find_esp_candidates,
+    find_volume_by_letter,
+    free_letter,
+    get_system_disk_number,
+    remove_letter_from_volume,
+    run_diskpart,
+    shrink_volume_letter,
+)
 from .logutil import STATE_DIR, log
+from .sysreserved import mount_esp, unmount_letter
 
 CODES = {
     0: "Success",
@@ -37,25 +49,6 @@ def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
         return 1, str(e)
 
 
-def _diskpart(script: str) -> str:
-    try:
-        r = subprocess.run(
-            ["diskpart"],
-            input=script,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return "TIMEOUT"
-    except Exception as e:
-        return str(e)
-
-
 def suspend_bitlocker() -> None:
     manage = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "manage-bde.exe"
     if not manage.exists():
@@ -70,10 +63,15 @@ def suspend_bitlocker() -> None:
 def prepare_layout_for_mbr2gpt(disk_number: int) -> None:
     """Non-destructive layout prep: shrink OS ~350MB, disable WinRE if needed."""
     log("Preparing partition layout for MBR2GPT (no wipe)...", "STEP")
-    letter = os.environ.get("SystemDrive", "C:")[:1]
-    out = _diskpart(f"select disk {disk_number}\nlist partition\nexit\n")
-    # Count primary-like partitions
-    parts = len(re.findall(r"Partition\s+\d+", out, re.I))
+    letter = os.environ.get("SystemDrive", "C:")[:1].upper()
+
+    ok, out = ensure_select_disk(int(disk_number))
+    if not ok:
+        log(f"Cannot select disk {disk_number} for mbr2gpt prep — abort shrink", "ERROR")
+        return
+    # Count partitions on that disk
+    ok_lp, lp = run_diskpart(f"select disk {int(disk_number)}\nlist partition\nexit\n")
+    parts = len(re.findall(r"Partition\s+\d+", lp or "", re.I)) if ok_lp or lp else 0
     if parts >= 4:
         log(f"Disk shows ~{parts} partitions - disabling WinRE to free a slot", "WARN")
         reagentc = Path(os.environ["SystemRoot"]) / "System32" / "reagentc.exe"
@@ -81,15 +79,25 @@ def prepare_layout_for_mbr2gpt(disk_number: int) -> None:
             code, o = _run([str(reagentc), "/disable"])
             log(f"reagentc /disable -> {code}: {o[:200]}")
 
-    # Shrink for EFI (~260-350 MB)
-    shrink = _diskpart(f"select volume {letter}\nshrink desired=350 minimum=260\nexit\n")
-    log(f"shrink: {shrink.splitlines()[-1] if shrink else 'n/a'}")
+    # Verify OS volume is on the target disk before shrink
+    sys_disk = get_system_disk_number(letter)
+    if sys_disk is not None and int(sys_disk) != int(disk_number):
+        log(
+            f"Refuse shrink: SystemDrive {letter}: is disk #{sys_disk}, not #{disk_number}",
+            "ERROR",
+        )
+        return
+
+    if not shrink_volume_letter(letter, 350, 260):
+        log(f"shrink {letter}: failed or unverified (mbr2gpt may still proceed)", "WARN")
+    else:
+        log(f"shrink {letter}: OK for EFI space", "OK")
 
 
 def repair_boot_manager(prefer_uefi: bool = True) -> bool:
     """
     Rebuild Windows Boot Manager / BCD without formatting.
-    After MBR2GPT: prefer UEFI; also try ALL if UEFI-only fails.
+    Prefer mountvol /s (safe), else diskpart ESP assign with verified volume index.
     """
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
@@ -99,23 +107,30 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
 
     log("Repairing Windows Boot Manager (bcdboot, no format)...", "STEP")
 
-    # Try to find EFI system partition and assign a temporary letter
-    esp_letter = None
-    detail = _diskpart("list volume\nexit\n")
-    # Look for FAT32 System / Hidden EFI volumes
-    for line in detail.splitlines():
-        if re.search(r"FAT32|System", line, re.I) and re.search(r"Hidden|System|EFI", line, re.I):
-            m = re.search(r"Volume\s+(\d+)", line, re.I)
-            if m:
-                vol = m.group(1)
-                # Pick a free letter S: or T:
-                for letter in ("S", "T", "R", "Q"):
-                    if not Path(f"{letter}:\\").exists():
-                        _diskpart(f"select volume {vol}\nassign letter={letter}\nexit\n")
-                        if Path(f"{letter}:\\").exists():
-                            esp_letter = letter
-                            log(f"ESP temporarily assigned {letter}:", "OK")
-                        break
+    esp_letter: str | None = None
+    esp_vol_index: int | None = None
+    used_mountvol = False
+
+    # 1) Preferred: mountvol /s
+    mounted = mount_esp()
+    if mounted:
+        esp_letter = mounted.rstrip(":\\")[:1]
+        used_mountvol = True
+        log(f"ESP via mountvol /s → {esp_letter}:", "OK")
+    else:
+        # 2) diskpart FAT32/ESP candidates (EN+FR)
+        for v in find_esp_candidates():
+            if v.letter:
+                esp_letter = v.letter
+                esp_vol_index = v.index
+                break
+            letter = free_letter(("S", "T", "R", "Q", "Y", "X"))
+            if not letter:
+                break
+            if assign_letter_to_volume(v.index, letter):
+                esp_letter = letter
+                esp_vol_index = v.index
+                log(f"ESP temporarily assigned {letter}: (vol {v.index})", "OK")
                 break
 
     modes = ["UEFI", "ALL"] if prefer_uefi else ["ALL", "UEFI", "BIOS"]
@@ -124,12 +139,9 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
         if esp_letter:
             cmd = [str(bcdboot), sys_root, "/s", f"{esp_letter}:", "/f", mode]
         else:
-            # Without explicit ESP, let bcdboot choose (works post-mbr2gpt often)
             cmd = [str(bcdboot), sys_root, "/f", mode]
-            if mode != "UEFI":
-                # /f without /s is invalid for some modes - skip ALL without /s
-                if mode == "ALL":
-                    continue
+            if mode == "ALL":
+                continue
         code, out = _run(cmd)
         log(f"bcdboot {' '.join(cmd[1:])} -> {code}")
         for line in out.splitlines()[:8]:
@@ -139,12 +151,21 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
             log(f"Boot Manager repaired ({mode})", "OK")
             break
 
-    # Remove temporary ESP letter (hide again)
+    # Remove temporary letter safely
     if esp_letter:
-        _diskpart(f"select volume {esp_letter}\nremove letter={esp_letter}\nexit\n")
-        log(f"Removed temporary letter {esp_letter}:", "INFO")
+        if used_mountvol:
+            unmount_letter(f"{esp_letter}:")
+        elif esp_vol_index is not None:
+            remove_letter_from_volume(esp_vol_index, esp_letter)
+            log(f"Removed temporary letter {esp_letter}: (vol {esp_vol_index})", "INFO")
+        else:
+            # Resolve by letter then remove
+            v = find_volume_by_letter(esp_letter)
+            if v:
+                remove_letter_from_volume(v.index, esp_letter)
+            else:
+                unmount_letter(f"{esp_letter}:")
 
-    # Verify BCD has a Windows Boot Manager entry
     code, out = _run(["bcdedit", "/enum", "{bootmgr}"])
     if out:
         log("bcdedit {bootmgr}: " + out.splitlines()[0][:120])
@@ -152,9 +173,19 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
 
 
 def convert_mbr_to_gpt(disk_number: int) -> tuple[bool, int, str]:
+    if disk_number is None or int(disk_number) < 0:
+        return False, -1, "system disk # unknown — refuse mbr2gpt (safety)"
+
     mbr2gpt = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "mbr2gpt.exe"
     if not mbr2gpt.exists():
         return False, -1, "mbr2gpt.exe missing (need Win10 1703+)"
+
+    # Cross-check disk hosts SystemDrive
+    sys_disk = get_system_disk_number()
+    if sys_disk is not None and int(sys_disk) != int(disk_number):
+        msg = f"disk mismatch: SystemDrive on #{sys_disk}, requested #{disk_number}"
+        log(msg, "ERROR")
+        return False, -1, msg
 
     suspend_bitlocker()
     log_dir = STATE_DIR / "mbr2gpt-logs"
