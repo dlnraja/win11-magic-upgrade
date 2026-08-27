@@ -257,7 +257,7 @@ def collect_report() -> Report:
         is_win11=is_win11,
         is_win10=is_win10,
         architecture=arch,
-        needs_intermediate=is_win10 and build < 17763,
+        needs_intermediate=is_win10 and build < 19045,
         mbr2gpt_available=build >= 15063,
         ram_gb=_ram_gb(),
         free_gb=_free_gb(),

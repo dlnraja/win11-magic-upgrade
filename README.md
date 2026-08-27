@@ -37,10 +37,18 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 | MBR→GPT | `mbr2gpt` without wipe + layout prep + **bcdboot bootmgr repair** |
 | 32-bit | Win11 impossible → max path **Win10 22H2 x86** (keep apps) |
 | No SSE4.2 | Win11 24H2+ won't boot → max path **Win10 22H2 x64** |
-| Obsolete Win10 | Intermediate **22H2**, then Win11 (RunOnce resume) |
+| Obsolete / not-22H2 Win10 | **Always** intermediate **Win10 22H2**, then Win11 (auto-resume) |
+| Multi-step chain | Explicit chain e.g. `1511 -> 22H2 -> MBR/GPT -> Win11` across reboots |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
-## Max compatibility matrix
+## Intermediate versions
+
+Any Windows 10 build **below 22H2** automatically steps through **Windows 10 22H2** before Windows 11 (keeps files/apps). Example:
+
+`1511 -> Win10 22H2 -> (MBR to GPT if needed) -> Win11 latest`
+
+After each ISO step, **RunOnce** resumes the next chain step automatically.
+
 
 | Situation | What the app does |
 |-----------|-------------------|

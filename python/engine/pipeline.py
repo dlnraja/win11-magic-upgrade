@@ -1,8 +1,7 @@
-"""Full upgrade pipeline with intelligent auto-diagnosis - max compatibility."""
+"""Full upgrade pipeline: intermediate version chain across reboots."""
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,9 +9,10 @@ from typing import Callable
 
 from .autodiag import build_plan, print_plan
 from .bypass import apply_hardware_bypass, setup_bypass_args
+from .chain import ChainStep, build_version_chain, format_chain
 from .detect import collect_report, is_admin, print_report
 from .iso import get_iso
-from .logutil import STATE_DIR, init_logging, log, save_state
+from .logutil import STATE_DIR, init_logging, load_state, log, save_state
 from .mbrgpt import convert_mbr_to_gpt, repair_boot_manager
 from .patches import apply_migration_patches
 from .virtdisk import mount_iso
@@ -42,7 +42,7 @@ def _runonce_register() -> None:
         check=False,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    log("Registered RunOnce continuation after reboot", "OK")
+    log("RunOnce registered: continue chain after reboot", "OK")
 
 
 def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
@@ -68,7 +68,7 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
         ]
         if quiet:
             args += ["/quiet", "/showoobe", "none"]
-        log(f"Launching inplace upgrade via {exe.name}", "STEP")
+        log(f"Launching intermediate inplace upgrade via {exe.name}", "STEP")
 
     if not exe.exists():
         raise FileNotFoundError(exe)
@@ -76,8 +76,94 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     cmd = [str(exe), *args]
     log(" ".join(cmd), "INFO")
     save_state({"Phase": "SetupRunning", "Cmd": cmd})
-    proc = subprocess.Popen(cmd)
-    return proc.wait()
+    return subprocess.Popen(cmd).wait()
+
+
+def _persist_chain(steps: list[ChainStep], index: int) -> None:
+    save_state(
+        {
+            "Chain": [s.as_dict() for s in steps],
+            "ChainIndex": index,
+            "ChainLabel": format_chain(steps),
+        }
+    )
+
+
+def _next_pending_index(steps: list[ChainStep], start: int, report) -> int:
+    """Skip steps already satisfied after a reboot."""
+    i = start
+    while i < len(steps):
+        s = steps[i]
+        if s.kind == "done":
+            return i
+        if s.id == "win10_22h2" and report.is_win10 and report.build >= 19045:
+            log(f"Skip already done: {s.label}", "OK")
+            i += 1
+            continue
+        if s.id == "win10_22h2" and report.is_win11:
+            log(f"Skip (already past Win10): {s.label}", "OK")
+            i += 1
+            continue
+        if s.id == "mbr2gpt" and report.partition_style == "GPT":
+            log(f"Skip already GPT: {s.label}", "OK")
+            i += 1
+            continue
+        if s.id == "win11_latest" and report.is_win11 and report.build >= 26100:
+            log(f"Skip already Win11 latest-class: {s.label}", "OK")
+            i += 1
+            continue
+        return i
+    return i
+
+
+def _execute_step(
+    step: ChainStep,
+    step_no: int,
+    total: int,
+    report,
+    quiet: bool,
+    win10_iso: str | None,
+    win11_iso: str | None,
+) -> int | None:
+    """
+    Run one chain step.
+    Returns setup exit code if an ISO upgrade was launched (caller should stop),
+    or None if step finished in-process and chain can continue.
+    """
+    log(f"=== Chain step {step_no}/{total}: {step.label} ===", "STEP")
+    if step.note:
+        log(step.note, "INFO")
+
+    if step.kind == "done":
+        log(step.label, "OK")
+        return None
+
+    if step.kind == "mbr2gpt":
+        if not report.mbr2gpt_available:
+            log("mbr2gpt not available yet - will retry after Win10 intermediate", "WARN")
+            return None
+        if report.partition_style != "MBR":
+            repair_boot_manager(prefer_uefi=True)
+            return None
+        ok, code, msg = convert_mbr_to_gpt(report.disk_number)
+        if not ok:
+            log(f"MBR conversion failed ({msg}) - continue chain cautiously", "WARN")
+        else:
+            save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code})
+        return None
+
+    if step.kind == "iso_upgrade":
+        arch = step.arch or "x64"
+        win = step.win or "11"
+        if win == "10":
+            iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
+        else:
+            iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
+        root = mount_iso(iso)
+        # More steps remain after this ISO? Register resume.
+        return _run_setup(root, use_server=bool(step.use_server_product), quiet=quiet)
+
+    return None
 
 
 def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
@@ -86,11 +172,21 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
     print_report(r)
     plan = build_plan(r)
     print_plan(plan)
+    chain = build_version_chain(r)
+    log("=== Intermediate version chain ===", "STEP")
+    log(format_chain(chain), "OK")
+    for i, s in enumerate(chain, 1):
+        log(f"  {i}. [{s.kind}] {s.label}")
     out = STATE_DIR / "last-diagnose.json"
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"report": r.as_dict(), "plan": plan.as_dict()}
+    payload = {
+        "report": r.as_dict(),
+        "plan": plan.as_dict(),
+        "chain": [s.as_dict() for s in chain],
+        "chain_path": format_chain(chain),
+    }
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    log(f"Diagnosis + plan written to {out}", "OK")
+    log(f"Diagnosis + chain written to {out}", "OK")
     return payload
 
 
@@ -126,91 +222,84 @@ def run_pipeline(
     resume: bool = False,
 ) -> int:
     init_logging(sink)
-    log("Engine: pure Python - no .NET 4.x / no PowerShell", "OK")
-    log("Mode: intelligent auto-diagnosis + max compatibility", "OK")
+    log("Engine: pure Python - intermediate version chain enabled", "OK")
 
     if not is_admin():
         raise PermissionError("Administrator required for upgrade pipeline")
 
     r = collect_report()
     print_report(r)
+
+    # Rebuild chain from live system (handles resume after intermediate OS change)
+    steps = build_version_chain(r)
+    if skip_mbr:
+        steps = [s for s in steps if s.id != "mbr2gpt"]
+    if skip_intermediate:
+        steps = [s for s in steps if s.id != "win10_22h2"]
+
     plan = build_plan(r)
     print_plan(plan)
-    save_state({"Phase": "Diagnosed", "Plan": plan.as_dict(), "Report": r.as_dict()})
+    log("=== Intermediate version chain ===", "STEP")
+    log(format_chain(steps), "OK")
 
-    action_ids = {a.id for a in plan.actions}
-
-    if plan.target == "already_done":
-        apply_hardware_bypass()
-        save_state({"Phase": "Done"})
-        return 0
-
-    # Always: patches + registry (unless plan somehow omitted them)
-    if "patches" in action_ids or "space" in action_ids:
-        apply_migration_patches()
-    else:
-        apply_migration_patches()
-    apply_hardware_bypass()
-
+    state = load_state()
+    start_index = int(state.get("ChainIndex", 0) or 0) if resume else 0
     if resume:
-        skip_intermediate = True
+        log(f"Resuming chain after reboot (saved index={start_index})", "STEP")
+        start_index = _next_pending_index(steps, 0, r)  # re-evaluate from live OS
+    else:
+        start_index = _next_pending_index(steps, 0, r)
 
-    # MBR conversion when planned
-    if not skip_mbr and ("mbr2gpt" in action_ids or "bootmgr" in action_ids):
-        if r.partition_style == "MBR" and r.mbr2gpt_available:
-            ok, code, msg = convert_mbr_to_gpt(r.disk_number)
-            if not ok:
-                log(f"MBR conversion failed ({msg}) - continuing if possible", "WARN")
-            else:
-                save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code})
-        elif r.partition_style == "GPT":
-            repair_boot_manager(prefer_uefi=True)
-
-    # 32-bit / no-SSE42 -> Win10 22H2 max path
-    if plan.target == "win10_22h2":
-        arch = "x86" if r.architecture != "x64" else "x64"
-        if r.is_win10 and r.build >= 19045 and not r.needs_intermediate:
-            log("Already on Win10 22H2-class; Win11 not possible on this hardware/arch.", "OK")
-            save_state({"Phase": "MaxReached", "Target": "win10_22h2"})
-            return 0
-        log(f"=== Maximum safe path: Windows 10 22H2 ({arch}) ===", "STEP")
-        iso = Path(win10_iso) if win10_iso else get_iso("10", r.locale, arch=arch)
-        root = mount_iso(iso)
-        save_state({"Phase": "Win10MaxSetup"})
-        return _run_setup(root, use_server=False, quiet=quiet)
-
-    # Intermediate obsolete Win10
-    need_intermediate = (
-        not skip_intermediate
-        and (
-            "intermediate_win10" in action_ids
-            or "intermediate_then_mbr" in action_ids
-            or r.needs_intermediate
-        )
-    )
-    if need_intermediate:
-        log("=== Intermediate Windows 10 22H2 ===", "STEP")
-        iso = Path(win10_iso) if win10_iso else get_iso("10", r.locale, arch="x64")
-        root = mount_iso(iso)
-        _runonce_register()
-        save_state({"Phase": "IntermediateSetup", "AfterReboot": "ContinueToWin11"})
-        return _run_setup(root, use_server=False, quiet=quiet)
-
-    # Refresh after possible changes
-    r = collect_report()
-    if not skip_mbr and r.partition_style == "MBR" and r.mbr2gpt_available:
-        convert_mbr_to_gpt(r.disk_number)
-
-    if not plan.can_win11:
-        log("Plan does not allow Win11 - stopped after max compatible actions.", "WARN")
-        return 0
-
-    log("=== Windows 11 latest (inplace /product server) ===", "STEP")
-    # Re-apply bypasses immediately before setup
+    _persist_chain(steps, start_index)
+    apply_migration_patches()
     apply_hardware_bypass()
-    iso = Path(win11_iso) if win11_iso else get_iso("11", r.locale, arch="x64")
-    root = mount_iso(iso)
-    code = _run_setup(root, use_server=True, quiet=quiet)
-    save_state({"Phase": "Win11SetupLaunched", "SetupExit": code})
-    log("Windows 11 setup launched - keep files and apps.", "OK")
-    return code
+
+    total = len(steps)
+    i = start_index
+    while i < total:
+        step = steps[i]
+        _persist_chain(steps, i)
+
+        # ISO upgrades need RunOnce if more steps follow
+        remaining_after = steps[i + 1 :]
+        needs_resume = step.kind == "iso_upgrade" and any(
+            s.kind in ("iso_upgrade", "mbr2gpt") for s in remaining_after
+        )
+        if needs_resume:
+            _runonce_register()
+
+        result = _execute_step(
+            step,
+            step_no=i + 1,
+            total=total,
+            report=r,
+            quiet=quiet,
+            win10_iso=win10_iso,
+            win11_iso=win11_iso,
+        )
+
+        if step.kind == "iso_upgrade":
+            # Setup launched - OS will reboot; chain continues via RunOnce
+            save_state(
+                {
+                    "Phase": "WaitingReboot",
+                    "ChainIndex": i + 1,
+                    "LastStep": step.as_dict(),
+                }
+            )
+            log(
+                f"Intermediate setup launched ({step.label}). "
+                "After reboot the tool continues the next step automatically.",
+                "OK",
+            )
+            return int(result or 0)
+
+        # In-process step done - refresh report for next decisions
+        i += 1
+        r = collect_report()
+        # Re-sync skip logic if OS changed unexpectedly
+        i = _next_pending_index(steps, i, r)
+
+    save_state({"Phase": "Done", "ChainIndex": total})
+    log("Version chain completed.", "OK")
+    return 0

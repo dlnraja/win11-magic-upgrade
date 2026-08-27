@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .detect import Report, collect_report
+from .chain import build_version_chain, format_chain
 from .logutil import log
 
 
@@ -152,13 +153,13 @@ def build_plan(report: Report | None = None) -> Plan:
             )
         warnings.append("After GPT conversion: set firmware boot mode to UEFI (disable CSM/Legacy).")
 
-    # Obsolete Win10
+    # Obsolete / not-yet-22H2 Win10: always step via 22H2
     if r.needs_intermediate:
         actions.append(
             Action(
                 "intermediate_win10",
                 "Intermediate Windows 10 22H2 upgrade",
-                f"Build {r.build} is too old for reliable direct Win11 setup",
+                f"Build {r.build} must pass by Win10 22H2 before Windows 11",
                 "medium",
             )
         )
@@ -178,9 +179,13 @@ def build_plan(report: Report | None = None) -> Plan:
     if not r.secure_boot:
         warnings.append("Secure Boot off/unavailable - covered by BypassSecureBootCheck.")
 
+    chain = build_version_chain(r)
+    chain_path = format_chain(chain)
+    warnings.append(f"Version chain: {chain_path}")
+
     return Plan(
         target="win11_latest",
-        summary="Path: prep -> registry bypass -> MBR/boot if needed -> (Win10 22H2 if obsolete) -> Win11 latest inplace.",
+        summary=f"Stepped path: {chain_path}",
         can_win11=True,
         actions=actions,
         blockers=blockers,
