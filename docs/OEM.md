@@ -20,11 +20,14 @@ Desktop guide: `Win11MagicUpgrade-OEM-Guide.txt`
 
 ## Encryption
 
-1. **BitLocker On** / **Device Encryption** → `manage-bde -protectors -disable` before mutate  
-2. **BitLocker Locked** → hard block until unlocked  
-3. **Toshiba HDD Password** → unlock in BIOS; tool warns and refuses mutate if the system volume is unreachable  
+| State | Action |
+|-------|--------|
+| **Protection On** (BitLocker / Device Encryption) | Suspend protectors (`manage-bde -protectors -disable`) and **continue** |
+| **Protection Off** (still encrypted) | OK — already safe to mutate |
+| **Locked** | Hard block until unlocked with recovery key |
+| Toshiba **HDD Password** (ATA) | Only if system drive unreachable — unlock in BIOS |
 
-Env: `MAGIC_OEM_ADAPT=0` disables brand profiling (generic path only).
+**Never** treat BitLocker *On* as Locked. Env: `MAGIC_OEM_ADAPT=0` disables brand profiling.
 
 ## OEM Windows license (MSDM / OA3)
 

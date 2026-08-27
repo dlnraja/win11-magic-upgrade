@@ -207,6 +207,11 @@ def classify_oem_family(manufacturer: str, model: str = "", bios: str = "") -> s
 
 
 def _bitlocker_status(drive: str | None = None) -> str:
+    """
+    Return: locked | on | off | unknown
+    IMPORTANT: encrypted volume with Protection Off is "off" (safe to mutate after suspend).
+    Only "locked" must hard-block.
+    """
     drive = drive or os.environ.get("SystemDrive", "C:")
     manage = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "manage-bde.exe"
     if not manage.is_file():
@@ -214,78 +219,51 @@ def _bitlocker_status(drive: str | None = None) -> str:
     code, out = _run([str(manage), "-status", drive], timeout=60)
     if code != 0:
         return "unknown"
+    # Locked is the only hard-fail state
     if re.search(r"Lock Status:\s*Locked", out, re.I):
         return "locked"
-    if re.search(r"Protection\s*(Status)?\s*:\s*On|Protection On", out, re.I):
+    # Protection On => need -protectors -disable (non-destructive)
+    if re.search(r"Protection\s*Status\s*:\s*On|Protection On", out, re.I):
         return "on"
-    if re.search(r"Protection\s*(Status)?\s*:\s*Off|Fully Decrypted|No Key Protectors", out, re.I):
+    # Protection Off / Fully Decrypted / no protectors => OK to proceed
+    if re.search(
+        r"Protection\s*Status\s*:\s*Off|Protection Off|Fully Decrypted|No Key Protectors",
+        out,
+        re.I,
+    ):
         return "off"
     return "unknown"
 
 
 def _device_encryption_on() -> bool:
-    """Windows Device Encryption (often OEM BitLocker without visible UI)."""
+    """
+    True only when Device Encryption / BitLocker protectors are actively On.
+    FullyEncrypted + Protection Off (after suspend) must return False — safe to mutate.
+    """
     script = r"""
 $ErrorActionPreference = 'SilentlyContinue'
-try {
-  $v = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker' -Name 'PreventDeviceEncryption' -EA SilentlyContinue
-} catch {}
-$bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -EA SilentlyContinue
 $de = $false
-if ($bl -and $bl.VolumeStatus -ne 'FullyDecrypted' -and $bl.ProtectionStatus -ne 'Off') { $de = $true }
-# DeviceEncryption registry (Modern Standby / OEM)
-$reg = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLockerStatus' -EA SilentlyContinue
-if ($reg -and $reg.DeviceEncryptionStatus -eq 1) { $de = $true }
+$bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -EA SilentlyContinue
+if ($bl) {
+  # ProtectionStatus: On=1 Off=0
+  if ([string]$bl.ProtectionStatus -match 'On' -or [int]$bl.ProtectionStatus -eq 1) { $de = $true }
+}
 Write-Output ($(if ($de) {'1'} else {'0'}))
 """
     code, out = _ps(script, timeout=45)
-    return code == 0 and "1" in (out or "")
+    return code == 0 and (out or "").strip().endswith("1")
 
 
 def _probe_toshiba_hdd_encryption() -> tuple[bool, bool, list[str]]:
     """
-    Heuristics for Toshiba / Dynabook full-disk encryption:
-      - ATA Security / HDD Password (BIOS) — cannot suspend via manage-bde
-      - OPAL / eDrive SED
+    Heuristics for Toshiba / Dynabook ATA HDD Password vs BitLocker.
+    Software under HKLM\\SOFTWARE\\Toshiba is NOT proof of HDD password.
     Returns (hdd_password_likely, sed_likely, notes).
     """
     notes: list[str] = []
     hdd_pw = False
     sed = False
-    script = r"""
-$ErrorActionPreference = 'SilentlyContinue'
-$disk = Get-Disk | Where-Object { $_.IsSystem -or $_.BusType -in @('SATA','RAID','NVMe','SCSI') } |
-  Sort-Object -Property IsSystem -Descending | Select-Object -First 3
-foreach ($d in $disk) {
-  $props = [ordered]@{
-    Number = $d.Number
-    Bus = [string]$d.BusType
-    Model = [string]$d.FriendlyName
-    Health = [string]$d.HealthStatus
-    PartitionStyle = [string]$d.PartitionStyle
-  }
-  # eDrive / Hardware Encryption bit if present on BitLocker volume
-  $bl = Get-BitLockerVolume -MountPoint ($env:SystemDrive) -EA SilentlyContinue
-  if ($bl) {
-    $props.EncryptionMethod = [string]$bl.EncryptionMethod
-    $props.VolumeStatus = [string]$bl.VolumeStatus
-    $props.KeyProtector = (@($bl.KeyProtector | ForEach-Object { $_.KeyProtectorType }) -join ',')
-  }
-  [PSCustomObject]$props
-}
-Get-CimInstance -Namespace root\microsoft\windows\storage -ClassName MSFT_Disk -EA SilentlyContinue |
-  Select-Object -First 1 Number, Model, BusType, IsSystem | ConvertTo-Json -Compress
-"""
-    code, out = _ps(script, timeout=60)
-    blob = (out or "").lower()
-    if "hardware" in blob or "xedtsaes" in blob or "aes_256_h" in blob:
-        sed = True
-        notes.append("bitlocker_hardware_encryption_hint")
-    # Toshiba HDD password: no API when locked at ATA level — disk may be invisible or fail IO
-    if code != 0 and "timeout" in blob:
-        hdd_pw = True
-        notes.append("storage_query_failed_possible_ata_lock")
-    # Registry / Toshiba tools remnants
+    # Registry / Toshiba tools remnants — soft note only
     for path in (
         r"SOFTWARE\Toshiba",
         r"SOFTWARE\Dynabook",
@@ -296,14 +274,29 @@ Get-CimInstance -Namespace root\microsoft\windows\storage -ClassName MSFT_Disk -
 
             winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path)
             notes.append(f"toshiba_software_present:{path.split(chr(92))[-1]}")
-            # Soft signal only — user may still need BIOS HDD Password unlock
-            if not hdd_pw:
-                notes.append("toshiba_hdd_password_check_bios")
-                hdd_pw = True
         except OSError:
             pass
-    # Physical presence of "HDD Password" / "ATA Security" in setup is user-side;
-    # we flag when BitLocker is off but volume still unreadable — handled by caller.
+
+    script = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -EA SilentlyContinue
+if ($bl) {
+  Write-Output ('ENC=' + [string]$bl.EncryptionMethod)
+  Write-Output ('PROT=' + [string]$bl.ProtectionStatus)
+  Write-Output ('VOL=' + [string]$bl.VolumeStatus)
+}
+$d = Get-Disk | Where-Object { $_.IsSystem } | Select-Object -First 1
+if ($d) { Write-Output ('DISK_OK=' + [string]$d.Number) } else { Write-Output 'DISK_OK=none' }
+"""
+    code, out = _ps(script, timeout=45)
+    blob = (out or "").lower()
+    if "hardware" in blob or "xedtsaes" in blob or "aes_256_h" in blob:
+        sed = True
+        notes.append("bitlocker_hardware_encryption_hint")
+    # Real ATA lock signal: cannot see system disk AND SystemRoot missing (checked by caller)
+    if code != 0 or "disk_ok=none" in blob:
+        notes.append("storage_query_weak_check_bios_hdd_password")
+        # Do NOT set hdd_pw=True from weak query alone — BitLocker On machines still see the disk
     return hdd_pw, sed, notes
 
 
@@ -378,7 +371,7 @@ def build_oem_policy(family: str) -> dict[str, Any]:
                 "esp_cleanup_max_file_kb": 256,
                 "guidance": [
                     "Toshiba/Dynabook: if HDD Password (BIOS ATA Security) is set, unlock in BIOS before any partition/boot edit.",
-                    "Device Encryption / BitLocker must be suspended (manage-bde) — locked volumes refuse expand.",
+                    "Device Encryption / BitLocker Protection On: suspend protectors (safe). Only LOCKED volumes refuse expand.",
                     "Prefer NEW ESP after shrink C: rather than moving OEM recovery partitions.",
                     "OEM Windows digital license (MSDM) stays with motherboard — keep disk, do not wipe.",
                 ],
@@ -494,27 +487,50 @@ def detect_oem_profile(*, probe_encryption: bool = True, probe_license: bool = T
             profile.device_encryption = _device_encryption_on()
         except Exception:
             profile.device_encryption = False
-        if family == "toshiba" or "toshiba" in manufacturer.lower() or "dynabook" in manufacturer.lower():
-            hdd, sed, notes = _probe_toshiba_hdd_encryption()
-            profile.toshiba_hdd_password_likely = hdd
-            profile.sed_edrive_likely = sed
-            profile.encryption_notes.extend(notes)
-            if hdd:
-                profile.guidance.append(
-                    "CRITICAL Toshiba: unlock HDD Password in BIOS (Security) before boot/partition changes."
-                )
-                # Soft block only if we cannot see system drive contents
-                sys_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-                if not sys_root.exists():
-                    profile.encryption_blocks_mutate = True
-                    profile.encryption_notes.append("systemroot_unreachable")
-        if profile.bitlocker == "locked":
-            profile.encryption_blocks_mutate = True
-            profile.encryption_notes.append("bitlocker_volume_locked")
+        # Device Encryption with protectors On is the same as BitLocker On — suspend only, never block
+        if profile.device_encryption and profile.bitlocker == "off":
+            # protectors already off — clear false positive
+            profile.device_encryption = False
         if profile.device_encryption and profile.bitlocker in ("on", "unknown"):
             profile.encryption_notes.append("device_encryption_active")
             profile.guidance.append(
-                "Device Encryption detected — protectors will be suspended before mutate (same as BitLocker)."
+                "Device Encryption On — protectors will be suspended (non-destructive). BitLocker On is OK."
+            )
+        if family == "toshiba" or "toshiba" in manufacturer.lower() or "dynabook" in manufacturer.lower():
+            hdd, sed, notes = _probe_toshiba_hdd_encryption()
+            profile.sed_edrive_likely = sed
+            profile.encryption_notes.extend(notes)
+            sys_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            # Real ATA HDD password: Windows cannot see SystemRoot / C: (BitLocker On never does this)
+            if not sys_root.exists() or not Path(os.environ.get("SystemDrive", "C:") + "\\").exists():
+                profile.toshiba_hdd_password_likely = True
+                profile.encryption_blocks_mutate = True
+                profile.encryption_notes.append("system_volume_unreachable_possible_ata")
+                profile.guidance.append(
+                    "CRITICAL: system drive unreachable — unlock Toshiba HDD Password in BIOS, then reboot."
+                )
+            elif hdd:
+                profile.toshiba_hdd_password_likely = True
+                profile.guidance.append(
+                    "If disk edits fail on Toshiba/Dynabook, check BIOS HDD Password (not BitLocker)."
+                )
+            elif any("toshiba_software" in n for n in notes):
+                profile.guidance.append(
+                    "Toshiba tools installed — BitLocker/Device Encryption is suspended normally; "
+                    "HDD Password is separate (BIOS only if disk is invisible)."
+                )
+        # ONLY locked BitLocker hard-blocks (On = suspend and continue)
+        if profile.bitlocker == "locked":
+            profile.encryption_blocks_mutate = True
+            profile.encryption_notes.append("bitlocker_volume_locked")
+            profile.guidance.append(
+                "BitLocker volume is LOCKED — unlock with recovery key first. "
+                "If only Protection On (unlocked Windows), the tool suspends protectors and continues."
+            )
+        elif profile.bitlocker == "on":
+            profile.encryption_notes.append("bitlocker_on_will_suspend")
+            profile.guidance.append(
+                "BitLocker Protection On: protectors will be suspended before partition/boot edits (safe)."
             )
 
     if probe_license:
@@ -619,34 +635,87 @@ def apply_oem_to_partition_plan(plan: dict[str, Any], profile: OemProfile | None
 
 
 def prepare_encryption_for_mutate(profile: OemProfile | None = None) -> dict[str, Any]:
-    """Suspend BitLocker / Device Encryption protectors when safe."""
+    """
+    Suspend BitLocker / Device Encryption protectors when safe.
+
+    Policy (do not break BitLocker-present PCs):
+      - locked            -> hard block
+      - on / device enc   -> manage-bde -protectors -disable, retry once, CONTINUE even if still on
+      - off / unknown     -> no-op / soft suspend attempt if device_encryption hint
+    Never treat "Protection On" as locked.
+    """
     profile = profile or get_oem_profile()
-    out: dict[str, Any] = {"ok": True, "actions": [], "blocked": False}
-    if profile.encryption_blocks_mutate or profile.bitlocker == "locked":
+    out: dict[str, Any] = {"ok": True, "actions": [], "blocked": False, "suspended": False}
+
+    # Hard block ONLY for locked volume or unreachable system drive (ATA)
+    if profile.bitlocker == "locked" or profile.encryption_blocks_mutate:
         out["ok"] = False
         out["blocked"] = True
-        out["actions"].append("blocked_locked_or_ata")
+        out["actions"].append("blocked_locked_only")
         log(
-            "Encryption blocks disk mutate (locked BitLocker or Toshiba HDD password).",
+            "BitLocker LOCKED (or system drive unreachable) — unlock before disk/boot edits. "
+            "BitLocker Protection On is NOT a lock.",
             "ERROR",
         )
         return out
+
     if profile.toshiba_hdd_password_likely:
-        out["actions"].append("toshiba_hdd_password_warning")
+        out["actions"].append("toshiba_hdd_password_soft_warn")
         log(
-            "Toshiba HDD Password may be enabled — unlock in BIOS if disk operations fail.",
+            "Toshiba HDD Password soft warning only — BitLocker On machines continue normally.",
             "WARN",
         )
-    if profile.bitlocker == "on" or profile.device_encryption:
-        manage = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "manage-bde.exe"
-        drive = os.environ.get("SystemDrive", "C:")
-        if manage.is_file():
-            log("Suspending BitLocker/Device Encryption protectors (OEM-aware)...", "STEP")
-            c, _ = _run([str(manage), "-protectors", "-disable", drive], timeout=90)
-            out["actions"].append(f"protectors_disable:{c}")
-            out["ok"] = c == 0 or profile.bitlocker != "on"
-        else:
-            out["actions"].append("manage_bde_missing")
+
+    need_suspend = profile.bitlocker == "on" or profile.device_encryption
+    if not need_suspend:
+        out["actions"].append("bitlocker_no_suspend_needed")
+        return out
+
+    manage = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "manage-bde.exe"
+    drive = os.environ.get("SystemDrive", "C:")
+    if not manage.is_file():
+        out["actions"].append("manage_bde_missing")
+        # Still OK — do not block; diskpart may work with protectors on in some cases
+        log("manage-bde missing — continuing (BitLocker On will not hard-block)", "WARN")
+        return out
+
+    log("Suspending BitLocker protectors (On != Locked; safe, non-destructive)...", "STEP")
+    c1, o1 = _run([str(manage), "-protectors", "-disable", drive], timeout=90)
+    out["actions"].append(f"protectors_disable:{c1}")
+    # Already disabled / no protectors often returns non-zero — re-check status
+    status = _bitlocker_status(drive)
+    out["actions"].append(f"status_after_suspend:{status}")
+    if status == "on":
+        # Retry once
+        c2, _ = _run([str(manage), "-protectors", "-disable", drive], timeout=90)
+        out["actions"].append(f"protectors_disable_retry:{c2}")
+        status = _bitlocker_status(drive)
+        out["actions"].append(f"status_after_retry:{status}")
+
+    if status == "locked":
+        out["ok"] = False
+        out["blocked"] = True
+        out["actions"].append("became_locked")
+        log("Volume became LOCKED during suspend attempt — stop", "ERROR")
+        return out
+
+    if status == "on":
+        # Do NOT block — warn only. Shrink/bcdboot often still works; user can unlock later.
+        out["actions"].append("suspend_incomplete_continue")
+        log(
+            "BitLocker still Protection On after suspend — continuing anyway (not locked). "
+            "If diskpart fails, run: manage-bde -protectors -disable C:",
+            "WARN",
+        )
+        out["ok"] = True
+        out["blocked"] = False
+    else:
+        out["suspended"] = True
+        out["actions"].append("protectors_suspended_ok")
+        log(f"BitLocker protectors suspended (status={status}) — safe to mutate", "OK")
+
+    # Refresh profile bitlocker field for callers
+    profile.bitlocker = status
     return out
 
 

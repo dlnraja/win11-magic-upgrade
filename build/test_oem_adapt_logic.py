@@ -47,8 +47,37 @@ def test_encryption_block() -> None:
     print("encryption block OK")
 
 
+def test_bitlocker_on_does_not_block_plan() -> None:
+    """BitLocker Protection On must NOT flip strategy to blocked_encryption."""
+    plan = {"strategy": "shrink_c_then_create", "reasons": []}
+    profile = OemProfile(
+        family="generic",
+        bitlocker="on",
+        device_encryption=True,
+        encryption_blocks_mutate=False,
+    )
+    out = apply_oem_to_partition_plan(plan, profile)
+    assert out["strategy"] == "shrink_c_then_create", out
+    print("bitlocker on does not block plan OK")
+
+
+def test_prepare_locked_blocks_on_does_not() -> None:
+    from engine.oem_adapt import prepare_encryption_for_mutate
+
+    locked = OemProfile(family="generic", bitlocker="locked", encryption_blocks_mutate=True)
+    r1 = prepare_encryption_for_mutate(locked)
+    assert r1["blocked"] is True
+    # On: may call manage-bde (may fail in CI without BL) but must not set blocked
+    on = OemProfile(family="generic", bitlocker="on", encryption_blocks_mutate=False)
+    r2 = prepare_encryption_for_mutate(on)
+    assert r2["blocked"] is False, r2
+    print("prepare locked vs on OK")
+
+
 if __name__ == "__main__":
     test_classify()
     test_toshiba_policy()
     test_encryption_block()
+    test_bitlocker_on_does_not_block_plan()
+    test_prepare_locked_blocks_on_does_not()
     print("ALL oem_adapt logic checks passed")

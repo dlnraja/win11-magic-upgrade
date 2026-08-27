@@ -95,18 +95,23 @@ def _firmware() -> str:
 
 
 def _bitlocker_status(drive: str) -> str:
+    """locked | on | off | unknown — only locked hard-blocks."""
     manage = Path(os.environ.get("SystemRoot", r"C:\\Windows")) / "System32" / "manage-bde.exe"
     if not manage.exists():
         return "unknown"
     code, out = _run([str(manage), "-status", drive], timeout=60)
     if code != 0:
         return "unknown"
-    if re.search(r"Protection\s*(Status)?\s*:\s*On|Protection On", out, re.I):
-        return "on"
-    if re.search(r"Protection\s*(Status)?\s*:\s*Off|Protection Off|Fully Decrypted", out, re.I):
-        return "off"
     if re.search(r"Lock Status:\s*Locked", out, re.I):
         return "locked"
+    if re.search(r"Protection\s*Status\s*:\s*On|Protection On", out, re.I):
+        return "on"
+    if re.search(
+        r"Protection\s*Status\s*:\s*Off|Protection Off|Fully Decrypted|No Key Protectors",
+        out,
+        re.I,
+    ):
+        return "off"
     return "unknown"
 
 
@@ -956,12 +961,14 @@ def preflight_boot_edit(
     fw = _firmware()
     style = _partition_style(disk)
     bl = _bitlocker_status(drive)
-    # OEM / Device Encryption / Toshiba HDD password awareness
+    # OEM / Device Encryption — BitLocker On is OK (suspend); only LOCKED hard-blocks
     oem_info: dict = {}
+    snap_block_oem = False
+    enc: dict = {"actions": [], "blocked": False}
     try:
         from .oem_adapt import get_oem_profile, prepare_encryption_for_mutate, write_oem_guidance_file
 
-        oem = get_oem_profile()
+        oem = get_oem_profile(refresh=True)
         oem_info = {
             "family": oem.family,
             "manufacturer": oem.manufacturer,
@@ -970,19 +977,21 @@ def preflight_boot_edit(
             "toshiba_hdd_password_likely": oem.toshiba_hdd_password_likely,
             "msdm_present": oem.msdm_present,
             "encryption_blocks": oem.encryption_blocks_mutate,
+            "bitlocker": oem.bitlocker,
         }
         write_oem_guidance_file(oem)
         enc = prepare_encryption_for_mutate(oem)
-        if enc.get("blocked"):
-            snap_block_oem = True
-        else:
-            snap_block_oem = False
-        if oem.device_encryption and bl == "unknown":
-            bl = "on"  # treat Device Encryption like BitLocker On for notes
+        # Prefer manage-bde status; OEM helper may have refreshed oem.bitlocker after suspend
+        if oem.bitlocker in ("on", "off", "locked"):
+            bl = oem.bitlocker
+        # Hard-block ONLY when truly locked / ATA unreachable — never for Protection On
+        snap_block_oem = bool(enc.get("blocked")) and (
+            bl == "locked" or bool(oem.encryption_blocks_mutate)
+        )
     except Exception as e:
         log(f"OEM adapt probe: {e}", "WARN")
         snap_block_oem = False
-        enc = {"actions": []}
+        enc = {"actions": [], "blocked": False}
 
     snap = BootSnapshot(
         utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1002,13 +1011,18 @@ def preflight_boot_edit(
                 snap.notes.append(f"oem_{k}:{v}")
     for a in (enc.get("actions") if isinstance(enc, dict) else []) or []:
         snap.notes.append(str(a))
+    if enc.get("suspended"):
+        snap.notes.append("bitlocker_protectors_suspended")
 
     if require_disk and (disk is None or int(disk) < 0):
         snap.block_reasons.append("system_disk_unknown")
+    # BitLocker On must NEVER appear here — only Locked
     if bl == "locked" or snap_block_oem:
         snap.block_reasons.append("bitlocker_locked")
-        if oem_info.get("toshiba_hdd_password_likely"):
-            snap.block_reasons.append("toshiba_hdd_password")
+        log(
+            "Preflight: BitLocker LOCKED (not merely On) — unlock recovery key first",
+            "ERROR",
+        )
     if snap.c_free_gb is not None and snap.c_free_gb < 2.0 and intend in (
         "esp-expand",
         "mbr2gpt",
@@ -1020,14 +1034,23 @@ def preflight_boot_edit(
     if snap.esp_candidates > 3:
         snap.notes.append("many_esp_like_volumes")
 
-    # Suspend BitLocker protectors when On (non-destructive) — skip if OEM helper already did
-    already = any("protectors_disable" in str(n) for n in snap.notes)
+    # Fallback suspend if OEM helper did not run / BitLocker still On
+    already = any(
+        ("protectors_disable" in str(n)) or (str(n) == "bitlocker_protectors_suspended")
+        for n in snap.notes
+    )
     if bl == "on" and not already:
         manage = Path(os.environ.get("SystemRoot", r"C:\\Windows")) / "System32" / "manage-bde.exe"
         if manage.exists():
-            log("Suspending BitLocker protectors before boot edit...", "STEP")
+            log("Suspending BitLocker protectors before boot edit (On != Locked)...", "STEP")
             _run([str(manage), "-protectors", "-disable", drive])
             snap.notes.append("bitlocker_protectors_suspended")
+            # Re-check — still do not hard-block if remains On
+            bl2 = _bitlocker_status(drive)
+            snap.bitlocker = bl2
+            snap.notes.append(f"bitlocker_after_suspend:{bl2}")
+            if bl2 == "locked":
+                snap.block_reasons.append("bitlocker_locked")
 
     bcd = backup_bcd()
     if bcd:

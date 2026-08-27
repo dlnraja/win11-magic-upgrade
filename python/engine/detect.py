@@ -312,8 +312,10 @@ def print_report(r: Report) -> None:
         )
         if oem.toshiba_hdd_password_likely:
             log("Toshiba/Dynabook: unlock HDD Password in BIOS if disk edits fail.", "WARN")
-        if oem.encryption_blocks_mutate:
-            log("Encryption locked — unlock BitLocker/HDD password before ESP/MBR edits.", "ERROR")
+        if oem.encryption_blocks_mutate or oem.bitlocker == "locked":
+            log("BitLocker LOCKED (or drive unreachable) — unlock first. Protection On is OK.", "ERROR")
+        elif oem.bitlocker == "on":
+            log("BitLocker Protection On — will suspend protectors (safe, not a lock).", "INFO")
     except Exception as e:
         log(f"OEM probe skipped: {e}", "WARN")
     log("Runtime: pure Python (no PowerShell, no .NET Framework 4.x required)", "OK")
