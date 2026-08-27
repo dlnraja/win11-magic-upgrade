@@ -272,14 +272,23 @@ def _execute_step(
             log("mbr2gpt not available yet - will retry after Win10 intermediate", "WARN")
             return None
         if report.partition_style != "MBR":
-            repair_boot_manager(prefer_uefi=True)
+            from .boot_safe import validated_repair_boot_manager
+
+            validated_repair_boot_manager(prefer_uefi=True)
             return None
         if getattr(report, "disk_number", -1) is None or int(report.disk_number) < 0:
             raise RuntimeError("MBR→GPT refused: system disk # unknown (safety)")
-        ok, code, msg = convert_mbr_to_gpt(report.disk_number)
+        from .boot_safe import validated_mbr_to_gpt
+
+        ok, code, msg, meta = validated_mbr_to_gpt(report.disk_number)
         if not ok:
+            if meta.get("fallback"):
+                log(
+                    f"MBR→GPT failed — rescue staged: {meta['fallback'].get('guide')}",
+                    "WARN",
+                )
             raise RuntimeError(f"MBR→GPT failed ({msg}) — stop autonomous chain")
-        save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code})
+        save_state({"NeedsUefiFirmware": True, "Mbr2gptCode": code, "BootMeta": meta.get("postflight")})
         # Register resume + reboot so firmware/GPT settle before next ISO
         from .autonomy import schedule_reboot
 
@@ -410,11 +419,17 @@ def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
         r = collect_report()
         if r.partition_style != 'MBR':
             log(f'Disk already {r.partition_style} - repairing boot manager only', 'OK')
-            repair_boot_manager(prefer_uefi=(r.partition_style == 'GPT' or r.is_uefi))
+            from .boot_safe import validated_repair_boot_manager
+
+            validated_repair_boot_manager(
+                prefer_uefi=(r.partition_style == 'GPT' or r.is_uefi)
+            )
         else:
             if r.disk_number is None or int(r.disk_number) < 0:
                 raise RuntimeError('MBR2GPT refused: system disk # unknown (safety)')
-            ok, code, msg = convert_mbr_to_gpt(r.disk_number)
+            from .boot_safe import validated_mbr_to_gpt
+
+            ok, code, msg, meta = validated_mbr_to_gpt(r.disk_number)
             if not ok:
                 raise RuntimeError(f'MBR2GPT failed: {msg} ({code})')
         write_migration_report(extra={'Result': 'MBR_OK', 'Disk': r.disk_number})

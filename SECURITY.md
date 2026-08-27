@@ -98,3 +98,15 @@ Recommendations (repo settings → Actions / Branches):
 2. Limit Actions to pinned SHAs / verified creators when available
 3. Do not pipe untrusted PR titles/bodies into AI agents without isolation
 4. Keep secrets out of `workflow_dispatch` inputs and fork PR workflows
+
+## MBR / EFI boot edits (sensitive path)
+
+Boot layout changes use `engine/boot_safe.py`:
+
+1. **Preflight** — verify system disk #, firmware, BitLocker, C: free space; export BCD
+2. **Native tiers** — cleanup → `bcdboot` → verified `diskpart` expand (never invent disk 0)
+3. **Postflight** — check ESP boot files + `{bootmgr}`
+4. **Fallback** — stage **GParted Live** ISO + guide (never auto-flash / auto-boot disks)
+   - `%LOCALAPPDATA%\\Win11MagicUpgrade\\rescue\\`
+   - Desktop `Win11MagicUpgrade-GParted-Rescue.txt`
+5. Env: `MAGIC_GPARTED_FALLBACK=0` skip ISO download; `MAGIC_REQUIRE_BCD_BACKUP=1` hard-require BCD export

@@ -18,6 +18,8 @@ SUPPORT_CHECKLIST = [
     ("VPN / AV", "Uninstall or fully quit 3rd-party VPN and antivirus before retry."),
     ("Encryption", "Decrypt VeraCrypt system volume; remove leftover SetupConfig.ini."),
     ("Space", "Keep ~20 GB free on C:; ESP/SRP needs ~50 MB free (tool auto-fixes)."),
+    ("ESP/MBR safety", "Tool backs up BCD before boot edits; refuses unknown disk # / locked BitLocker."),
+    ("GParted rescue", "If native expand fails: see Desktop Win11MagicUpgrade-GParted-Rescue.txt + %LOCALAPPDATA%\\Win11MagicUpgrade\\rescue\\"),
     ("Reboot", "If pending reboot / 0xC1900107: reboot once, then rerun."),
     ("Logs", f"Send support: {SETUPERR} + Desktop Win11MagicUpgrade-MigrationReport.txt"),
 ]
@@ -36,7 +38,8 @@ def write_support_pack(extra: dict[str, Any] | None = None) -> Path:
         "What the app already patched automatically",
         "-" * 40,
         "- Hardware bypass registry (TPM/CPU/SB/RAM/...)",
-        "- ESP / System Reserved cleanup + enlarge",
+        "- ESP / System Reserved cleanup + enlarge (validated preflight/postflight)",
+        "- BCD export backup before MBR/EFI edits; GParted Live rescue if expand fails",
         "- WIMMount / WinRE / BitLocker suspend",
         "- WU cache reset, CompatData scan, ProfileList audit",
         "- Hybrid IA32 CSMWrap staging when needed",

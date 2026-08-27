@@ -451,6 +451,9 @@ def inspect_and_fix_system_reserved(
         "expanded": False,
         "actions": [],
         "system_disk": system_disk,
+        "preflight": None,
+        "postflight": None,
+        "fallback": None,
     }
 
     # Resolve / confirm system disk early
@@ -459,6 +462,31 @@ def inspect_and_fix_system_reserved(
     if disk_n is None:
         log("System disk # unresolved — cleanup-only mode (no expand)", "WARN")
         result["actions"].append("disk_unknown_no_expand")
+
+    # Secure preflight (BCD backup + BitLocker + free space)
+    snap = None
+    _prepare_fallback = None
+    _postflight = None
+    try:
+        from .boot_safe import (
+            prepare_partition_fallbacks,
+            preflight_boot_edit,
+            postflight_boot_edit,
+        )
+
+        _prepare_fallback = prepare_partition_fallbacks
+        _postflight = postflight_boot_edit
+        snap = preflight_boot_edit(
+            intend="esp-or-mbr",
+            system_disk=disk_n,
+            require_disk=False,  # cleanup still allowed without disk#
+        )
+        result["preflight"] = snap.as_dict()
+        if disk_n is None and snap.disk_number is not None:
+            disk_n = snap.disk_number
+            result["system_disk"] = disk_n
+    except Exception as e:
+        log(f"boot preflight skipped: {e}", "WARN")
 
     # Idempotency: do not shrink C: repeatedly
     prior_path = STATE_DIR / "srp-fix.json"
@@ -524,6 +552,19 @@ def inspect_and_fix_system_reserved(
             result["actions"].append("expand_refused_unknown_disk")
             result["ok"] = False
 
+        # Hard-block expand when preflight says unsafe
+        if need_expand and snap is not None and not snap.safe_to_mutate:
+            # Cleanup-only blocks that apply to expand
+            hard = {"system_disk_unknown", "bitlocker_locked", "c_free_lt_2gb", "bcd_backup_required"}
+            if hard.intersection(snap.block_reasons):
+                log(
+                    "Expand refused by secure preflight: " + ",".join(snap.block_reasons),
+                    "ERROR",
+                )
+                need_expand = False
+                result["actions"].append("expand_refused_preflight")
+                result["ok"] = False
+
         if need_expand:
             log(
                 f"Partition still tight (free={info['free_mb']:.1f} MB, size={info['total_mb']:.1f} MB) "
@@ -554,14 +595,37 @@ def inspect_and_fix_system_reserved(
                 log("Larger boot partition created. Reboot once before upgrade if firmware needs refresh.", "OK")
                 result["ok"] = True
             else:
-                log("Expand failed — ESP/SRP still insufficient", "ERROR")
+                log("Expand failed — ESP/SRP still insufficient — staging GParted rescue", "ERROR")
                 result["ok"] = False
                 result["actions"].append("expand_failed")
+                if _prepare_fallback:
+                    try:
+                        result["fallback"] = _prepare_fallback(
+                            reason="diskpart_esp_mbr_expand_failed",
+                            system_disk=disk_n,
+                            mode=str(result.get("mode") or ("EFI" if uefi else "SystemReserved")),
+                        )
+                        result["actions"].append("gparted_rescue_staged")
+                    except Exception as e:
+                        log(f"GParted rescue staging failed: {e}", "WARN")
         else:
             log(f"ESP/SRP has enough free space ({info['free_mb']:.1f} MB) after cleanup", "OK")
             result["ok"] = True
             if prior_expanded:
                 result["expanded"] = True
+
+        # Postflight when we mutated or finished successfully
+        if _postflight and (result.get("expanded") or result.get("ok")):
+            try:
+                result["postflight"] = _postflight(
+                    expect_uefi=(result.get("mode") == "EFI" or uefi),
+                    system_disk=disk_n,
+                )
+                if result.get("expanded") and result["postflight"] and not result["postflight"].get("ok"):
+                    log("Postflight warned after expand — BCD backup kept for rollback", "WARN")
+                    result["actions"].append("postflight_warn")
+            except Exception as e:
+                log(f"boot postflight skipped: {e}", "WARN")
 
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
