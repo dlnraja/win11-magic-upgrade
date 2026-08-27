@@ -41,7 +41,21 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 | ESP / System Reserved full | Auto cleanup fonts/OEM + enlarge via new 512 MB boot partition + bcdboot |
 | SafeOS / WIM / WinRE / filters | WIMMount repair, WinRE enable, fltmc + VPN/VeraCrypt/AV detection, SetupConfig.ini cleanup |
 | Boot Manager 32↔64 | Detect ESP PE bitness; repair x64 OS + IA32 bootmgr via bcdboot; **hybrid CSMWrap** for IA32-only UEFI |
+| Migration logs | Panther-style `setupact.log` / `setuperr.log` + Desktop `MigrationReport.txt` |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
+
+## Logs (Windows Migration / Setup style)
+
+Like Windows Setup Panther logs:
+
+| File | Location |
+|------|----------|
+| `setupact.log` | `%LOCALAPPDATA%\Win11MagicUpgrade\Panther\` — all actions |
+| `setuperr.log` | same folder — errors + warnings only |
+| `MigrationReport.txt` | `%LOCALAPPDATA%\Win11MagicUpgrade\` **and Desktop** — summary + harvested Windows setup errors |
+
+Also session transcripts under `...\logs\upgrade-YYYYMMDD-HHMMSS.log`.
+If Windows Setup itself failed, check `C:\$WINDOWS.~BT\Sources\Panther\setuperr.log` (harvested into the report when present).
 
 ## Intermediate versions
 

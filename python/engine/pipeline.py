@@ -12,7 +12,7 @@ from .bypass import apply_hardware_bypass, setup_bypass_args
 from .chain import ChainStep, build_version_chain, format_chain
 from .detect import collect_report, is_admin, print_report
 from .iso import get_iso
-from .logutil import STATE_DIR, init_logging, load_state, log, save_state
+from .logutil import STATE_DIR, init_logging, load_state, log, save_state, write_migration_report, get_log_paths
 from .mbrgpt import convert_mbr_to_gpt, repair_boot_manager
 from .patches import apply_migration_patches
 from .sysreserved import inspect_and_fix_system_reserved
@@ -194,65 +194,103 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
     plan = build_plan(r)
     print_plan(plan)
     chain = build_version_chain(r)
-    log("=== Intermediate version chain ===", "STEP")
-    log(format_chain(chain), "OK")
+    log('=== Intermediate version chain ===', 'STEP')
+    log(format_chain(chain), 'OK')
     for i, s in enumerate(chain, 1):
-        log(f"  {i}. [{s.kind}] {s.label}")
-    out = STATE_DIR / "last-diagnose.json"
+        log(f'  {i}. [{s.kind}] {s.label}')
+    out = STATE_DIR / 'last-diagnose.json'
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
-        "report": r.as_dict(),
-        "plan": plan.as_dict(),
-        "chain": [s.as_dict() for s in chain],
-        "chain_path": format_chain(chain),
+        'report': r.as_dict(),
+        'plan': plan.as_dict(),
+        'chain': [s.as_dict() for s in chain],
+        'chain_path': format_chain(chain),
+        'logs': get_log_paths(),
     }
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    log(f"Diagnosis + chain written to {out}", "OK")
+    out.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    log(f'Diagnosis + chain written to {out}', 'OK')
+    write_migration_report(
+        title='Win11 Magic Upgrade — Diagnose Report',
+        extra={
+            'Result': 'DIAGNOSE',
+            'Target': plan.target,
+            'Chain': format_chain(chain),
+            'CanWin11': plan.can_win11,
+        },
+    )
     return payload
 
 
 def apply_bypass_only(sink: Callable[[str], None] | None = None) -> None:
     init_logging(sink)
     if not is_admin():
-        raise PermissionError("Administrator required")
+        raise PermissionError('Administrator required')
     apply_hardware_bypass()
+    write_migration_report(extra={'Result': 'BYPASS_ONLY'})
 
 
 def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
     init_logging(sink)
     if not is_admin():
-        raise PermissionError("Administrator required")
-    r = collect_report()
-    if r.partition_style != "MBR":
-        log(f"Disk already {r.partition_style} - repairing boot manager only", "OK")
-        repair_boot_manager(prefer_uefi=(r.partition_style == "GPT" or r.is_uefi))
-        return
-    ok, code, msg = convert_mbr_to_gpt(r.disk_number)
-    if not ok:
-        raise RuntimeError(f"MBR2GPT failed: {msg} ({code})")
+        raise PermissionError('Administrator required')
+    try:
+        r = collect_report()
+        if r.partition_style != 'MBR':
+            log(f'Disk already {r.partition_style} - repairing boot manager only', 'OK')
+            repair_boot_manager(prefer_uefi=(r.partition_style == 'GPT' or r.is_uefi))
+        else:
+            ok, code, msg = convert_mbr_to_gpt(r.disk_number)
+            if not ok:
+                raise RuntimeError(f'MBR2GPT failed: {msg} ({code})')
+        write_migration_report(extra={'Result': 'MBR_OK', 'Disk': r.disk_number})
+    except Exception as e:
+        log(str(e), 'ERROR')
+        write_migration_report(extra={'Result': 'MBR_FAILED', 'Exception': str(e)})
+        raise
 
 
 def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
     init_logging(sink)
     if not is_admin():
-        raise PermissionError("Administrator required")
+        raise PermissionError('Administrator required')
     from .sysreserved import inspect_and_fix_system_reserved, scan_logs_for_srp_error
 
-    force = scan_logs_for_srp_error()
-    result = inspect_and_fix_system_reserved(force_expand=force)
-    if not result.get("ok"):
-        raise RuntimeError("System Reserved / EFI fix did not complete successfully")
+    try:
+        force = scan_logs_for_srp_error()
+        result = inspect_and_fix_system_reserved(force_expand=force)
+        if not result.get('ok'):
+            raise RuntimeError('System Reserved / EFI fix did not complete successfully')
+        write_migration_report(
+            extra={
+                'Result': 'SRP_OK',
+                'mode': result.get('mode'),
+                'free_mb': result.get('free_mb'),
+                'expanded': result.get('expanded'),
+            }
+        )
+    except Exception as e:
+        log(str(e), 'ERROR')
+        write_migration_report(extra={'Result': 'SRP_FAILED', 'Exception': str(e)})
+        raise
 
 
 def deploy_hybrid_only(sink: Callable[[str], None] | None = None, *, activate: bool = False) -> None:
     init_logging(sink)
     if not is_admin():
-        raise PermissionError("Administrator required")
+        raise PermissionError('Administrator required')
     from .hybrid_uefi import apply_hybrid_ia32_path
 
-    res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
-    if not res.get("ok"):
-        raise RuntimeError("Hybrid IA32 UEFI deploy failed")
+    try:
+        res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
+        if not res.get('ok'):
+            raise RuntimeError('Hybrid IA32 UEFI deploy failed')
+        write_migration_report(
+            extra={'Result': 'HYBRID_OK', 'Activated': res.get('activated'), 'Tag': res.get('tag')}
+        )
+    except Exception as e:
+        log(str(e), 'ERROR')
+        write_migration_report(extra={'Result': 'HYBRID_FAILED', 'Exception': str(e)})
+        raise
 
 
 def run_pipeline(
@@ -266,84 +304,100 @@ def run_pipeline(
     resume: bool = False,
 ) -> int:
     init_logging(sink)
-    log("Engine: pure Python - intermediate version chain enabled", "OK")
+    log('Engine: pure Python - intermediate version chain enabled', 'OK')
 
-    if not is_admin():
-        raise PermissionError("Administrator required for upgrade pipeline")
+    try:
+        if not is_admin():
+            raise PermissionError('Administrator required for upgrade pipeline')
 
-    r = collect_report()
-    print_report(r)
-
-    # Rebuild chain from live system (handles resume after intermediate OS change)
-    steps = build_version_chain(r)
-    if skip_mbr:
-        steps = [s for s in steps if s.id != "mbr2gpt"]
-    if skip_intermediate:
-        steps = [s for s in steps if s.id != "win10_22h2"]
-
-    plan = build_plan(r)
-    print_plan(plan)
-    log("=== Intermediate version chain ===", "STEP")
-    log(format_chain(steps), "OK")
-
-    state = load_state()
-    start_index = int(state.get("ChainIndex", 0) or 0) if resume else 0
-    if resume:
-        log(f"Resuming chain after reboot (saved index={start_index})", "STEP")
-        start_index = _next_pending_index(steps, 0, r)  # re-evaluate from live OS
-    else:
-        start_index = _next_pending_index(steps, 0, r)
-
-    _persist_chain(steps, start_index)
-    apply_migration_patches()
-    apply_hardware_bypass()
-
-    total = len(steps)
-    i = start_index
-    while i < total:
-        step = steps[i]
-        _persist_chain(steps, i)
-
-        # ISO upgrades need RunOnce if more steps follow
-        remaining_after = steps[i + 1 :]
-        needs_resume = step.kind == "iso_upgrade" and any(
-            s.kind in ("iso_upgrade", "mbr2gpt", "fix_srp") for s in remaining_after
-        )
-        if needs_resume:
-            _runonce_register()
-
-        result = _execute_step(
-            step,
-            step_no=i + 1,
-            total=total,
-            report=r,
-            quiet=quiet,
-            win10_iso=win10_iso,
-            win11_iso=win11_iso,
-        )
-
-        if step.kind == "iso_upgrade":
-            # Setup launched - OS will reboot; chain continues via RunOnce
-            save_state(
-                {
-                    "Phase": "WaitingReboot",
-                    "ChainIndex": i + 1,
-                    "LastStep": step.as_dict(),
-                }
-            )
-            log(
-                f"Intermediate setup launched ({step.label}). "
-                "After reboot the tool continues the next step automatically.",
-                "OK",
-            )
-            return int(result or 0)
-
-        # In-process step done - refresh report for next decisions
-        i += 1
         r = collect_report()
-        # Re-sync skip logic if OS changed unexpectedly
-        i = _next_pending_index(steps, i, r)
+        print_report(r)
 
-    save_state({"Phase": "Done", "ChainIndex": total})
-    log("Version chain completed.", "OK")
-    return 0
+        steps = build_version_chain(r)
+        if skip_mbr:
+            steps = [s for s in steps if s.id != 'mbr2gpt']
+        if skip_intermediate:
+            steps = [s for s in steps if s.id != 'win10_22h2']
+
+        plan = build_plan(r)
+        print_plan(plan)
+        log('=== Intermediate version chain ===', 'STEP')
+        log(format_chain(steps), 'OK')
+
+        state = load_state()
+        start_index = int(state.get('ChainIndex', 0) or 0) if resume else 0
+        if resume:
+            log(f'Resuming chain after reboot (saved index={start_index})', 'STEP')
+            start_index = _next_pending_index(steps, 0, r)
+        else:
+            start_index = _next_pending_index(steps, 0, r)
+
+        _persist_chain(steps, start_index)
+        apply_migration_patches()
+        apply_hardware_bypass()
+
+        total = len(steps)
+        i = start_index
+        while i < total:
+            step = steps[i]
+            _persist_chain(steps, i)
+
+            remaining_after = steps[i + 1 :]
+            needs_resume = step.kind == 'iso_upgrade' and any(
+                s.kind in ('iso_upgrade', 'mbr2gpt', 'fix_srp', 'hybrid_ia32', 'fix_bootmgr')
+                for s in remaining_after
+            )
+            if needs_resume:
+                _runonce_register()
+
+            result = _execute_step(
+                step,
+                step_no=i + 1,
+                total=total,
+                report=r,
+                quiet=quiet,
+                win10_iso=win10_iso,
+                win11_iso=win11_iso,
+            )
+
+            if step.kind == 'iso_upgrade':
+                save_state(
+                    {
+                        'Phase': 'WaitingReboot',
+                        'ChainIndex': i + 1,
+                        'LastStep': step.as_dict(),
+                    }
+                )
+                log(
+                    f'Intermediate setup launched ({step.label}). '
+                    'After reboot the tool continues the next step automatically.',
+                    'OK',
+                )
+                code = int(result or 0)
+                write_migration_report(
+                    extra={
+                        'Result': 'SETUP_LAUNCHED',
+                        'ExitCode': code,
+                        'Step': step.label,
+                        'Chain': format_chain(steps),
+                    }
+                )
+                return code
+
+            i += 1
+            r = collect_report()
+            i = _next_pending_index(steps, i, r)
+
+        save_state({'Phase': 'Done', 'ChainIndex': total})
+        log('Version chain completed.', 'OK')
+        write_migration_report(
+            extra={'Result': 'DONE', 'Chain': format_chain(steps), 'Target': plan.target}
+        )
+        return 0
+    except Exception as e:
+        log(str(e), 'ERROR')
+        try:
+            write_migration_report(extra={'Result': 'FAILED', 'Exception': str(e)})
+        except Exception:
+            pass
+        raise
