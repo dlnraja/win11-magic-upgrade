@@ -23,6 +23,7 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── iso.py           Microsoft CDN API (Fido-compatible, urllib)
               ├── virtdisk.py      Mount ISO via virtdisk.dll
               ├── chain.py         Intermediate version plan across reboots
+              ├── legacy_os.py     Vista/7/8/8.1 + Media Center registry/media bypass
               ├── version_planner.py  Host/ISO build evaluation + smart skip logic
               ├── logutil.py       Panther logs + MigrationReport + state.json
               └── pipeline.py      Orchestration + quiet setup + resume
@@ -35,7 +36,8 @@ Legacy PowerShell under `src/` is reference only — **not** used at runtime.
 1. Preventive pack + intelligent compat engine (LabConfig / HwReqChk / CompatData).  
 2. Fix System Reserved / EFI (cleanup; enlarge ~512 MB if needed — idempotent).  
 3. If CPU lacks SSE4.2/POPCNT → **max Win10 22H2** (24H2+ will not boot).  
-4. If Win10 build &lt; 19045 → Win10 22H2 ISO → inplace → RunOnce resume.  
+4. If **legacy** (Vista/7/8/8.1) or Win10 build &lt; 19045 → Win10 22H2 ISO → inplace → RunOnce resume.  
+   Media Center 8.1: `ei.cfg` + `pid.txt` on staged media. See `docs/LEGACY_OS.md`.  
 5. If system disk is MBR and `mbr2gpt` exists → convert (no wipe) → reboot resume.  
 6. Boot Manager / hybrid IA32 path when firmware bitness requires it.  
 7. Win11 latest ISO → `setupprep` / `setup` with **`/product server`** + `/compat IgnoreWarning` + `/quiet`.  

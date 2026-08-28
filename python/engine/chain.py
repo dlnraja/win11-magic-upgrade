@@ -30,6 +30,14 @@ WIN11_LATEST_DEFAULT = 26200  # 25H2-class retail when CDN serves it
 
 def mapped_version(build: int) -> str:
     table = {
+        6000: "Vista",
+        6001: "Vista SP1",
+        6002: "Vista SP2",
+        7600: "7",
+        7601: "7 SP1",
+        9200: "8",
+        9600: "8.1",
+        9601: "8.1",
         10240: "1507",
         10586: "1511",
         14393: "1607",
@@ -127,6 +135,17 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                     note=note_max,
                 )
             )
+        elif getattr(r, "is_legacy", False):
+            steps.append(
+                ChainStep(
+                    id="win10_22h2",
+                    label=f"Intermediate: {cur} -> Windows 10 22H2 (x86)",
+                    kind="iso_upgrade",
+                    win="10",
+                    arch="x86",
+                    note="Legacy x86 host — max keep-apps path via Win10 22H2",
+                )
+            )
         steps.append(
             ChainStep(
                 id="done",
@@ -169,6 +188,17 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                     note="CPU cannot run Win11 24H2+; stop at Win10 22H2",
                 )
             )
+        elif getattr(r, "is_legacy", False):
+            steps.append(
+                ChainStep(
+                    id="win10_22h2",
+                    label=f"Intermediate: {cur} -> Windows 10 22H2",
+                    kind="iso_upgrade",
+                    win="10",
+                    arch="x64",
+                    note="Legacy host — stop at Win10 22H2 (CPU lacks SSE4.2/POPCNT)",
+                )
+            )
         steps.append(
             ChainStep(
                 id="done",
@@ -202,8 +232,16 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             )
         )
 
-    # Step A: any Win10 below 22H2 must pass by 22H2 first (1511, 1607, 1809, 21H2, ...)
-    if r.is_win10 and r.build < WIN10_22H2_BUILD:
+    # Step A: Win10 below 22H2 OR legacy Vista/7/8/8.1 must pass by 22H2 first
+    needs_win10_hop = (r.is_win10 and r.build < WIN10_22H2_BUILD) or getattr(r, "is_legacy", False)
+    if needs_win10_hop:
+        legacy_note = (
+            "Legacy Windows → Win10 22H2 (registry + Media Center media fixes when needed)"
+            if getattr(r, "is_legacy", False)
+            else "Required stepping stone before Windows 11 (keeps files/apps)"
+        )
+        if getattr(r, "has_media_center", False):
+            legacy_note += "; Media Center → Pro via ei.cfg/pid.txt"
         steps.append(
             ChainStep(
                 id="win10_22h2",
@@ -211,14 +249,13 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 kind="iso_upgrade",
                 win="10",
                 arch="x64",
-                note="Required stepping stone before Windows 11 (keeps files/apps)",
+                note=legacy_note,
             )
         )
 
     # Step B: MBR -> GPT after we have a modern enough OS (1703+ / after 22H2 step)
-    # If currently too old for mbr2gpt, the 22H2 intermediate runs first; MBR is done on resume.
     if r.partition_style == "MBR":
-        if r.mbr2gpt_available or (r.is_win10 and r.build < WIN10_22H2_BUILD):
+        if r.mbr2gpt_available or needs_win10_hop:
             # Schedule MBR after 22H2 if not yet available
             steps.append(
                 ChainStep(
@@ -229,14 +266,15 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 )
             )
 
-    # Step C: Windows 11 latest (from Win10 22H2, older Win10, or older Win11 builds)
-    if r.is_win10 or (r.is_win11 and r.build < latest_target):
+    # Step C: Windows 11 latest (from Win10 22H2, legacy hosts, older Win10, or older Win11)
+    if r.is_win10 or getattr(r, "is_legacy", False) or (r.is_win11 and r.build < latest_target):
         from_l = mapped_version(r.build)
-        from_label = (
-            "Windows 10 22H2"
-            if (r.is_win10 and r.build < WIN10_22H2_BUILD)
-            else f"Windows {from_l} (build {r.build})"
-        )
+        if getattr(r, "is_legacy", False):
+            from_label = f"Windows {from_l} (legacy build {r.build})"
+        elif r.is_win10 and r.build < WIN10_22H2_BUILD:
+            from_label = "Windows 10 22H2"
+        else:
+            from_label = f"Windows {from_l} (build {r.build})"
         idx = len([s for s in steps if s.kind == "iso_upgrade"]) + 1
         steps.append(
             ChainStep(

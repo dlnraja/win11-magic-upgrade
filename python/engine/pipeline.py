@@ -367,6 +367,12 @@ def _execute_step(
     if step.kind == "iso_upgrade":
         arch = step.arch or "x64"
         win = step.win or "11"
+        try:
+            from .legacy_os import apply_legacy_host_registry, prepare_legacy_setup_media
+
+            apply_legacy_host_registry(report)
+        except Exception as e:
+            log(f"Legacy host prep: {e}", "WARN")
         # Re-apply intelligent compat right before Setup (fresh Appraiser caches)
         try:
             from .compat import make_system_win11_compatible
@@ -400,14 +406,20 @@ def _execute_step(
                     root = _mount(iso)
             else:
                 raise
-        # Win11: writable stage + Appraiser neutralize (works when /product server is blocked)
-        if win == "11":
-            try:
-                from .media_bypass import prepare_setup_root
+        # Writable stage + Appraiser neutralize; legacy/Media Center ei.cfg on Win10 hops
+        try:
+            from .legacy_os import prepare_legacy_setup_media
 
-                root = str(prepare_setup_root(root, win11=True))
-            except Exception as e:
-                log(f"Media Appraiser bypass stage skipped: {e}", "WARN")
+            root = str(prepare_legacy_setup_media(root, report, win=win))
+        except Exception as e:
+            log(f"Setup media prep skipped: {e}", "WARN")
+            if win == "11":
+                try:
+                    from .media_bypass import prepare_setup_root
+
+                    root = str(prepare_setup_root(root, win11=True))
+                except Exception as e2:
+                    log(f"Media Appraiser bypass stage skipped: {e2}", "WARN")
         # Win11 always uses /product server + IgnoreWarning; Win10 also IgnoreWarning
         use_server = bool(step.use_server_product) or win == "11"
         return _run_setup(root, use_server=use_server, quiet=quiet)

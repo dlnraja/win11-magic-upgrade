@@ -32,6 +32,9 @@ class Report:
     ubr: int
     is_win11: bool
     is_win10: bool
+    os_family: str  # vista | win7 | win8 | win81 | win10 | win11 | unknown
+    is_legacy: bool
+    has_media_center: bool
     architecture: str
     needs_intermediate: bool
     mbr2gpt_available: bool
@@ -235,6 +238,11 @@ def collect_report() -> Report:
     ubr = int(_reg_get(winreg.HKEY_LOCAL_MACHINE, cv, "UBR", 0) or 0)
     is_win11 = build >= 22000
     is_win10 = (not is_win11) and build >= 10240
+    from .legacy_os import detect_media_center, is_legacy_host, os_family_from_build
+
+    os_family = os_family_from_build(build)
+    is_legacy = is_legacy_host(build, os_family)
+    has_media_center = detect_media_center(product, edition)
     if is_win11 and "Windows 10" in product:
         product = product.replace("Windows 10", "Windows 11")
     arch = "x64" if platform.machine().endswith("64") else "x86"
@@ -268,8 +276,11 @@ def collect_report() -> Report:
         ubr=ubr,
         is_win11=is_win11,
         is_win10=is_win10,
+        os_family=os_family,
+        is_legacy=is_legacy,
+        has_media_center=has_media_center,
         architecture=arch,
-        needs_intermediate=is_win10 and build < 19045,
+        needs_intermediate=(is_win10 and build < 19045) or is_legacy,
         mbr2gpt_available=build >= 15063,
         ram_gb=_ram_gb(),
         free_gb=_free_gb(),
@@ -294,6 +305,8 @@ def print_report(r: Report) -> None:
         f"OS: {r.product_name} {r.display_version} build {r.build}.{r.ubr} ({r.architecture})",
         "STEP",
     )
+    if r.is_legacy:
+        log(f"Legacy family: {r.os_family} | Media Center={r.has_media_center}", "WARN")
     log(f"Edition: {r.edition_id} | Locale: {r.locale} | RAM: {r.ram_gb} GB | Free: {r.free_gb} GB")
     log(f"Disk #{r.disk_number if r.disk_number is not None and r.disk_number >= 0 else '?'}: {r.partition_style} | UEFI={r.is_uefi} SecureBoot={r.secure_boot}")
     log(f"CPU: {r.cpu_name} | SSE4.2/POPCNT={r.sse42} | TPM={r.tpm_present}")
@@ -324,7 +337,12 @@ def print_report(r: Report) -> None:
     if r.firmware_likely_ia32:
         log("IA32 UEFI: hybrid CSMWrap path (UEFI32->SeaBIOS->BIOS) for Win11 x64.", "WARN")
     if r.needs_intermediate:
-        log("Obsolete Win10 - intermediate Win10 22H2 required before Win11.", "WARN")
+        if r.is_legacy:
+            log("Legacy Windows — must pass through Win10 22H2 before Win11.", "WARN")
+        else:
+            log("Obsolete Win10 - intermediate Win10 22H2 required before Win11.", "WARN")
+    if r.has_media_center:
+        log("Media Center edition — Setup media will be patched (ei.cfg + pid.txt).", "WARN")
     if r.partition_style == "MBR":
         log("MBR disk - will convert to GPT without wipe when possible.", "WARN")
     if r.sse42 is False:

@@ -19,6 +19,7 @@ from typing import Any
 
 from .chain import ChainStep, WIN10_22H2_BUILD, WIN11_24H2_BUILD, mapped_version
 from .detect import Report
+from .legacy_os import is_legacy_host, os_family_from_build, inplace_notes_for_legacy
 from .logutil import log, load_state, save_state
 
 # Known retail baselines (updated when Microsoft ships new GA ISOs)
@@ -121,12 +122,17 @@ def evaluate_host(report: Report, *, latest_win11: int | None = None) -> Version
     latest = latest_win11 or latest_win11_build_from_state()
     latest = max(latest, WIN11_24H2_BUILD)
     host_ver = mapped_version(report.build)
-    family = "11" if report.is_win11 else "10"
+    fam = getattr(report, "os_family", "") or os_family_from_build(report.build)
+    is_leg = bool(getattr(report, "is_legacy", False) or is_legacy_host(report.build, fam))
+    family = "11" if report.is_win11 else ("legacy" if is_leg else "10")
     notes: list[str] = []
     iso_steps: list[str] = []
 
-    needs_win10 = bool(report.is_win10 and report.build < WIN10_22H2_BUILD)
+    needs_win10 = bool((report.is_win10 and report.build < WIN10_22H2_BUILD) or is_leg)
     needs_win11 = False
+
+    if is_leg:
+        notes.extend(inplace_notes_for_legacy(report))
 
     if report.architecture != "x64":
         if report.build < WIN10_22H2_BUILD:
@@ -139,10 +145,15 @@ def evaluate_host(report: Report, *, latest_win11: int | None = None) -> Version
     else:
         if needs_win10:
             iso_steps.append("win10_22h2")
-            notes.append(
-                f"Host Win10 {host_ver} (build {report.build}) must step through 22H2 before Win11"
-            )
-        if report.is_win10 or (report.is_win11 and report.build < latest):
+            if is_leg:
+                notes.append(
+                    f"Legacy {fam} (build {report.build}) → Win10 22H2 before Win11"
+                )
+            else:
+                notes.append(
+                    f"Host Win10 {host_ver} (build {report.build}) must step through 22H2 before Win11"
+                )
+        if report.is_win10 or is_leg or (report.is_win11 and report.build < latest):
             needs_win11 = True
             iso_steps.append("win11_latest")
             if report.is_win11 and report.build < latest:
@@ -176,9 +187,7 @@ def should_skip_chain_step(step: ChainStep, report: Report, *, latest_win11: int
     if step.kind == "done":
         return True
     if step.id == "win10_22h2":
-        if report.is_win11:
-            return True
-        if report.is_win10 and report.build >= WIN10_22H2_BUILD:
+        if report.is_win11 or report.build >= WIN10_22H2_BUILD:
             return True
     if step.id == "mbr2gpt" and report.partition_style == "GPT":
         return True

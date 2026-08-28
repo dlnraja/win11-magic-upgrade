@@ -119,6 +119,43 @@ def build_plan(report: Report | None = None) -> Plan:
             report=r.as_dict(),
         )
 
+    # Legacy Vista / 7 / 8 / 8.1 (incl. Media Center)
+    if getattr(r, "is_legacy", False):
+        from .legacy_os import inplace_notes_for_legacy, legacy_label
+
+        fam = getattr(r, "os_family", "unknown")
+        warnings.append(
+            f"Legacy host detected: {legacy_label(fam, r.build)} — chain via Win10 22H2 → Win11."
+        )
+        for note in inplace_notes_for_legacy(r):
+            warnings.append(note)
+        actions.append(
+            Action(
+                "legacy_registry",
+                "Legacy upgrade registry prep",
+                "AllowOSUpgrade, Setup Compact (8.x), Media Center flags",
+                "low",
+            )
+        )
+        if getattr(r, "has_media_center", False):
+            actions.append(
+                Action(
+                    "legacy_media_center",
+                    "Media Center edition bypass on Setup media",
+                    "sources\\ei.cfg + pid.txt → Professional; setupprep.exe",
+                    "medium",
+                )
+            )
+        if r.needs_intermediate:
+            actions.append(
+                Action(
+                    "legacy_win10_22h2",
+                    f"In-place upgrade: {legacy_label(fam, r.build)} → Windows 10 22H2",
+                    "Required stepping stone; keeps files/apps when Setup allows",
+                    "medium",
+                )
+            )
+
     if getattr(r, "bootmgr_mismatch", False):
         actions.insert(
             0,
@@ -141,6 +178,15 @@ def build_plan(report: Report | None = None) -> Plan:
                     "win10_22h2_x64",
                     "In-place upgrade to Windows 10 22H2",
                     "Safest maximum OS for this CPU without boot failure",
+                    "medium",
+                )
+            )
+        elif getattr(r, "is_legacy", False):
+            actions.append(
+                Action(
+                    "win10_22h2_x64",
+                    "Legacy → Windows 10 22H2",
+                    "Maximum keep-apps OS for this CPU (no Win11 24H2+ boot)",
                     "medium",
                 )
             )
