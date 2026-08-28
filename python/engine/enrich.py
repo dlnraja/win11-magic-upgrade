@@ -146,6 +146,10 @@ def audit_and_trim_language_packs(*, remove_orphan_server_lp: bool = True) -> No
 
     for pkg in extras[:12]:
         log(f"Extra/orphan language package: {pkg}", "WARN")
+        dry = os.environ.get("MAGIC_LP_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+        if dry:
+            log(f"DRY-RUN (MAGIC_LP_DRY_RUN=1): would remove {pkg}", "INFO")
+            continue
         if remove_orphan_server_lp and "Server-LanguagePack" in pkg:
             log(f"Removing orphan Server LP (forum fix 0x800f0805): {pkg}", "WARN")
             c2, o2 = _run(

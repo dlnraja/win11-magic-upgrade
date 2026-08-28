@@ -91,6 +91,14 @@ def detect_vhd_boot() -> None:
         pass
     # Physical vs virtual disk for system drive
     out = _run(["wmic", "logicaldisk", "where", "DeviceID='C:'", "get", "ProviderName,Description"])
+    try:
+        from .wmi_compat import logicaldisk_system_number
+
+        out2 = logicaldisk_system_number()
+        if out2:
+            out = (out or "") + "\n" + out2
+    except Exception:
+        pass
     if re.search(r"Virtual|VHD|differencing", out, re.I):
         log("System appears on virtual/VHD media - feature upgrades often blocked (VHDHardblock)", "WARN")
     # Mountvol / diskpart style: check if C: is on a VHD via Get-Disk - use fsutil

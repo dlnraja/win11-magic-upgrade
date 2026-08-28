@@ -25,7 +25,8 @@ MIN_ISO_BYTES = 2_000_000_000
 PRODUCTS = {
     "11": {
         "page": "windows11",
-        "edition_ids": [3321, 3324],  # Home/Pro/Edu
+        # Consumer Fido IDs: Home/Pro/Edu. Enterprise/VL: use MAGIC_ENTERPRISE_ISO_DIR.
+        "edition_ids": [3321, 3324],
         "label": "Windows 11",
     },
     "10": {
@@ -394,6 +395,11 @@ def iso_search_roots(extra: Path | None = None) -> list[Path]:
     # Extra dirs from env (semicolon-separated)
     for part in (os.environ.get("MAGIC_ISO_DIRS") or "").split(";"):
         part = part.strip().strip('"')
+        if part and Path(part).is_dir():
+            roots.append(Path(part))
+    # Enterprise / VL cache (offline DU cabs may live beside ISOs)
+    for key in ("MAGIC_ENTERPRISE_ISO_DIR", "MAGIC_DU_CAB_DIR"):
+        part = (os.environ.get(key) or "").strip().strip('"')
         if part and Path(part).is_dir():
             roots.append(Path(part))
 

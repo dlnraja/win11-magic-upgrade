@@ -554,10 +554,46 @@ def detect_linux_efi(esp_root: str | None = None) -> dict[str, Any]:
                 pass
             if name in LINUX_EFI_VENDORS or any(v in name for v in LINUX_EFI_VENDORS):
                 info["vendors"].append(child.name)
-                for pattern in ("grubx64.efi", "shimx64.efi", "mmx64.efi", "grub.efi"):
+                for pattern in ("grubx64.efi", "shimx64.efi", "mmx64.efi", "grub.efi", "systemd-bootx64.efi", "bootx64.efi"):
                     p = child / pattern
                     if p.is_file():
                         info["paths"].append(str(p))
+                # grub.cfg / custom.cfg presence
+                for cfg in child.rglob("grub.cfg"):
+                    info["paths"].append(str(cfg))
+                    break
+        # systemd-boot layout: EFI\Linux\*.efi + loader\entries
+        linux_dir = efi / "Linux"
+        if linux_dir.is_dir():
+            info["vendors"].append("Linux")
+            for p in linux_dir.glob("*.efi"):
+                info["paths"].append(str(p))
+        loader = Path(root + "\\loader\\entries")
+        if loader.is_dir():
+            ents = list(loader.glob("*.conf"))
+            if ents:
+                info["vendors"].append("systemd-boot")
+                info["paths"].extend(str(e) for e in ents[:8])
+        # BCD hint (Linux entries sometimes appear as custom)
+        try:
+            import subprocess
+
+            r = subprocess.run(
+                ["bcdedit", "/enum", "firmware"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            out = (r.stdout or "") + (r.stderr or "")
+            if re.search(r"grub|ubuntu|fedora|debian|manjaro|arch|systemd-boot|shimx64", out, re.I):
+                info["vendors"].append("BCD-firmware")
+                info["bcd_hint"] = True
+        except Exception:
+            pass
+        info["vendors"] = sorted(set(info["vendors"]))
         info["found"] = bool(info["vendors"] or info["paths"])
         info["esp"] = root
         if info["found"]:

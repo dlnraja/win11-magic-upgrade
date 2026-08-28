@@ -116,7 +116,8 @@ def assess_uia_risk() -> UiaRisk:
         return risk
 
     if _remote_session():
-        risk.add(2, "remote_desktop_session")
+        # Soft signal only — RDP alone must not block intentional One-Click (false positive)
+        risk.add(1, "remote_desktop_session")
 
     # Agent / CI environment (weak alone — combine with RDP / automation tools)
     agent_hits: list[str] = []

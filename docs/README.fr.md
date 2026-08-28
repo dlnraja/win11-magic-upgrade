@@ -10,7 +10,7 @@ Inspiré de **Flyby11 / FlyOOBE**, runtime **Python pur** (PyInstaller) :
 - **Pas de PowerShell**
 - **Pas de FlyOOBE**
 
-**Docs :** [Architecture](ARCHITECTURE.md) · [Bugs & patches](MIGRATION_BUGS.md) · [README EN](../README.md) · [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
+**Docs :** [Architecture](ARCHITECTURE.md) · [Bugs FR](MIGRATION_BUGS.fr.md) · [Legacy FR](LEGACY_OS.fr.md) · [OEM FR](OEM.fr.md) · [Clean install x64](CLEAN_INSTALL_X64.md) · [README EN](../README.md) · [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
 
 ## Démarrage rapide
 

@@ -254,8 +254,16 @@ def disk_number_from_detail(detail_out: str) -> int | None:
 
 
 def _disk_number_from_wmic(letter: str) -> int | None:
-    """Fallback: Win32_LogicalDiskToPartition (works when diskpart text is exotic)."""
+    """Fallback: Win32_LogicalDiskToPartition (works when diskpart text is exotic / WMIC gone)."""
     L = letter.upper()[:1]
+    try:
+        from .wmi_compat import diskdrive_index_for_system
+
+        n = diskdrive_index_for_system()
+        if n is not None:
+            return n
+    except Exception:
+        pass
     code, out = _run(
         [
             "wmic",

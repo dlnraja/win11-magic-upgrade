@@ -39,6 +39,12 @@ def remember_failure(
     _last_user_error = message or ""
     _last_kind = kind or ""
     _last_links = dict(links or {})
+    try:
+        from .stats import record_event
+
+        record_event(kind or "failure", detail=message)
+    except Exception:
+        pass
 
 
 def last_failure() -> dict[str, Any]:

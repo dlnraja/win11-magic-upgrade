@@ -58,6 +58,17 @@ Research notes (Microsoft Support, SetupDiag, FlyOOBE issues, forums) and what t
 | SysMain / Spooler / Search churn | SafeOS instability | Temporarily stop during prep |
 | Support / handoff | Need clear next steps | `SupportGuide.txt` + checklist on Desktop |
 
+## Dangerous environment variables
+
+| Variable | Effect | Risk |
+|----------|--------|------|
+| `MAGIC_SRP_CONTINUE=1` | Continue One-Click after ESP/SRP fix failed | **High** — may leave unbootable firmware path; only if restore verified |
+| `MAGIC_BLOCK_VISTA=1` | Hard-stop Vista hosts | Low (safer default for labs) |
+| `MAGIC_ALLOW_VISTA=1` | Acknowledge Vista best-effort | Med (still no MS support) |
+| `MAGIC_UNINSTALL_ALLOWLIST=1` | Extra uninstall guidance for LGS / Daemon Tools | Low |
+| `MAGIC_LP_DRY_RUN=1` | Audit Server LPs without DISM remove | None |
+| `MAGIC_STATS=1` | Local counters in `local-stats.json` (no network) | None |
+
 ## Patch / Enrich / Support mode
 
 Without launching an ISO:

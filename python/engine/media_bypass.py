@@ -262,12 +262,22 @@ def prepare_setup_root(iso_mount: str | Path, *, win11: bool) -> Path:
     """
     For Win11: stage writable media with Appraiser neutralized.
     For Win10 intermediate: use mount directly (faster).
+    On stage failure: force retry once, then neutralize Appraiser on mount if writable, else mount.
     """
     mount = Path(iso_mount)
     if not win11:
         return mount
     try:
-        return stage_writable_setup(mount)
+        return stage_writable_setup(mount, force=False)
     except Exception as e:
-        log(f"Writable Setup stage failed ({e}) — falling back to ISO mount", "WARN")
-        return mount
+        log(f"Writable Setup stage failed ({e}) — force retry…", "WARN")
+        try:
+            return stage_writable_setup(mount, force=True)
+        except Exception as e2:
+            log(f"Force stage failed ({e2}) — neutralize on mount if possible", "WARN")
+            try:
+                neutralize_appraiser_on_media(mount)
+                write_media_setupconfig(mount)
+            except Exception as e3:
+                log(f"Mount Appraiser neutralize: {e3}", "WARN")
+            return mount

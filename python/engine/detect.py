@@ -176,7 +176,12 @@ def _secure_boot() -> bool:
 
 
 def _tpm_present() -> bool:
-    out = _wmic("tpm", "get", "IsEnabled_InitialValue", "/value")
+    try:
+        from .wmi_compat import tpm_probe_text
+
+        out = tpm_probe_text()
+    except Exception:
+        out = _wmic("tpm", "get", "IsEnabled_InitialValue", "/value")
     if "IsEnabled_InitialValue" in out:
         return True
     # Also check TPM presence key

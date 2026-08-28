@@ -44,3 +44,17 @@ No supported inplace path to Win10/11 — best-effort only; backup + `MAGIC_ALLO
 ## Hybrid IA32 UEFI
 
 CSMWrap → SeaBIOS → BIOS bootmgr. **Secure Boot must be OFF** before activating.
+
+## WMIC removed (Windows 11 25H2+)
+
+Microsoft removed `wmic.exe`. This project uses `wmi_compat.py`: WMIC if present, else PowerShell CIM as last-resort shim (WMI COM still exists). Prefer diskpart / registry / manage-bde when possible.
+
+## Env enrichments (v1.38)
+
+| Var | Purpose |
+|-----|---------|
+| `MAGIC_ENTERPRISE_ISO_DIR` | Local VL/enterprise ISO search root |
+| `MAGIC_DU_CAB_DIR` | Offline Dynamic Update cab folder hint |
+| `MAGIC_STATS=1` | Local opt-in counters (`local-stats.json`) |
+| `MAGIC_LP_DRY_RUN=1` | Language pack audit without remove |
+| `MAGIC_UNINSTALL_ALLOWLIST=1` | Extra guidance for LGS / Daemon Tools only |

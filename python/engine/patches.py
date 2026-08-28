@@ -131,11 +131,39 @@ def scan_prior_setup_logs() -> None:
 
 
 def detect_software_blockers() -> None:
-    for name in _installed_names():
+    names = _installed_names()
+    for name in names:
         for pat, reason in BLOCKERS:
             if re.search(pat, name, re.I):
                 log(f"Blocker software: {name} :: {reason}", "WARN")
                 break
+    maybe_uninstall_allowlist_blockers(names)
+
+
+def maybe_uninstall_allowlist_blockers(installed_names: list[str] | None = None) -> None:
+    """
+    Optional: guidance for curated uninstall when MAGIC_UNINSTALL_ALLOWLIST=1.
+    Never silent-force uninstall of AV/EDR — only legacy LGS / virtual CD toys.
+    """
+    if os.environ.get("MAGIC_UNINSTALL_ALLOWLIST", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+    allow = [
+        (r"Logitech Gaming Software", "legacy LGS"),
+        (r"Daemon Tools Lite|Alcohol 120%", "virtual CD filter"),
+    ]
+    names = installed_names or _installed_names()
+    for name in names:
+        for pat, label in allow:
+            if re.search(pat, name, re.I):
+                log(
+                    f"MAGIC_UNINSTALL_ALLOWLIST=1: uninstall recommended → {name} ({label}). "
+                    "Settings → Apps, then reboot before One-Click.",
+                    "WARN",
+                )
 
 
 def check_pending_reboot() -> bool:
