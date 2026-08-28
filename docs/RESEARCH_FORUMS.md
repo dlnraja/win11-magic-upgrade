@@ -47,9 +47,13 @@ CSMWrap → SeaBIOS → BIOS bootmgr. **Secure Boot must be OFF** before activat
 
 ## WMIC removed (Windows 11 25H2+)
 
-Microsoft removed `wmic.exe`. This project uses `wmi_compat.py`: WMIC if present, else PowerShell CIM as last-resort shim (WMI COM still exists). Prefer diskpart / registry / manage-bde when possible.
+Microsoft removed `wmic.exe`. This project uses `wmi_compat.py`: WMIC if present, else PowerShell CIM as last-resort shim (WMI COM still exists). Prefer diskpart / registry / manage-bde when possible. Call sites in errfix/patches/autonomy/preventive/bootmgr/enrich/detect/diskpart_safe go through the shim.
 
-## Env enrichments (v1.38)
+## 0x8007042B / 0x2000D (MIGRATE_DATA)
+
+Frequent on 25H2 feature upgrades: migration arbitration / corrupt `ProgramData\Microsoft\Crypto\RSA\MachineKeys` / TPM-Driver-WMI. `setup_recovery.py` parses Panther + SetupDiagResults.xml and advises **manual** removal of only the flagged MachineKeys file (never auto-wipe).
+
+## Env enrichments (v1.38+)
 
 | Var | Purpose |
 |-----|---------|

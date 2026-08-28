@@ -69,21 +69,19 @@ def create_system_restore_point(description: str = "Win11 Magic Upgrade prep") -
             "/f",
         ]
     )
-    code, out = _run(
-        [
-            "wmic.exe",
-            "/Namespace:\\\\root\\default",
-            "Path",
-            "SystemRestore",
-            "Call",
-            "CreateRestorePoint",
-            description,
-            "100",
-            "7",
-        ],
-        timeout=180,
-    )
-    if code == 0 and ("ReturnValue = 0" in out or "ReturnValue=0" in out.replace(" ", "")):
+    try:
+        from .wmi_compat import create_system_restore_point as _wmi_restore
+
+        code, out = _wmi_restore(description)
+    except Exception as e:
+        code, out = 1, str(e)
+    compact = (out or "").replace(" ", "")
+    if code == 0 and (
+        "ReturnValue=0" in compact
+        or "ReturnValue = 0" in (out or "")
+        or out.strip() == "OK"
+        or "checkpoint" in (out or "").lower()
+    ):
         log("System Restore point created", "OK")
     else:
         log(f"Restore point skipped/unavailable: {out[:180]}", "WARN")

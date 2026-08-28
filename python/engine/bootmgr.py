@@ -100,8 +100,13 @@ def cpu_is_64bit() -> bool:
         return si.wProcessorArchitecture in (9, 12)
     except Exception:
         pass
-    # Fallback: WMIC
-    code, out = _run(["wmic", "cpu", "get", "AddressWidth", "/value"])
+    # Fallback: WMIC / CIM
+    try:
+        from .wmi_compat import cpu_address_width_text
+
+        out = cpu_address_width_text()
+    except Exception:
+        out = ""
     if "AddressWidth=64" in out.replace(" ", ""):
         return True
     return arch.endswith("64")

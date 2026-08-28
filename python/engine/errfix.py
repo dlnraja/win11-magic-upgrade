@@ -90,13 +90,11 @@ def detect_vhd_boot() -> None:
     except OSError:
         pass
     # Physical vs virtual disk for system drive
-    out = _run(["wmic", "logicaldisk", "where", "DeviceID='C:'", "get", "ProviderName,Description"])
+    out = ""
     try:
         from .wmi_compat import logicaldisk_system_number
 
-        out2 = logicaldisk_system_number()
-        if out2:
-            out = (out or "") + "\n" + out2
+        out = logicaldisk_system_number() or ""
     except Exception:
         pass
     if re.search(r"Virtual|VHD|differencing", out, re.I):
@@ -307,7 +305,12 @@ def disable_offline_files_temporarily() -> None:
 
 def warn_secondary_fixed_disks() -> None:
     """0x80070002-0x20009: disconnect non-target disks when Setup looks for files."""
-    out = _run(["wmic", "diskdrive", "get", "Index,Model,Size,MediaType,InterfaceType"])
+    try:
+        from .wmi_compat import diskdrive_inventory_text
+
+        out = diskdrive_inventory_text()
+    except Exception:
+        out = ""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.lower().startswith("index")]
     if len(lines) > 1:
         log(

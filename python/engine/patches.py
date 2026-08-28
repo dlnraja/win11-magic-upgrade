@@ -380,17 +380,12 @@ def clear_upgrade_leftovers(*, force: bool = False) -> None:
 def free_space_helpers() -> float:
     _run(["powercfg", "/hibernate", "off"])
     # Prefer system-managed pagefile (setup can fail with tiny/no pagefile on low RAM)
-    cname = os.environ.get("COMPUTERNAME") or "localhost"
-    _run(
-        [
-            "wmic",
-            "computersystem",
-            "where",
-            f'name="{cname}"',
-            "set",
-            "AutomaticManagedPagefile=True",
-        ]
-    )
+    try:
+        from .wmi_compat import set_automatic_managed_pagefile
+
+        set_automatic_managed_pagefile()
+    except Exception:
+        pass
     temp = Path(os.environ.get("TEMP", "."))
     for child in list(temp.glob("*"))[:800]:
         try:
@@ -441,7 +436,12 @@ def check_problem_devices() -> None:
     # Windows 10 2004+ pnputil
     out = _run(["pnputil", "/enum-devices", "/problem"])
     if not out or "Failed" in out[:30]:
-        out = _run(["wmic", "path", "Win32_PnPEntity", "where", "ConfigManagerErrorCode!=0", "get", "Name,ConfigManagerErrorCode"])
+        try:
+            from .wmi_compat import problem_pnp_entities_text
+
+            out = problem_pnp_entities_text()
+        except Exception:
+            out = ""
     bad_lines = [
         ln.strip()
         for ln in out.splitlines()
@@ -458,7 +458,12 @@ def check_problem_devices() -> None:
 
 def warn_removable_disks() -> list[str]:
     """Microsoft: disconnect non-essential USB storage during upgrade."""
-    out = _run(["wmic", "logicaldisk", "where", "DriveType=2", "get", "DeviceID,VolumeName"])
+    try:
+        from .wmi_compat import removable_logicaldisks_text
+
+        out = removable_logicaldisks_text()
+    except Exception:
+        out = ""
     letters = re.findall(r"([A-Z]:)", out)
     if letters:
         log(

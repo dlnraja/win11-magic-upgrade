@@ -152,3 +152,127 @@ def diskdrive_index_for_system() -> int | None:
     if m2:
         return int(m2.group(1))
     return None
+
+
+def diskdrive_inventory_text() -> str:
+    return wmi_query(
+        "diskdrive",
+        "get",
+        "Index,Model,Size,MediaType,InterfaceType",
+        cim_fallback=(
+            "Get-CimInstance Win32_DiskDrive | ForEach-Object { "
+            "'Index='+$_.Index+'; Model='+$_.Model+'; Size='+$_.Size+"
+            "'; MediaType='+$_.MediaType+'; InterfaceType='+$_.InterfaceType }"
+        ),
+    )
+
+
+def removable_logicaldisks_text() -> str:
+    return wmi_query(
+        "logicaldisk",
+        "where",
+        "DriveType=2",
+        "get",
+        "DeviceID,VolumeName",
+        cim_fallback=(
+            "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=2' | "
+            "ForEach-Object { 'DeviceID='+$_.DeviceID+'; VolumeName='+$_.VolumeName }"
+        ),
+    )
+
+
+def problem_pnp_entities_text() -> str:
+    return wmi_query(
+        "path",
+        "Win32_PnPEntity",
+        "where",
+        "ConfigManagerErrorCode!=0",
+        "get",
+        "Name,ConfigManagerErrorCode",
+        cim_fallback=(
+            "Get-CimInstance Win32_PnPEntity -Filter 'ConfigManagerErrorCode!=0' | "
+            "Select-Object -First 40 | ForEach-Object { "
+            "'Name='+$_.Name+'; ConfigManagerErrorCode='+$_.ConfigManagerErrorCode }"
+        ),
+    )
+
+
+def cpu_address_width_text() -> str:
+    return wmi_query(
+        "cpu",
+        "get",
+        "AddressWidth",
+        "/value",
+        cim_fallback=(
+            "$c=Get-CimInstance Win32_Processor | Select-Object -First 1; "
+            "if($c){'AddressWidth='+$c.AddressWidth}"
+        ),
+    )
+
+
+def set_automatic_managed_pagefile() -> tuple[int, str]:
+    """Enable system-managed pagefile (WMIC set or CIM)."""
+    cname = os.environ.get("COMPUTERNAME") or "localhost"
+    if wmic_available():
+        return _run(
+            [
+                "wmic",
+                "computersystem",
+                "where",
+                f'name="{cname}"',
+                "set",
+                "AutomaticManagedPagefile=True",
+            ]
+        )
+    if shutil.which("powershell"):
+        return _run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                (
+                    "try { $cs=Get-CimInstance Win32_ComputerSystem; "
+                    "Set-CimInstance -InputObject $cs -Property @{AutomaticManagedPagefile=$true}; "
+                    "'OK' } catch { $_.Exception.Message; exit 1 }"
+                ),
+            ],
+            timeout=90,
+        )
+    return 1, "no wmic/powershell for pagefile"
+
+
+def create_system_restore_point(description: str = "Win11 Magic Upgrade") -> tuple[int, str]:
+    """SR create via WMIC SystemRestore or Checkpoint-Computer."""
+    if wmic_available():
+        return _run(
+            [
+                "wmic.exe",
+                "/Namespace:\\\\root\\default",
+                "Path",
+                "SystemRestore",
+                "Call",
+                "CreateRestorePoint",
+                description,
+                "100",
+                "7",
+            ],
+            timeout=180,
+        )
+    if shutil.which("powershell"):
+        safe = description.replace("'", "''")[:60]
+        return _run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                f"try {{ Checkpoint-Computer -Description '{safe}' -RestorePointType MODIFY_SETTINGS; 'ReturnValue = 0' }} catch {{ $_.Exception.Message; exit 1 }}",
+            ],
+            timeout=180,
+        )
+    return 1, "no wmic/powershell for restore point"

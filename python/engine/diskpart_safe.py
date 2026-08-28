@@ -257,24 +257,24 @@ def _disk_number_from_wmic(letter: str) -> int | None:
     """Fallback: Win32_LogicalDiskToPartition (works when diskpart text is exotic / WMIC gone)."""
     L = letter.upper()[:1]
     try:
-        from .wmi_compat import diskdrive_index_for_system
+        from .wmi_compat import diskdrive_index_for_system, wmi_query
 
         n = diskdrive_index_for_system()
         if n is not None:
             return n
-    except Exception:
-        pass
-    code, out = _run(
-        [
-            "wmic",
+        out = wmi_query(
             "path",
             "Win32_LogicalDiskToPartition",
             "get",
             "Antecedent,Dependent",
-        ],
-        timeout=60,
-    )
-    if code != 0 or not out:
+            cim_fallback=(
+                "Get-CimInstance Win32_LogicalDiskToPartition | "
+                "ForEach-Object { $_.Antecedent; $_.Dependent }"
+            ),
+        )
+    except Exception:
+        return None
+    if not out:
         return None
     # Antecedent ... Disk #0, Partition #2  Dependent ... DeviceID="C:"
     for line in out.splitlines():
@@ -287,7 +287,7 @@ def _disk_number_from_wmic(letter: str) -> int | None:
         m = re.search(r"Disk\s*#\s*(\d+)", line, re.I)
         if m:
             return int(m.group(1))
-        m = re.search(r'Disk\s+(\d+)', line, re.I)
+        m = re.search(r"Disk\s+(\d+)", line, re.I)
         if m:
             return int(m.group(1))
     return None

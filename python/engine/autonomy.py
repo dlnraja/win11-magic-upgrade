@@ -218,9 +218,12 @@ def disable_problem_pnp_instances() -> int:
 
 def dismount_removable_volumes() -> list[str]:
     """Dismount USB/SD volumes so Setup does not scan them."""
-    code, out = _run(
-        ["wmic", "logicaldisk", "where", "DriveType=2", "get", "DeviceID"]
-    )
+    try:
+        from .wmi_compat import removable_logicaldisks_text
+
+        out = removable_logicaldisks_text()
+    except Exception:
+        out = ""
     letters = re.findall(r"([A-Z]:)", out or "")
     done: list[str] = []
     for letter in letters:

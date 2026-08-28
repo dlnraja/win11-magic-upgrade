@@ -7,7 +7,8 @@ Win11MagicUpgrade.exe / .cmd
 python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerShell
         │
         └── python/engine/         Pure Python pipeline (stdlib + Win32)
-              ├── detect.py        winreg + ctypes + diskpart/wmic
+              ├── detect.py        winreg + ctypes + diskpart + wmi_compat
+              ├── wmi_compat.py    WMIC → CIM shim (Win11 25H2+ without wmic.exe)
               ├── compat.py        Intelligent HW/app compatibility engine
               ├── bypass.py        LabConfig / MoSetup / HwReqChk entrypoint
               ├── preventive.py    Durable preventive pack install

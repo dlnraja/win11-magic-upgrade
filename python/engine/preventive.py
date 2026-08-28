@@ -300,17 +300,12 @@ def configure_preventive_services() -> None:
 def configure_preventive_power_and_pagefile() -> None:
     log("Installing preventive power/pagefile settings...", "STEP")
     _run(["powercfg", "/hibernate", "off"])
-    cname = os.environ.get("COMPUTERNAME") or "localhost"
-    _run(
-        [
-            "wmic",
-            "computersystem",
-            "where",
-            f'name="{cname}"',
-            "set",
-            "AutomaticManagedPagefile=True",
-        ]
-    )
+    try:
+        from .wmi_compat import set_automatic_managed_pagefile
+
+        set_automatic_managed_pagefile()
+    except Exception:
+        pass
     log("Hibernate off + managed pagefile applied (persistent)", "OK")
 
 

@@ -11,6 +11,7 @@ Recurring codes and remediations:
   0xC1900200 / ESP    System Reserved / ESP too small
   0xC1900107          Reboot pending / stale ~BT
   0x80070070          Disk full
+  0x8007042B / 0x2000D MIGRATE_DATA — Crypto RSA / TPM-Driver-WMI / bad profiles
   Language mismatch   setupprep "not compatible with the Windows version"
 
 Also: /product server may be blocked on some Setup builds — media Appraiser +
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,7 +33,16 @@ _CODE_RE = re.compile(
     r"(0xC1900[0-9A-Fa-f]{3})|"
     r"(0x8007[0-9A-Fa-f]{4})|"
     r"(0x800F[0-9A-Fa-f]{4})|"
-    r"(0x8024[0-9A-Fa-f]{4})",
+    r"(0x8024[0-9A-Fa-f]{4})|"
+    r"(0x8007042[Bb])|"
+    r"\b(8007042[Bb])\b",
+    re.I,
+)
+
+_CRYPTO_RSA_HINT = re.compile(
+    r"Crypto\\RSA|ProgramData\\Microsoft\\Crypto|"
+    r"NCrypt|CNG|TPM-Driver-WMI|MigrateData|MIGRATE_DATA|"
+    r"ERROR_FAIL.*arbitration|corrupt.*(cert|key|rsa)",
     re.I,
 )
 
@@ -72,9 +83,19 @@ SUBCODE_ACTIONS: dict[str, dict[str, str]] = {
         "cause": "Final configuration crash (peripheral drivers)",
         "action": "Unplug printers/USB docks/external disks; update chipset; retry.",
     },
+    "0x2000d": {
+        "phase": "SAFE_OS / MIGRATE_DATA",
+        "cause": "Migration driver crash (often paired with 0x8007042B on 25H2)",
+        "action": "Parse Panther for failing file/reg; delete corrupt ProgramData\\Microsoft\\Crypto\\RSA machine certs if flagged; try a clean local admin session; uninstall VPN leftovers; retry.",
+    },
 }
 
 TOP_CODE_ACTIONS: dict[str, dict[str, str]] = {
+    "0x8007042b": {
+        "phase": "SAFE_OS / MIGRATE_DATA",
+        "cause": "ERROR_FAIL / arbitration during data migrate (25H2 frequent with TPM-Driver-WMI / corrupt Crypto RSA)",
+        "action": "Check SetupDiagResults.xml + setuperr for failing object; remove corrupt Crypto\\RSA machine files if safe; stop VPN/EDR; retry from a fresh local admin profile if profile migrate fails.",
+    },
     "0xc1900208": {
         "phase": "COMPAT",
         "cause": "Incompatible application (BlockMigration)",
@@ -116,6 +137,9 @@ class RecoveryPlan:
     auto_fixes_applied: list[str] = field(default_factory=list)
     language_mismatch_hint: bool = False
     esp_hint: bool = False
+    migrate_data_hint: bool = False
+    crypto_rsa_hint: bool = False
+    setupdiag_findings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -132,6 +156,80 @@ def _panther_paths() -> list[Path]:
         windir / "Panther" / "setupact.log",
         STATE_DIR / "Panther" / "setuperr.log",
     ]
+
+
+def _setupdiag_paths() -> list[Path]:
+    windir = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    return [
+        Path(r"C:\$WINDOWS.~BT\Sources\Panther\SetupDiagResults.xml"),
+        windir / "Logs" / "SetupDiag" / "SetupDiagResults.xml",
+        STATE_DIR / "SetupDiagResults.xml",
+    ]
+
+
+def _normalize_top_code(raw: str) -> str:
+    t = (raw or "").strip().lower()
+    if not t:
+        return ""
+    if not t.startswith("0x"):
+        t = "0x" + t
+    return t
+
+
+def parse_setupdiag_xml(path: Path) -> list[str]:
+    """Extract FailureData / ErrorCode / Remediations from SetupDiagResults.xml."""
+    findings: list[str] = []
+    try:
+        tree = ET.parse(path)
+        root = tree.getroot()
+    except (OSError, ET.ParseError) as e:
+        return [f"SetupDiag parse error ({path.name}): {e}"]
+
+    # Tags vary by SetupDiag version — collect text from common nodes
+    interesting = (
+        "ErrorCode",
+        "FailureData",
+        "FailureDetails",
+        "Remediation",
+        "RuleName",
+        "Message",
+        "Name",
+    )
+    for el in root.iter():
+        tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+        if tag not in interesting:
+            continue
+        text = (el.text or "").strip()
+        if text and len(text) > 2:
+            findings.append(f"{tag}: {text[:400]}")
+    # Dedupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for f in findings:
+        key = f.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(f)
+    return out[:40]
+
+
+def _hint_corrupt_crypto_rsa(plan: RecoveryPlan) -> None:
+    """Safe advisory only — never auto-delete machine Crypto\\RSA keys."""
+    rsa = (
+        Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+        / "Microsoft"
+        / "Crypto"
+        / "RSA"
+        / "MachineKeys"
+    )
+    if not rsa.is_dir():
+        plan.notes.append("Crypto\\RSA\\MachineKeys path not present")
+        return
+    plan.actions.append(
+        "Crypto/MIGRATE_DATA hint: if SetupDiag names a corrupt MachineKeys file under "
+        f"{rsa}, back it up then remove only the flagged file (admin), reboot, retry One-Click. "
+        "Do not wipe the whole MachineKeys folder."
+    )
 
 
 def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
@@ -156,8 +254,23 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
                 re.I,
             ):
                 plan.esp_hint = True
+            if _CRYPTO_RSA_HINT.search(text):
+                plan.crypto_rsa_hint = True
+                plan.migrate_data_hint = True
         except OSError as e:
             plan.notes.append(f"read {p}: {e}")
+
+    for sp in _setupdiag_paths():
+        if sp.is_file():
+            findings = parse_setupdiag_xml(sp)
+            if findings:
+                plan.setupdiag_findings.extend(findings)
+                plan.notes.append(f"SetupDiag: {sp}")
+                joined = "\n".join(findings)
+                blob_parts.append(joined)
+                if _CRYPTO_RSA_HINT.search(joined) or "8007042" in joined.lower():
+                    plan.crypto_rsa_hint = True
+                    plan.migrate_data_hint = True
 
     blob = "\n".join(blob_parts)
     if not blob.strip():
@@ -167,7 +280,9 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
     seen: set[str] = set()
     for m in _CODE_RE.finditer(blob):
         sub = (m.group(1) or "").lower()
-        top = (m.group(2) or m.group(3) or m.group(4) or m.group(5) or "").lower()
+        top = _normalize_top_code(
+            m.group(2) or m.group(3) or m.group(4) or m.group(5) or m.group(6) or m.group(7) or ""
+        )
         if sub and sub not in seen:
             seen.add(sub)
             plan.subcodes.append(sub)
@@ -189,6 +304,11 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
                 plan.actions.append(
                     f"{top} [{info['phase']}]: {info['cause']} → {info['action']}"
                 )
+            if top == "0x8007042b":
+                plan.migrate_data_hint = True
+
+    if "0x2000d" in plan.subcodes:
+        plan.migrate_data_hint = True
 
     if plan.language_mismatch_hint:
         plan.actions.append(
@@ -198,6 +318,10 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
         plan.actions.append(
             "ESP/SRP mentioned in logs — ensure System Reserved / EFI has free space (One-Click SRP step)."
         )
+    if plan.crypto_rsa_hint or plan.migrate_data_hint:
+        _hint_corrupt_crypto_rsa(plan)
+    for fd in plan.setupdiag_findings[:8]:
+        plan.actions.append(f"SetupDiag: {fd}")
     return plan
 
 
@@ -241,6 +365,13 @@ def apply_recovery_remediations(plan: RecoveryPlan | None = None) -> RecoveryPla
                 plan.auto_fixes_applied.append("suspend_bitlocker")
             except Exception:
                 pass
+        if plan.migrate_data_hint or "0x8007042b" in plan.codes_found:
+            # Soften TPM/WMI arbitration noise; never delete Crypto RSA automatically
+            try:
+                stop_risky_services()
+                plan.auto_fixes_applied.append("migrate_data_soft_services")
+            except Exception:
+                pass
     except Exception as e:
         plan.notes.append(f"patches remediations: {e}")
 
@@ -257,6 +388,10 @@ def apply_recovery_remediations(plan: RecoveryPlan | None = None) -> RecoveryPla
 
     if plan.esp_hint or any(c in ("0xc1900200",) for c in plan.codes_found):
         plan.notes.append("ESP/SRP flagged — chain will re-run fix_srp on next One-Click")
+    if plan.migrate_data_hint:
+        plan.notes.append(
+            "MIGRATE_DATA / 0x8007042B — review SetupDiag; Crypto RSA delete is manual only"
+        )
 
     out = STATE_DIR / "setup-recovery.json"
     try:
