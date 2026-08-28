@@ -1,7 +1,18 @@
 # SignPath Foundation — OSS application pack (dlnraja / win11-magic-upgrade)
 
-Use this text to fill https://signpath.org/apply.html (HubSpot form + reCAPTCHA).
+Fill https://signpath.org/apply.html (HubSpot iframe + **reCAPTCHA** — human only).
 After approval, run `build/setup_signpath_github.ps1` to push secrets/vars.
+
+## Do this now (2 minutes)
+
+1. Open https://signpath.org/apply.html in Chrome (tab group « SignPath candidature » if still open).
+2. Paste every field from the table below (Description + Reputation are the usual gaps).
+3. Maintainer Type → **Individual** · Build System → **GitHub Actions** · Discovery → **GitHub**.
+4. Check **Code of Conduct** + **personal data consent**.
+5. Complete **reCAPTCHA** → **Submit**.
+6. Reply here with « SignPath soumis » (or the confirmation email). Then we run `setup_signpath_github.ps1`.
+
+Automation cannot finish reCAPTCHA (HubSpot blocks API submit when Captcha is on).
 
 ## Form fields (copy-paste for https://signpath.org/apply.html)
 
@@ -11,11 +22,11 @@ After approval, run `build/setup_signpath_github.ps1` to push secrets/vars.
 | Repository URL | https://github.com/dlnraja/win11-magic-upgrade |
 | Homepage URL | https://github.com/dlnraja/win11-magic-upgrade |
 | Download URL | https://github.com/dlnraja/win11-magic-upgrade/releases/latest |
-| Privacy Policy URL | *(empty)* |
+| Privacy Policy URL | https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/PRIVACY.md |
 | Wikipedia URL | *(empty)* |
 | Tagline | Open-source portable Windows 10/11 to Windows 11 migration helper using official Microsoft ISOs. |
-| Description | Open-source (MIT) portable Windows 10/11 to Windows 11 migration helper. Downloads official Microsoft ISOs, mounts them, and runs Windows Setup. Pure Python/PyInstaller, no .NET on target PC. Maintained by @dlnraja on GitHub. |
-| Reputation | Public GitHub repo https://github.com/dlnraja/win11-magic-upgrade with releases for Windows migration tooling. |
+| Description | Open-source (MIT) portable Windows migration helper: upgrades Vista/7/8/8.1/10 (incl. Media Center) toward Windows 11 using official Microsoft ISOs only. Pure Python/PyInstaller — no .NET on the target PC. Maintained by @dlnraja. We request SignPath Foundation Authenticode signing of Win11MagicUpgrade.exe from this repo via GitHub Actions release tags v*. |
+| Reputation | Public GitHub repo https://github.com/dlnraja/win11-magic-upgrade with tagged releases, SHA256SUMS, CODE_SIGNING_POLICY.md, and Download/Release pages that document SignPath Foundation signing. |
 | Maintainer Type | Individual |
 | Build System | GitHub Actions |
 | First Name | Dylan |
@@ -25,7 +36,16 @@ After approval, run `build/setup_signpath_github.ps1` to push secrets/vars.
 | Primary Discovery Channel | GitHub |
 | Exact source | GitHub repository dlnraja/win11-magic-upgrade |
 
-Check **Code of Conduct** + **personal data consent**, complete **reCAPTCHA**, then **Submit**.
+## Ready checklist (other SignPath elements)
+
+| Item | Status |
+|------|--------|
+| Download URL mentions SignPath | Done — releases + `docs/DOWNLOAD.md` |
+| Code signing policy | Done — `docs/CODE_SIGNING_POLICY.md` |
+| Privacy policy URL | Done — `docs/PRIVACY.md` |
+| Release workflow SignPath steps | Done — `.github/workflows/release.yml` |
+| Artifact config | `.signpath/artifact-configurations/default.xml` (if present) |
+| GitHub secrets after approval | `build/setup_signpath_github.ps1` |
 
 ## Applicant
 

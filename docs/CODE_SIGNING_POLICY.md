@@ -32,6 +32,9 @@ Repository owner: https://github.com/dlnraja/win11-magic-upgrade/settings/access
 
 ## Privacy policy
 
+Full policy: [PRIVACY.md](PRIVACY.md)  
+Canonical URL for SignPath / downloads: https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/PRIVACY.md
+
 This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
 
 Optional features that may use the network **only when the user runs the app / One-Click**:
