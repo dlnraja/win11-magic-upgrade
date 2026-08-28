@@ -3,6 +3,30 @@
 Use this text to fill https://signpath.org/apply.html (HubSpot form + reCAPTCHA).
 After approval, run `build/setup_signpath_github.ps1` to push secrets/vars.
 
+## Form fields (copy-paste for https://signpath.org/apply.html)
+
+| Field | Value |
+|-------|--------|
+| Project Name | Win11 Magic Upgrade |
+| Repository URL | https://github.com/dlnraja/win11-magic-upgrade |
+| Homepage URL | https://github.com/dlnraja/win11-magic-upgrade |
+| Download URL | https://github.com/dlnraja/win11-magic-upgrade/releases/latest |
+| Privacy Policy URL | *(empty)* |
+| Wikipedia URL | *(empty)* |
+| Tagline | Open-source portable Windows 10/11 to Windows 11 migration helper using official Microsoft ISOs. |
+| Description | Open-source (MIT) portable Windows 10/11 to Windows 11 migration helper. Downloads official Microsoft ISOs, mounts them, and runs Windows Setup. Pure Python/PyInstaller, no .NET on target PC. Maintained by @dlnraja on GitHub. |
+| Reputation | Public GitHub repo https://github.com/dlnraja/win11-magic-upgrade with releases for Windows migration tooling. |
+| Maintainer Type | Individual |
+| Build System | GitHub Actions |
+| First Name | Dylan |
+| Last Name | Rajasekaram |
+| Email | dylan.rajasekaram@gmail.com |
+| Company Name | *(empty)* |
+| Primary Discovery Channel | GitHub |
+| Exact source | GitHub repository dlnraja/win11-magic-upgrade |
+
+Check **Code of Conduct** + **personal data consent**, complete **reCAPTCHA**, then **Submit**.
+
 ## Applicant
 
 | Field | Value |
