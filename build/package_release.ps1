@@ -30,6 +30,8 @@ $helpLines = @(
     "==========================================================",
     "Publisher: dlnraja",
     "Official releases: https://github.com/dlnraja/win11-magic-upgrade/releases",
+    "Code signing: SignPath Foundation / SignPath.io (OSS Authenticode when enabled).",
+    "Policy: https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODE_SIGNING_POLICY.md",
     "This build is NOT malware. Open-source Windows upgrade helper (MIT).",
     "",
     "If Chrome says virus detected / blocks the download",

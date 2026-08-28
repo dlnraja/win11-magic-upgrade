@@ -3,6 +3,8 @@
 **Publisher:** [dlnraja](https://github.com/dlnraja)  
 **Official builds only:** [GitHub Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
 
+**Code signing:** This project uses **[SignPath Foundation](https://signpath.org/)** / [SignPath.io](https://signpath.io) for Authenticode signing of official release builds when OSS signing is approved. Policy: [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
+
 Win11 Magic Upgrade is **open source (MIT)**, **not malware**, and contains **no PDF/trojan payloads**.  
 Chrome Safe Browsing and Windows SmartScreen often flag **new or self-signed PyInstaller EXEs** until reputation builds.
 

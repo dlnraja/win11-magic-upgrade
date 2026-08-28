@@ -23,6 +23,8 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 
 1. Download **`Win11MagicUpgrade-Portable-v*.zip`** from [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)  
    (**prefer ZIP** — Chrome often blocks the naked `.exe`)
+
+**Code signing:** Release binaries are Authenticode-signed via **[SignPath Foundation](https://signpath.org/)** / [SignPath.io](https://signpath.io) when OSS signing is enabled (see [CODE_SIGNING_POLICY.md](docs/CODE_SIGNING_POLICY.md)).
 2. Extract, then run as Administrator: `Win11MagicUpgrade.exe` or `Win11MagicUpgrade.cmd`
 3. Click **ONE-CLICK — Full migration** (that’s it).
 

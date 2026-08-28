@@ -250,9 +250,14 @@ jobs:
 
             If Chrome says "virus detected": see [docs/DOWNLOAD.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/DOWNLOAD.md) - Keep anyway / Unblock-File / report FP to Google.
 
+            ## Code signing (SignPath Foundation)
+
+            Official release builds use **[SignPath Foundation](https://signpath.org/)** / [SignPath.io](https://signpath.io) for Authenticode signing when OSS signing is enabled.  
+            Policy: [docs/CODE_SIGNING_POLICY.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODE_SIGNING_POLICY.md).
+
             ## Publisher / AV trust (CI only)
 
-            Authenticode: **dlnraja** (Release workflow).
+            Authenticode: **dlnraja** / **SignPath Foundation** (Release workflow).
             SmartScreen: **Option A** OV/EV `.pfx` and/or **Option B** SignPath — [docs/CODESIGN_A_AND_B.md](https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/CODESIGN_A_AND_B.md).
             **Antivirus trust** (VirusTotal + Kaspersky OpenTIP) runs in this Release job — **not** inside One-Click.
             Secrets: `CODESIGN_PFX_*`, `SIGNPATH_*`, `VIRUSTOTAL_API_KEY`, `MAGIC_KASPERSKY_OPENTIP_KEY`.
