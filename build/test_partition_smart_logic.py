@@ -86,7 +86,70 @@ def test_plan_extend() -> None:
     assert plan["strategy"] == "extend_boot", plan
     assert plan["steps"][0]["op"] == "extend"
     assert plan["steps"][0]["part"] == 1
+    add = plan["steps"][0]["add_mb"]
+    assert 16 <= add <= 99, add
+    assert add <= 10 * 1024, add
     print("plan extend OK")
+
+
+def test_plan_extend_huge_free_capped() -> None:
+    """Adjacent free of 50 GB must NOT grow boot by 50 GB — smart +10 GB cap."""
+    from engine.partition_smart import MAX_BOOT_GROW_MB, smart_boot_grow_mb
+
+    assert smart_boot_grow_mb(50_000, free_mb=50_000, current_mb=100, target_mb=512) <= MAX_BOOT_GROW_MB
+    assert smart_boot_grow_mb(50_000, free_mb=50_000, current_mb=100, target_mb=512) <= 512
+    layout = {
+        "ok": True,
+        "disk": 0,
+        "style": "GPT",
+        "partitions": [
+            {
+                "number": 1,
+                "offset": 1024 * 1024,
+                "size": 100 * 1024 * 1024,
+                "size_mb": 100,
+                "free_mb": 5,
+                "type": "System",
+                "gpt": "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}",
+                "letter": "",
+                "fs": "FAT32",
+                "is_system": True,
+                "is_boot": False,
+                "is_active": False,
+                "is_esp": True,
+            },
+            {
+                "number": 2,
+                "offset": 60 * 1024 ** 3,
+                "size": 100 * 1024 ** 3,
+                "size_mb": 102400,
+                "free_mb": 50000,
+                "type": "Basic",
+                "gpt": "",
+                "letter": "C",
+                "fs": "NTFS",
+                "is_system": False,
+                "is_boot": True,
+                "is_active": False,
+                "is_esp": False,
+            },
+        ],
+        "free_regions": [
+            {
+                "offset": 101 * 1024 * 1024,
+                "size": 50 * 1024 ** 3,
+                "size_mb": 50 * 1024,
+                "before_part": 2,
+            }
+        ],
+    }
+    plan = plan_smart_layout(layout, prefer_uefi=True, target_mb=512)
+    assert plan["strategy"] == "extend_boot", plan
+    add = plan["steps"][0]["add_mb"]
+    assert add <= MAX_BOOT_GROW_MB, add
+    assert add <= 512, f"should only grow toward target, got {add}"
+    assert plan["steps"][0].get("cap_mb") == MAX_BOOT_GROW_MB
+    print("plan extend huge free capped OK")
 
 
 def test_plan_shrink_c() -> None:
@@ -182,6 +245,7 @@ def test_plan_noop() -> None:
 if __name__ == "__main__":
     test_validators()
     test_plan_extend()
+    test_plan_extend_huge_free_capped()
     test_plan_shrink_c()
     test_plan_noop()
     print("ALL partition_smart logic checks passed")

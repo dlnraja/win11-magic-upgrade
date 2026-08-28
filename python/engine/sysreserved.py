@@ -299,6 +299,14 @@ def create_larger_esp(
     Refuses to proceed if system disk cannot be verified (no silent disk 0).
     """
     log(f"Creating new {size_mb} MB EFI System Partition (shrink C:, no data wipe)...", "STEP")
+    try:
+        from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
+
+        size_mb = _cap_boot_create_mb(int(size_mb))
+        if int(size_mb) > MAX_BOOT_GROW_MB:
+            size_mb = MAX_BOOT_GROW_MB
+    except Exception:
+        size_mb = min(int(size_mb), 2048)
     letter = _free_letter()
     if not letter:
         return None
@@ -374,6 +382,14 @@ def create_larger_system_reserved_mbr(
     Does NOT set `active` until bcdboot succeeds (avoids stealing boot flag on failure).
     """
     log(f"Creating new {size_mb} MB System partition (MBR/BIOS path)...", "STEP")
+    try:
+        from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
+
+        size_mb = _cap_boot_create_mb(int(size_mb))
+        if int(size_mb) > MAX_BOOT_GROW_MB:
+            size_mb = MAX_BOOT_GROW_MB
+    except Exception:
+        size_mb = min(int(size_mb), 2048)
     letter = _free_letter()
     if not letter:
         return None

@@ -31,7 +31,10 @@ MIN_BOOT_MB = 260
 GROW_EXTRA_MB = 64  # grow "a bit" beyond minimum when free space allows
 MIN_C_FREE_AFTER_MB = 8192  # keep >= 8 GB free on C: after shrink
 MIN_DATA_FREE_AFTER_MB = 4096
-MAX_BOOT_PART_BYTES = 2 * 1024 * 1024 * 1024  # ESP/SRP never multi-GB
+MAX_BOOT_PART_BYTES = 2 * 1024 * 1024 * 1024  # ESP/SRP never multi-GB for *detection*
+# Hard safety: never grow / carve boot partition by more than +10 GB in one op
+MAX_BOOT_GROW_MB = 10 * 1024
+MAX_BOOT_CREATE_MB = 2048  # new ESP/SRP size ceiling (still ≪ 10 GB grow cap)
 LINUX_EFI_VENDORS = (
     "ubuntu",
     "debian",
@@ -84,7 +87,7 @@ def _valid_part(n: Any) -> int | None:
     return i if i >= 1 else None
 
 
-def _valid_mb(n: Any, *, minimum: int = 1, maximum: int = 8192) -> int | None:
+def _valid_mb(n: Any, *, minimum: int = 1, maximum: int = MAX_BOOT_GROW_MB) -> int | None:
     try:
         i = int(n)
     except (TypeError, ValueError):
@@ -92,6 +95,46 @@ def _valid_mb(n: Any, *, minimum: int = 1, maximum: int = 8192) -> int | None:
     if i < minimum or i > maximum:
         return None
     return i
+
+
+def smart_boot_grow_mb(
+    desired_mb: int,
+    *,
+    free_mb: int | None = None,
+    current_mb: float = 0.0,
+    target_mb: int = TARGET_BOOT_MB,
+) -> int:
+    """
+    Smart grow size for ESP/SRP:
+      - use planner desire (usually target − current), not the whole free region
+      - never exceed MAX_BOOT_GROW_MB (+10 GB) in one resize
+      - never exceed available adjacent free space when known
+    """
+    try:
+        desired = max(0, int(desired_mb))
+    except (TypeError, ValueError):
+        desired = 0
+    need = max(0, int(target_mb) - int(float(current_mb or 0)))
+    grow = desired if desired > 0 else need
+    # Prefer comfort need when desire looks like "whole free region" (>10GB or ≫ need)
+    if grow > MAX_BOOT_GROW_MB or (need > 0 and grow > max(need, GROW_EXTRA_MB) * 4):
+        grow = max(need, GROW_EXTRA_MB) if need or desired else 0
+    grow = min(grow, MAX_BOOT_GROW_MB)
+    if free_mb is not None:
+        try:
+            grow = min(grow, max(0, int(free_mb)))
+        except (TypeError, ValueError):
+            pass
+    return int(max(0, grow))
+
+
+def _cap_boot_create_mb(size_mb: int) -> int:
+    """New boot partition size: target-ish, never above create ceiling / 10 GB."""
+    try:
+        n = int(size_mb)
+    except (TypeError, ValueError):
+        n = TARGET_BOOT_MB
+    return max(MIN_BOOT_MB, min(n, MAX_BOOT_CREATE_MB, MAX_BOOT_GROW_MB))
 
 
 def _enabled() -> bool:
@@ -364,9 +407,18 @@ def plan_smart_layout(
         return plan
 
     want = max(target_mb, int(boot_mb) + GROW_EXTRA_MB) if boot else target_mb
+    # Never plan a final boot size that implies > +10 GB growth
+    if boot:
+        want = min(want, int(boot_mb) + MAX_BOOT_GROW_MB)
     grow_by = max(0, int(want - boot_mb)) if boot else target_mb
+    grow_by = smart_boot_grow_mb(
+        grow_by,
+        current_mb=boot_mb,
+        target_mb=target_mb,
+    )
     plan["need_mb"] = max(grow_by, target_mb // 2) if boot else target_mb
     plan["target_boot_mb"] = want
+    plan["max_grow_mb"] = MAX_BOOT_GROW_MB
 
     free_regions = layout.get("free_regions") or []
     # Adjacent free after boot partition?
@@ -374,28 +426,39 @@ def plan_smart_layout(
         boot_end = boot["offset"] + boot["size"]
         for fr in free_regions:
             if abs(int(fr["offset"]) - boot_end) < 1024 * 1024 and fr["size_mb"] >= 32:
+                add = smart_boot_grow_mb(
+                    max(grow_by, GROW_EXTRA_MB),
+                    free_mb=int(fr["size_mb"]),
+                    current_mb=boot_mb,
+                    target_mb=target_mb,
+                )
+                if add < 16:
+                    continue
                 plan["strategy"] = "extend_boot"
                 plan["steps"] = [
                     {
                         "op": "extend",
                         "part": boot["number"],
-                        "add_mb": min(int(fr["size_mb"]), max(grow_by, GROW_EXTRA_MB)),
+                        "add_mb": add,
                         "free_region_mb": fr["size_mb"],
+                        "cap_mb": MAX_BOOT_GROW_MB,
                     }
                 ]
                 plan["reasons"].append("adjacent_free_after_boot")
+                plan["reasons"].append(f"grow_capped_{add}_of_{fr['size_mb']}")
                 return plan
 
+    create_sz = _cap_boot_create_mb(target_mb)
     # Free space after C: (typical after shrink) — create new boot partition
     if c_part:
         c_end = c_part["offset"] + c_part["size"]
         for fr in free_regions:
-            if abs(int(fr["offset"]) - c_end) < 1024 * 1024 and fr["size_mb"] >= target_mb * 0.9:
+            if abs(int(fr["offset"]) - c_end) < 1024 * 1024 and fr["size_mb"] >= create_sz * 0.9:
                 plan["strategy"] = "create_in_free"
                 plan["steps"] = [
                     {
                         "op": "create_boot",
-                        "size_mb": target_mb,
+                        "size_mb": create_sz,
                         "uefi": prefer_uefi,
                         "free_mb": fr["size_mb"],
                     }
@@ -403,12 +466,13 @@ def plan_smart_layout(
                 plan["reasons"].append("free_after_c")
                 return plan
 
-    # Shrink C: if enough free
-    if c_part and c_part["free_mb"] > MIN_C_FREE_AFTER_MB + target_mb + 500:
+    # Shrink C: if enough free — carve only create_sz (+margin), never > +10 GB
+    shrink_mb = min(create_sz + 40, MAX_BOOT_GROW_MB)
+    if c_part and c_part["free_mb"] > MIN_C_FREE_AFTER_MB + shrink_mb + 500:
         plan["strategy"] = "shrink_c_then_create"
         plan["steps"] = [
-            {"op": "shrink", "letter": "C", "mb": target_mb + 40},
-            {"op": "create_boot", "size_mb": target_mb, "uefi": prefer_uefi},
+            {"op": "shrink", "letter": "C", "mb": shrink_mb},
+            {"op": "create_boot", "size_mb": create_sz, "uefi": prefer_uefi},
         ]
         plan["reasons"].append("shrink_c")
         return plan
@@ -425,7 +489,7 @@ def plan_smart_layout(
                 continue
             if p.get("size_mb", 0) < 20000:  # skip small volumes
                 continue
-            if p.get("free_mb", 0) < MIN_DATA_FREE_AFTER_MB + target_mb + 1000:
+            if p.get("free_mb", 0) < MIN_DATA_FREE_AFTER_MB + shrink_mb + 1000:
                 continue
             # Prefer partitions that end near where we need space (after them = free for create)
             candidates.append(p)
@@ -434,14 +498,14 @@ def plan_smart_layout(
             p = candidates[0]
             plan["strategy"] = "shrink_data_then_create"
             plan["steps"] = [
-                {"op": "shrink", "letter": p["letter"], "mb": target_mb + 40, "part": p["number"]},
-                {"op": "create_boot", "size_mb": target_mb, "uefi": prefer_uefi},
+                {"op": "shrink", "letter": p["letter"], "mb": shrink_mb, "part": p["number"]},
+                {"op": "create_boot", "size_mb": create_sz, "uefi": prefer_uefi},
             ]
             plan["reasons"].append(f"shrink_data:{p['letter']}")
             return plan
 
     # Free space exists but not adjacent — need move (GParted)
-    large_free = [fr for fr in free_regions if fr["size_mb"] >= target_mb]
+    large_free = [fr for fr in free_regions if fr["size_mb"] >= create_sz]
     if large_free and boot:
         plan["strategy"] = "gparted_move"
         plan["gparted"] = True
@@ -450,7 +514,8 @@ def plan_smart_layout(
                 "op": "gparted_move_grow",
                 "boot_part": boot["number"],
                 "free_mb": large_free[0]["size_mb"],
-                "target_mb": want,
+                "target_mb": min(want, int(boot_mb) + MAX_BOOT_GROW_MB),
+                "max_grow_mb": MAX_BOOT_GROW_MB,
             }
         ]
         plan["reasons"].append("free_not_adjacent_need_move")
@@ -471,7 +536,9 @@ def try_extend_boot_partition(
     result: dict[str, Any] = {"ok": False, "actions": [], "method": None}
     disk_n = _valid_disk(disk)
     part_n = _valid_part(part_number)
-    add = _valid_mb(add_mb, minimum=16, maximum=4096)
+    add = _valid_mb(add_mb, minimum=16, maximum=MAX_BOOT_GROW_MB)
+    if add is not None:
+        add = min(add, MAX_BOOT_GROW_MB)
     if disk_n is None or part_n is None or add is None:
         result["actions"].append(
             f"bad_params:disk={disk!r},part={part_number!r},add_mb={add_mb!r}"
@@ -479,19 +546,28 @@ def try_extend_boot_partition(
         log("Extend refused: invalid disk/part/add_mb parameters", "ERROR")
         return result
     add_bytes = int(add) * 1024 * 1024
+    max_grow_bytes = int(MAX_BOOT_GROW_MB) * 1024 * 1024
     script = f"""
 $ErrorActionPreference = 'Stop'
 $diskN = {int(disk_n)}
 $pn = {int(part_n)}
 $p = Get-Partition -DiskNumber $diskN -PartitionNumber $pn -EA Stop
 $supp = Get-PartitionSupportedSize -DiskNumber $diskN -PartitionNumber $pn
-$target = [uint64]($p.Size + {add_bytes})
+$maxGrow = [uint64]{max_grow_bytes}
+$add = [uint64]{add_bytes}
+if ($add -gt $maxGrow) {{ $add = $maxGrow }}
+$target = [uint64]($p.Size + $add)
+# Never exceed +10 GB even if SizeMax is the rest of the disk
+$cap = [uint64]($p.Size + $maxGrow)
+if ($target -gt $cap) {{ $target = $cap }}
 if ($target -gt $supp.SizeMax) {{ $target = [uint64]$supp.SizeMax }}
 if ($target -le $p.Size) {{ throw 'No grow room (SizeMax)' }}
+$delta = [uint64]($target - $p.Size)
+if ($delta -gt $maxGrow) {{ throw 'Grow exceeds +10GB safety cap' }}
 Resize-Partition -DiskNumber $diskN -PartitionNumber $pn -Size $target
-Write-Output ("OK|" + $p.Size + "|" + $target)
+Write-Output ("OK|" + $p.Size + "|" + $target + "|" + $delta)
 """
-    log(f"Smart extend disk {disk_n} part {part_n} +~{add} MB", "STEP")
+    log(f"Smart extend disk {disk_n} part {part_n} +~{add} MB (cap +{MAX_BOOT_GROW_MB} MB)", "STEP")
     code, out = _ps(script, timeout=300)
     result["actions"].append(f"ps_extend:{code}")
     result["output_tail"] = (out or "")[-300:]
@@ -999,7 +1075,9 @@ def create_boot_in_unallocated(
     from .diskpart_safe import ensure_select_disk, free_letter, run_diskpart
 
     disk_n = _valid_disk(disk)
-    size = _valid_mb(size_mb, minimum=100, maximum=2048)
+    size = _valid_mb(size_mb, minimum=100, maximum=MAX_BOOT_CREATE_MB)
+    if size is not None:
+        size = _cap_boot_create_mb(size)
     if disk_n is None or size is None:
         log(f"create_boot_in_unallocated bad params disk={disk!r} size_mb={size_mb!r}", "ERROR")
         return None
@@ -1158,7 +1236,9 @@ def run_smart_partition_magic(
         elif plan["strategy"] == "extend_boot":
             step = (plan.get("steps") or [{}])[0]
             boot = plan.get("boot")
-            add_mb = _valid_mb(step.get("add_mb"), minimum=16, maximum=4096)
+            add_mb = _valid_mb(step.get("add_mb"), minimum=16, maximum=MAX_BOOT_GROW_MB)
+            if add_mb is not None:
+                add_mb = min(add_mb, MAX_BOOT_GROW_MB)
             part_n = _valid_part((boot or {}).get("number"))
             if boot and add_mb and part_n:
                 ext = try_extend_boot_partition(
@@ -1177,7 +1257,9 @@ def run_smart_partition_magic(
                 op = step.get("op")
                 if op == "shrink":
                     letter = _norm_letter(step.get("letter"))
-                    mb = _valid_mb(step.get("mb"), minimum=100, maximum=2048)
+                    mb = _valid_mb(step.get("mb"), minimum=100, maximum=MAX_BOOT_GROW_MB)
+                    if mb is not None:
+                        mb = min(mb, MAX_BOOT_GROW_MB)
                     if not letter or not mb:
                         summary["actions"].append(f"shrink_bad_params:{step!r}")
                         break
@@ -1190,7 +1272,10 @@ def run_smart_partition_magic(
                         break
                     shrunk = True
                 elif op == "create_boot":
-                    size = _valid_mb(step.get("size_mb"), minimum=100, maximum=2048) or target
+                    size = _cap_boot_create_mb(
+                        _valid_mb(step.get("size_mb"), minimum=100, maximum=MAX_BOOT_CREATE_MB)
+                        or target
+                    )
                     root = None
                     if shrunk or plan["strategy"] == "create_in_free":
                         root = create_boot_in_unallocated(
