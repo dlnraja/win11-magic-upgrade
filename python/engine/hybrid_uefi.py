@@ -190,7 +190,29 @@ def prepare_bios_boot_files() -> bool:
 def apply_hybrid_ia32_path(*, activate: bool = False, prepare_bios: bool = True) -> dict:
     """Full intelligent hybrid preparation for IA32 UEFI + x64 CPU."""
     log("=== Hybrid IA32 UEFI path (CSMWrap -> SeaBIOS -> Win x64) ===", "STEP")
+    log("CHECKLIST before reboot: (1) Secure Boot OFF (2) CSM/Legacy allowed if firmware asks (3) USB removed", "WARN")
     log("Disable Secure Boot in firmware before using the hybrid loader.", "WARN")
+    try:
+        desk = Path.home() / "Desktop" / "Win11MagicUpgrade-Hybrid-SecureBoot.txt"
+        desk.write_text(
+            "\n".join(
+                [
+                    "Win11 Magic Upgrade — Hybrid IA32 checklist",
+                    "",
+                    "1. Enter firmware setup (often F2 / Del / Esc).",
+                    "2. Set Secure Boot = Disabled.",
+                    "3. Allow CSM / Legacy if present (CSMWrap needs SeaBIOS).",
+                    "4. Save & exit; keep USB disks unplugged during first boots.",
+                    "5. If Windows won't start: use firmware boot menu → Windows Boot Manager / CSMWrap.",
+                    "",
+                    "Docs: docs/RESEARCH_FORUMS.md",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        log(f"Hybrid checklist → {desk}", "OK")
+    except OSError:
+        pass
     if prepare_bios:
         # Safe on x86 OS too: adds BIOS boot files alongside UEFI
         prepare_bios_boot_files()

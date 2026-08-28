@@ -385,6 +385,21 @@ def _execute_step(
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
+        # Strict ISO gate (forum: wrong language / missing setupprep / partial CDN)
+        try:
+            from .setup_recovery import verify_iso_before_setup
+            from .version_planner import min_build_for_step
+
+            mb = min_build_for_step(step.id)
+            if not verify_iso_before_setup(iso, win=win, arch=arch, min_build=mb):
+                raise RuntimeError(
+                    f"ISO verification failed for step {step.id} — refusing Setup. "
+                    "Re-download official Microsoft ISO matching OS language, or place a valid local ISO."
+                )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            log(f"ISO verify skipped ({e}) — continuing with caution", "WARN")
         try:
             root = mount_iso(iso)
         except OSError as e:
@@ -438,6 +453,15 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
     log(format_chain(chain), 'OK')
     for i, s in enumerate(chain, 1):
         log(f'  {i}. [{s.kind}] {s.label}')
+    recovery = {}
+    try:
+        from .setup_recovery import apply_recovery_remediations, write_recovery_to_support
+
+        rec = apply_recovery_remediations()
+        write_recovery_to_support(rec)
+        recovery = rec.as_dict()
+    except Exception as e:
+        log(f"Setup recovery: {e}", "WARN")
     out = STATE_DIR / 'last-diagnose.json'
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -446,6 +470,7 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
         'chain': [s.as_dict() for s in chain],
         'chain_path': format_chain(chain),
         'logs': get_log_paths(),
+        'setup_recovery': recovery,
     }
     preventive_installed = False
     preventive_ver = 0
@@ -748,6 +773,37 @@ def run_pipeline(
         for note in va.notes:
             log(note, "INFO")
         save_state({"VersionAssessment": va.as_dict()})
+        # Panther recovery on every run (especially resume after failed Setup)
+        try:
+            from .setup_recovery import apply_recovery_remediations, write_recovery_to_support
+
+            rec = apply_recovery_remediations()
+            write_recovery_to_support(rec)
+        except Exception as e:
+            log(f"Setup recovery scan: {e}", "WARN")
+        # Vista best-effort consent gate (forum: no supported inplace path)
+        if getattr(r, "os_family", "") == "vista" and not resume:
+            log(
+                "VISTA GATE: Microsoft has no supported in-place path Vista→Win10/11. "
+                "One-Click will ATTEMPT Win10 22H2 keep-files if Setup allows — "
+                "backup first. Set MAGIC_ALLOW_VISTA=1 to acknowledge.",
+                "WARN",
+            )
+            if os.environ.get("MAGIC_ALLOW_VISTA", "").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                # Soft gate: continue but mark warning; hard block only if MAGIC_BLOCK_VISTA=1
+                if os.environ.get("MAGIC_BLOCK_VISTA", "").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                ):
+                    raise UpgradeBlockedError(
+                        "Vista upgrade blocked (MAGIC_BLOCK_VISTA=1). Backup, then MAGIC_ALLOW_VISTA=1.",
+                        kind="vista-unsupported",
+                    )
         set_step(percent=55, detail="Building upgrade plan…", indeterminate=True)
         print_report(r)
         plan = build_plan(r)

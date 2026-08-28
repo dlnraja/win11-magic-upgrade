@@ -46,6 +46,12 @@ Research notes (Microsoft Support, SetupDiag, FlyOOBE issues, forums) and what t
 | Long Users paths | InstallPathTooLong / MIG | Warn on extreme path lengths |
 | Driver DU during setup | Outdated NIC/storage drivers | Win11 setup uses `/dynamicupdate enable` |
 | ESP still too tight (24H2/25H2) | Padding requirement | `EspPaddingPercent=0` registry workaround + SRP enlarge |
+| `setup.exe /product server` blocked (newer Setup) | Microsoft patched root setup.exe path | Prefer **setupprep.exe**; media Appraiser neutralize when server flag insufficient |
+| Language mismatch ISO vs OS | setupprep "not compatible with the Windows version" | Locale→Fido mapping + `setup_recovery` language hint |
+| `0xC1900101-0x20017` SafeOS BOOT | RST/NVMe, VeraCrypt/BitLocker alt, CrowdStrike | Panther recovery map + BitLocker suspend + EDR stop |
+| `0xC1900101-0x30018` first boot | AV/NIC/GPU filters | Recovery map + stop_risky_services |
+| Vista inplace | No MS-supported path | Best-effort gate + docs (`MAGIC_ALLOW_VISTA`) |
+| Exotic editions (N/SL/LTSC/Embedded) | Edition change hardblock | Warnings in `legacy_os.detect_exotic_edition` |
 | `0x800f0805` / CBS invalid package | Orphan Server language packs | DISM audit + remove orphan `Server-LanguagePack` |
 | No undo after failed prep | Risky changes | System Restore point before patch/upgrade |
 | CBS / WinSxS bloat | Component store | `StartComponentCleanup` (+ optional `--patch-deep` RestoreHealth/SFC) |

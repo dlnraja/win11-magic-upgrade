@@ -11,6 +11,7 @@ Research-backed notes (forums + Microsoft docs):
 """
 from __future__ import annotations
 
+import re
 import winreg
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,23 @@ def _reg_dword(root, path: str, name: str, value: int) -> bool:
         return False
 
 
+def detect_exotic_edition(edition_id: str, product_name: str) -> list[str]:
+    """Warn on editions that often block inplace (forums + SetupDiag)."""
+    blob = f"{edition_id} {product_name}".lower()
+    warns: list[str] = []
+    if any(x in blob for x in ("embedded", "iot", "thinpc", "posready")):
+        warns.append("Embedded/IoT/ThinPC edition — Setup may refuse retail Win10/11 media.")
+    if "enterprises" in blob.replace(" ", "") or "ltsc" in blob or "ltsb" in blob:
+        warns.append("LTSC/LTSB — prefer matching volume ISO; retail 22H2 may block edition change.")
+    if edition_id.lower().endswith("n") or " n " in f" {blob} " or "edition n" in blob:
+        warns.append("N edition (no Media features) — use matching N ISO language/edition when possible.")
+    if "singlelanguage" in blob.replace(" ", "") or "countryspecific" in blob.replace(" ", ""):
+        warns.append("Single Language / Country Specific — keep same edition path; Pro ISO may fail.")
+    if "corecountryspecific" in blob.replace(" ", ""):
+        warns.append("CoreCountrySpecific — inplace to Pro often blocked.")
+    return warns
+
+
 def apply_legacy_host_registry(report: Any) -> dict[str, int]:
     """
     Host-side registry prep so old Windows allows upgrade to Win10 media.
@@ -114,7 +132,6 @@ def apply_legacy_host_registry(report: Any) -> dict[str, int]:
         getattr(report, "product_name", ""), getattr(report, "edition_id", "")
     ):
         summary["media_center"] = 1
-        # Best-effort: allow upgrade eligibility flags on 8.x
         for path, name in (
             (r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\OSUpgrade", "AllowOSUpgrade"),
             (r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\OSUpgrade", "CompatibleAppsUpgraded"),
@@ -122,6 +139,11 @@ def apply_legacy_host_registry(report: Any) -> dict[str, int]:
             if _reg_dword(winreg.HKEY_LOCAL_MACHINE, path, name, 1):
                 summary["keys_set"] += 1
         log("Media Center edition — will patch Setup media (ei.cfg + pid.txt) before launch", "WARN")
+
+    for w in detect_exotic_edition(
+        getattr(report, "edition_id", ""), getattr(report, "product_name", "")
+    ):
+        log(w, "WARN")
 
     return summary
 

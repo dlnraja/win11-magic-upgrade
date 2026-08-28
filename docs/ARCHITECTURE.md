@@ -23,6 +23,7 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── iso.py           Microsoft CDN API (Fido-compatible, urllib)
               ├── virtdisk.py      Mount ISO via virtdisk.dll
               ├── chain.py         Intermediate version plan across reboots
+              ├── setup_recovery.py Panther/forum recovery map + strict ISO gate
               ├── legacy_os.py     Vista/7/8/8.1 + Media Center registry/media bypass
               ├── version_planner.py  Host/ISO build evaluation + smart skip logic
               ├── logutil.py       Panther logs + MigrationReport + state.json
@@ -38,9 +39,11 @@ Legacy PowerShell under `src/` is reference only — **not** used at runtime.
 3. If CPU lacks SSE4.2/POPCNT → **max Win10 22H2** (24H2+ will not boot).  
 4. If **legacy** (Vista/7/8/8.1) or Win10 build &lt; 19045 → Win10 22H2 ISO → inplace → RunOnce resume.  
    Media Center 8.1: `ei.cfg` + `pid.txt` on staged media. See `docs/LEGACY_OS.md`.  
+   After failed Setup: `setup_recovery` parses Panther codes (0xC1900101-*) and remediates.  
 5. If system disk is MBR and `mbr2gpt` exists → convert (no wipe) → reboot resume.  
-6. Boot Manager / hybrid IA32 path when firmware bitness requires it.  
-7. Win11 latest ISO → `setupprep` / `setup` with **`/product server`** + `/compat IgnoreWarning` + `/quiet`.  
+6. Boot Manager / hybrid IA32 path when firmware bitness requires it (Secure Boot OFF checklist).  
+7. Strict ISO verify (family/arch/min_build/setupprep) then Win11 latest → `setupprep` + `/product server`.  
+   See `docs/RESEARCH_FORUMS.md` for forum-backed notes.  
 
 ## Why `/product server`
 

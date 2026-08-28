@@ -121,7 +121,7 @@ def build_plan(report: Report | None = None) -> Plan:
 
     # Legacy Vista / 7 / 8 / 8.1 (incl. Media Center)
     if getattr(r, "is_legacy", False):
-        from .legacy_os import inplace_notes_for_legacy, legacy_label
+        from .legacy_os import detect_exotic_edition, inplace_notes_for_legacy, legacy_label
 
         fam = getattr(r, "os_family", "unknown")
         warnings.append(
@@ -129,6 +129,21 @@ def build_plan(report: Report | None = None) -> Plan:
         )
         for note in inplace_notes_for_legacy(r):
             warnings.append(note)
+        for w in detect_exotic_edition(r.edition_id, r.product_name):
+            warnings.append(w)
+        if fam == "vista":
+            warnings.append(
+                "VISTA: no Microsoft-supported inplace path. Backup first. "
+                "Set MAGIC_ALLOW_VISTA=1 to acknowledge best-effort attempt."
+            )
+            actions.append(
+                Action(
+                    "vista_backup_gate",
+                    "Acknowledge Vista best-effort upgrade",
+                    "Backup required; MAGIC_ALLOW_VISTA=1 recommended",
+                    "high",
+                )
+            )
         actions.append(
             Action(
                 "legacy_registry",

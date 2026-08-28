@@ -24,6 +24,10 @@ Automation cannot finish reCAPTCHA (HubSpot blocks API submit when Captcha is on
 | Download URL | https://github.com/dlnraja/win11-magic-upgrade/releases/latest |
 | Privacy Policy URL | https://github.com/dlnraja/win11-magic-upgrade/blob/main/docs/PRIVACY.md |
 | Wikipedia URL | *(empty)* |
+
+**Status (2026-08-28):** Foundation web form **submitted** — awaiting SignPath approval email / org access.
+After approval, run `build/setup_signpath_github.ps1` with API token + Organization ID.
+
 | Tagline | Open-source portable Windows 10/11 to Windows 11 migration helper using official Microsoft ISOs. |
 | Description | Open-source (MIT) portable Windows migration helper: upgrades Vista/7/8/8.1/10 (incl. Media Center) toward Windows 11 using official Microsoft ISOs only. Pure Python/PyInstaller — no .NET on the target PC. Maintained by @dlnraja. We request SignPath Foundation Authenticode signing of Win11MagicUpgrade.exe from this repo via GitHub Actions release tags v*. |
 | Reputation | Public GitHub repo https://github.com/dlnraja/win11-magic-upgrade with tagged releases, SHA256SUMS, CODE_SIGNING_POLICY.md, and Download/Release pages that document SignPath Foundation signing. |

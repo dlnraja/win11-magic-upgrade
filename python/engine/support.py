@@ -112,3 +112,37 @@ def write_support_pack(extra: dict[str, Any] | None = None) -> Path:
         extra={"Result": "SUPPORT_PACK", "SupportGuide": str(guide), **(extra or {})},
     )
     return guide
+
+
+def append_recovery_section(recovery: dict[str, Any]) -> None:
+    """Append Panther recovery plan to SupportGuide + Desktop copy."""
+    guide = STATE_DIR / "SupportGuide.txt"
+    lines = [
+        "",
+        "Setup recovery (Panther / forum-backed)",
+        "-" * 40,
+    ]
+    codes = list(recovery.get("codes_found") or []) + list(recovery.get("subcodes") or [])
+    if codes:
+        lines.append(f"Codes: {', '.join(codes)}")
+    for a in recovery.get("actions") or []:
+        lines.append(f"- {a}")
+    for n in recovery.get("notes") or []:
+        lines.append(f"Note: {n}")
+    if recovery.get("auto_fixes_applied"):
+        lines.append(f"Auto-applied: {', '.join(recovery['auto_fixes_applied'])}")
+    lines.append("")
+    lines.append(
+        "DANGER: MAGIC_SRP_CONTINUE=1 forces upgrade despite ESP/SRP failure — boot risk. Do not set unless you understand restore."
+    )
+    block = "\n".join(lines)
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        prev = guide.read_text(encoding="utf-8", errors="replace") if guide.exists() else ""
+        guide.write_text(prev + block, encoding="utf-8", errors="replace")
+        desk = Path.home() / "Desktop" / "Win11MagicUpgrade-SupportGuide.txt"
+        if desk.parent.is_dir():
+            desk.write_text(guide.read_text(encoding="utf-8", errors="replace"), encoding="utf-8", errors="replace")
+        log("SupportGuide updated with Setup recovery section", "OK")
+    except OSError as e:
+        log(f"SupportGuide recovery append: {e}", "WARN")

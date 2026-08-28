@@ -36,7 +36,8 @@
     "error_blocked": "Upgrade stopped (not a crash).\n\n{detail}\n\nA privacy-scrubbed report was saved / opened on GitHub when possible.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\",
     "error_esp_srp": "ESP / System Reserved partition could not be fixed automatically.\nThe upgrade cannot continue safely until that partition has enough free space.\n\n{detail}\n\nA sanitized diagnostic was filed on GitHub when possible (no personal data).",
     "error_crash": "Something went wrong.\n\n{detail}\n\nA sanitized report was prepared (no personal data).",
-    "logs_hint": "Logs: Panther + MigrationReport + SupportGuide + compat-engine.json"
+    "logs_hint": "Logs: Panther + MigrationReport + SupportGuide + compat-engine.json + setup-recovery.json",
+    "recovery_hint": "If Setup failed: see SupportGuide (0xC1900101 codes) and setup-recovery.json"
   },
   "fr": {
     "app_title": "Win11 Magic Upgrade",
@@ -75,6 +76,7 @@
     "error_blocked": "Migration arretee (ce n'est pas un plantage).\n\n{detail}\n\nUn rapport anonymise a ete enregistre / ouvert sur GitHub si possible.\nLogs: %LOCALAPPDATA%\\Win11MagicUpgrade\\",
     "error_esp_srp": "La partition ESP / Systeme reserve n'a pas pu etre corrigee automatiquement.\nLa migration ne peut pas continuer tant que cette partition n'a pas assez d'espace libre.\n\n{detail}\n\nUn diagnostic anonymise a ete depose sur GitHub si possible (sans donnees personnelles).",
     "error_crash": "Une erreur est survenue.\n\n{detail}\n\nUn rapport anonymise a ete prepare (sans donnees personnelles).",
-    "logs_hint": "Logs: Panther + MigrationReport + SupportGuide + compat-engine.json"
+    "logs_hint": "Logs: Panther + MigrationReport + SupportGuide + compat-engine.json + setup-recovery.json",
+    "recovery_hint": "Si Setup a echoue: voir SupportGuide (codes 0xC1900101) et setup-recovery.json"
   }
 }
