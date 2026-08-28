@@ -61,46 +61,15 @@ def _links_hint(links: dict[str, str | None] | None) -> str:
 
 
 def _runonce_register() -> None:
-    exe = sys.executable
-    if getattr(sys, "frozen", False):
-        runonce = f'"{exe}" --cli --resume'
-    else:
-        runonce = (
-            f'"{exe}" "{Path(__file__).resolve().parents[1] / "magic_upgrade.py"}" --cli --resume'
-        )
-    subprocess.run(
-        [
-            "reg",
-            "add",
-            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
-            "/v",
-            "Win11MagicUpgrade",
-            "/t",
-            "REG_SZ",
-            "/d",
-            runonce,
-            "/f",
-        ],
-        check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    log("RunOnce registered: continue chain after reboot", "OK")
+    from .autonomy import register_boot_persistence
+
+    register_boot_persistence()
 
 
 def _runonce_unregister() -> None:
-    subprocess.run(
-        [
-            "reg",
-            "delete",
-            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
-            "/v",
-            "Win11MagicUpgrade",
-            "/f",
-        ],
-        check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    log("RunOnce cleared", "OK")
+    from .autonomy import clear_boot_persistence
+
+    clear_boot_persistence()
 
 
 # Setup exit codes that mean "launched / reboot needed" rather than hard failure
@@ -257,25 +226,15 @@ def _persist_chain(steps: list[ChainStep], index: int) -> None:
 
 def _next_pending_index(steps: list[ChainStep], start: int, report) -> int:
     """Skip steps already satisfied after a reboot."""
+    from .version_planner import latest_win11_build_from_state, should_skip_chain_step
+
+    latest = latest_win11_build_from_state()
     i = start
     while i < len(steps):
         s = steps[i]
-        if s.kind == "done":
-            return i
-        if s.id == "win10_22h2" and report.is_win10 and report.build >= 19045:
-            log(f"Skip already done: {s.label}", "OK")
-            i += 1
-            continue
-        if s.id == "win10_22h2" and report.is_win11:
-            log(f"Skip (already past Win10): {s.label}", "OK")
-            i += 1
-            continue
-        if s.id == "mbr2gpt" and report.partition_style == "GPT":
-            log(f"Skip already GPT: {s.label}", "OK")
-            i += 1
-            continue
-        if s.id == "win11_latest" and report.is_win11 and report.build >= 26100:
-            log(f"Skip already Win11 latest-class: {s.label}", "OK")
+        if should_skip_chain_step(s, report, latest_win11=latest):
+            if s.kind != "done":
+                log(f"Skip already done: {s.label}", "OK")
             i += 1
             continue
         return i
@@ -715,12 +674,19 @@ def _prefetch_chain_isos(
         if key in cached:
             continue
         log(f"Prefetch ISO for chain step [{step.label}] ({win}/{arch})...", "STEP")
+        min_build = 0
+        if step.id == "win10_22h2":
+            min_build = 19045
         if win == "10":
-            iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
+            iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch, min_build=min_build)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
         cached[key] = str(iso)
         log(f"ISO ready: {iso}", "OK")
+        if win == "11":
+            from .version_planner import probe_win11_iso_build
+
+            probe_win11_iso_build(iso)
     return cached
 
 
@@ -763,6 +729,13 @@ def run_pipeline(
         set_step(percent=15, detail="Hardware / disk / boot mode…", indeterminate=True)
         log(">>> PHASE 1/7 — Auto-diagnose", "STEP")
         r = collect_report()
+        from .version_planner import evaluate_host, format_assessment
+
+        va = evaluate_host(r)
+        log(f"Version assessment: {format_assessment(va)}", "OK")
+        for note in va.notes:
+            log(note, "INFO")
+        save_state({"VersionAssessment": va.as_dict()})
         set_step(percent=55, detail="Building upgrade plan…", indeterminate=True)
         print_report(r)
         plan = build_plan(r)
@@ -775,6 +748,7 @@ def run_pipeline(
             steps = [s for s in steps if s.id != 'win10_22h2']
         log('=== Intermediate version chain ===', 'STEP')
         log(format_chain(steps), 'OK')
+        _runonce_register()
         try:
             out = STATE_DIR / 'last-diagnose.json'
             STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -862,6 +836,7 @@ def run_pipeline(
         ):
             log('Already on target OS class — preventives/compat applied. Nothing left to upgrade.', 'OK')
             save_state({'Phase': 'Done', 'ChainIndex': len(steps)})
+            _runonce_unregister()
             write_migration_report(
                 extra={'Result': 'ALREADY_DONE', 'Chain': format_chain(steps), 'Mode': 'ONECLICK'}
             )
@@ -873,12 +848,11 @@ def run_pipeline(
         set_step(percent=2, detail="Prefetch ISOs for the chain…", indeterminate=True)
         log(">>> PHASE 5/7 — Prefetch / reuse Microsoft ISOs for the whole chain", "STEP")
         iso_cache: dict[str, str] = {}
-        if not resume:
-            try:
-                iso_cache = _prefetch_chain_isos(steps[start_index:], r, win10_iso, win11_iso)
-                set_step(percent=100, detail=f"{len(iso_cache)} ISO(s) ready", indeterminate=False)
-            except Exception as e:
-                log(f'ISO prefetch partial ({e}) — will download on demand per step', 'WARN')
+        try:
+            iso_cache = _prefetch_chain_isos(steps[start_index:], r, win10_iso, win11_iso)
+            set_step(percent=100, detail=f"{len(iso_cache)} ISO(s) ready", indeterminate=False)
+        except Exception as e:
+            log(f'ISO prefetch partial ({e}) — will download on demand per step', 'WARN')
 
         # ---- Phase 6+7: Execute chain ----
         set_phase("chain", "ESP / MBR / hybrid / mount / Setup…")
@@ -1021,6 +995,7 @@ def run_pipeline(
             i = _next_pending_index(steps, i, r)
 
         save_state({'Phase': 'Done', 'ChainIndex': total})
+        _runonce_unregister()
         log('ONE-CLICK migration chain completed.', 'OK')
         write_migration_report(
             extra={

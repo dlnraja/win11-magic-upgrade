@@ -23,8 +23,9 @@ class ChainStep:
 
 # Windows 10 22H2 = build 19045. Prefer stepping through it before Win11.
 WIN10_22H2_BUILD = 19045
-# Win11 24H2 baseline
+# Win11 24H2 baseline (dynamic latest tracked in state.json LatestWin11Build)
 WIN11_24H2_BUILD = 26100
+WIN11_LATEST_DEFAULT = 26200  # 25H2-class retail when CDN serves it
 
 
 def mapped_version(build: int) -> str:
@@ -71,8 +72,11 @@ def build_version_chain(r: Report) -> list[ChainStep]:
     steps: list[ChainStep] = []
     cur = mapped_version(r.build)
 
-    # Already latest-class Win11
-    if r.is_win11 and r.build >= WIN11_24H2_BUILD:
+    # Already latest-class Win11 (build from state / default 25H2 baseline)
+    from .version_planner import latest_win11_build_from_state
+
+    latest_target = latest_win11_build_from_state()
+    if r.is_win11 and r.build >= latest_target:
         return [
             ChainStep(
                 id="done",
@@ -225,19 +229,24 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 )
             )
 
-    # Step C: Windows 11 latest (from Win10 22H2 or older Win11)
-    if r.is_win10 or (r.is_win11 and r.build < WIN11_24H2_BUILD):
-        from_label = "Windows 10 22H2" if (r.is_win10 and r.build < WIN10_22H2_BUILD) else f"Windows {cur}"
+    # Step C: Windows 11 latest (from Win10 22H2, older Win10, or older Win11 builds)
+    if r.is_win10 or (r.is_win11 and r.build < latest_target):
+        from_l = mapped_version(r.build)
+        from_label = (
+            "Windows 10 22H2"
+            if (r.is_win10 and r.build < WIN10_22H2_BUILD)
+            else f"Windows {from_l} (build {r.build})"
+        )
         idx = len([s for s in steps if s.kind == "iso_upgrade"]) + 1
         steps.append(
             ChainStep(
                 id="win11_latest",
-                label=f"Intermediate {idx}: {from_label} -> Windows 11 latest",
+                label=f"Intermediate {idx}: {from_label} -> Windows 11 latest ({mapped_version(latest_target)}+)",
                 kind="iso_upgrade",
                 win="11",
                 arch="x64",
                 use_server_product=True,
-                note="Flyby11-class /product server + registry bypass; keep files/apps",
+                note="In-place upgrade; /product server + registry bypass; keeps files/apps",
             )
         )
 

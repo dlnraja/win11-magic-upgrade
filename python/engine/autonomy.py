@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .logutil import STATE_DIR, log, save_state
+from .logutil import STATE_DIR, load_state, log, save_state
 
 
 def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
@@ -31,13 +31,16 @@ def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
         return 1, str(e)
 
 
-def register_runonce_resume() -> None:
+def _resume_command_line() -> str:
     exe = sys.executable
     if getattr(sys, "frozen", False):
-        runonce = f'"{exe}" --cli --resume'
-    else:
-        script = Path(__file__).resolve().parents[1] / "magic_upgrade.py"
-        runonce = f'"{exe}" "{script}" --cli --resume'
+        return f'"{exe}" --cli --boot-resume'
+    script = Path(__file__).resolve().parents[1] / "magic_upgrade.py"
+    return f'"{exe}" "{script}" --cli --boot-resume'
+
+
+def register_runonce_resume() -> None:
+    runonce = _resume_command_line().replace("--boot-resume", "--resume")
     _run(
         [
             "reg",
@@ -55,11 +58,114 @@ def register_runonce_resume() -> None:
     log("RunOnce registered for autonomous resume after reboot", "OK")
 
 
+def _reg_set_migration_active(active: bool) -> None:
+    val = "1" if active else "0"
+    _run(
+        [
+            "reg",
+            "add",
+            r"HKLM\SOFTWARE\Win11MagicUpgrade",
+            "/v",
+            "MigrationActive",
+            "/t",
+            "REG_SZ",
+            "/d",
+            val,
+            "/f",
+        ]
+    )
+
+
+def register_scheduled_task_resume() -> None:
+    """Logon scheduled task — retries One-Click until Phase=Done (RunOnce fallback)."""
+    task = "Win11MagicUpgradeResume"
+    tr = _resume_command_line()
+    _run(["schtasks", "/Delete", "/TN", task, "/F"])
+    code, out = _run(
+        [
+            "schtasks",
+            "/Create",
+            "/TN",
+            task,
+            "/TR",
+            tr,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "HIGHEST",
+            "/F",
+        ],
+        timeout=60,
+    )
+    if code == 0:
+        log(f"Scheduled task {task} registered (every logon until migration Done)", "OK")
+    else:
+        log(f"schtasks create skipped ({out[:160]})", "INFO")
+
+
+def clear_boot_persistence() -> None:
+    """Remove RunOnce + logon task when migration finished or aborted."""
+    _run(
+        [
+            "reg",
+            "delete",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+            "/v",
+            "Win11MagicUpgrade",
+            "/f",
+        ]
+    )
+    _run(["schtasks", "/Delete", "/TN", "Win11MagicUpgradeResume", "/F"])
+    _reg_set_migration_active(False)
+    save_state({"MigrationActive": False})
+    log("Boot persistence cleared (RunOnce + scheduled task)", "OK")
+
+
+def register_boot_persistence() -> None:
+    """RunOnce (next boot) + logon task (fallback) while migration is active."""
+    register_runonce_resume()
+    register_scheduled_task_resume()
+    _reg_set_migration_active(True)
+    save_state({"MigrationActive": True, "Phase": load_state().get("Phase") or "Active"})
+
+
+def migration_in_progress(state: dict | None = None) -> bool:
+    st = state if state is not None else load_state()
+    phase = str(st.get("Phase") or "").strip()
+    if phase == "Done":
+        return False
+    if st.get("MigrationActive") in (True, "1", 1):
+        return True
+    active_phases = {
+        "WaitingReboot",
+        "AutoReboot",
+        "AutoRebootScheduled",
+        "SetupRunning",
+        "PendingRebootCycle",
+        "Active",
+        "SetupFailed",
+    }
+    if phase in active_phases:
+        return True
+    try:
+        idx = int(st.get("ChainIndex") or 0)
+        chain = st.get("Chain") or []
+        if idx > 0 and isinstance(chain, list) and idx < len(chain):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def should_auto_resume_on_startup() -> bool:
+    return migration_in_progress(load_state())
+
+
 def schedule_reboot(seconds: int = 45, reason: str = "Win11 Magic Upgrade prep") -> None:
     """Schedule reboot; RunOnce must already be registered."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     save_state({"Phase": "AutoRebootScheduled", "Reason": reason})
-    register_runonce_resume()
+    register_boot_persistence()
     # /t delay, /c comment — no interactive prompt
     code, out = _run(
         [

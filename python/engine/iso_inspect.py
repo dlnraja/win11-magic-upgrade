@@ -378,11 +378,19 @@ def inspect_iso(
     return info
 
 
-def iso_matches_target(info: IsoInfo, win: str, arch: str = "x64") -> bool:
+def iso_matches_target(
+    info: IsoInfo,
+    win: str,
+    arch: str = "x64",
+    *,
+    min_build: int = 0,
+) -> bool:
     """True if inspected ISO is the requested Windows family (and arch soft-check)."""
     if not info.verified or not info.win_family:
         return False
     if info.win_family != str(win):
+        return False
+    if min_build and info.build > 0 and info.build < min_build:
         return False
     # Arch: Win11 is always x64; Win10 x86 rare — filename / pe soft signals only
     if win == "11" and arch != "x64":
@@ -401,10 +409,11 @@ def verify_iso_for_win(
     arch: str = "x64",
     *,
     compute_hash: bool = True,
+    min_build: int = 0,
 ) -> IsoInfo | None:
     """Inspect ISO; return IsoInfo if it matches requested Windows version."""
     info = inspect_iso(path, compute_hash=compute_hash, remount=True)
-    if iso_matches_target(info, win, arch):
+    if iso_matches_target(info, win, arch, min_build=min_build):
         log(
             f"ISO OK for Windows {win}: {path.name} | "
             f"winver={info.display_version} ({info.min_client}) | "

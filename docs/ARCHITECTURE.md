@@ -23,6 +23,7 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── iso.py           Microsoft CDN API (Fido-compatible, urllib)
               ├── virtdisk.py      Mount ISO via virtdisk.dll
               ├── chain.py         Intermediate version plan across reboots
+              ├── version_planner.py  Host/ISO build evaluation + smart skip logic
               ├── logutil.py       Panther logs + MigrationReport + state.json
               └── pipeline.py      Orchestration + quiet setup + resume
 ```
@@ -49,6 +50,8 @@ Documented community / Flyby11 approach: Server setup path skips client TPM/Secu
 |------|------|
 | State | `%LOCALAPPDATA%\Win11MagicUpgrade\state.json` |
 | RunOnce | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce\Win11MagicUpgrade` |
+| Logon task (fallback) | `schtasks` → `Win11MagicUpgradeResume` (until `Phase=Done`) |
+| Migration flag | `HKLM\SOFTWARE\Win11MagicUpgrade\MigrationActive` |
 | Compat inventory | `...\compat-engine.json` |
 | Preventive inventory | `...\installed-preventive-patches.json` |
 | Panther logs | `...\Panther\setupact.log` / `setuperr.log` |

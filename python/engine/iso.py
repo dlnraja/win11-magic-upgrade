@@ -433,7 +433,13 @@ def _iter_isos_in_dir(folder: Path, *, recursive: bool = False) -> list[Path]:
     return found
 
 
-def find_local_iso(win: str, arch: str = "x64", out_dir: Path | None = None) -> Path | None:
+def find_local_iso(
+    win: str,
+    arch: str = "x64",
+    out_dir: Path | None = None,
+    *,
+    min_build: int = 0,
+) -> Path | None:
     """
     Auto-detect an existing Windows ISO on the PC, then verify like Flyby11+:
       mount → setupprep/setup → cversion.ini winver → MD5/SHA256
@@ -477,7 +483,7 @@ def find_local_iso(win: str, arch: str = "x64", out_dir: Path | None = None) -> 
 
     def _score(p: Path) -> tuple:
         cached = catalog_lookup(p)
-        verified_bonus = 2 if cached and iso_matches_target(cached, win, arch) else 0
+        verified_bonus = 2 if cached and iso_matches_target(cached, win, arch, min_build=min_build) else 0
         try:
             st = p.stat()
             return (verified_bonus, st.st_mtime, st.st_size)
@@ -505,15 +511,15 @@ def find_local_iso(win: str, arch: str = "x64", out_dir: Path | None = None) -> 
         )
         # Fast path: catalog already verified for this win
         cached = catalog_lookup(p)
-        if cached and cached.verified and iso_matches_target(cached, win, arch):
+        if cached and cached.verified and iso_matches_target(cached, win, arch, min_build=min_build):
             if cached.md5 and cached.sha256:
                 log(
                     f"Reusing verified ISO (catalog): {p.name} | "
-                    f"Win{cached.win_family} {cached.display_version} | MD5={cached.md5}",
+                    f"Win{cached.win_family} {cached.display_version} build>={min_build or 'any'} | MD5={cached.md5}",
                     "OK",
                 )
                 return p
-        info = verify_iso_for_win(p, win, arch, compute_hash=True)
+        info = verify_iso_for_win(p, win, arch, compute_hash=True, min_build=min_build)
         if info is not None:
             log(f"Auto-detected + verified ISO: {p}", "OK")
             return p
@@ -527,11 +533,15 @@ def get_iso(
     locale: str,
     out_dir: Path | None = None,
     arch: str = "x64",
+    *,
+    min_build: int = 0,
 ) -> Path:
     out_dir = out_dir or (STATE_DIR / "iso")
     out_dir.mkdir(parents=True, exist_ok=True)
     arch = "x86" if arch.lower() in ("x86", "x32", "32", "i386") else "x64"
     label = f"Windows {win} ({arch})"
+    if min_build:
+        label += f" build>={min_build}"
     report_progress(
         phase=f"ISO {label}",
         percent=None,
@@ -540,7 +550,7 @@ def get_iso(
     )
 
     # 1) Auto-detect + verify on PC
-    local = find_local_iso(win, arch=arch, out_dir=out_dir)
+    local = find_local_iso(win, arch=arch, out_dir=out_dir, min_build=min_build)
     if local is not None:
         report_progress(
             phase=f"ISO {label}",
@@ -567,6 +577,11 @@ def get_iso(
         from .iso_inspect import inspect_iso
 
         info = inspect_iso(dest, compute_hash=True, remount=True)
+        if min_build and info.build > 0 and info.build < min_build:
+            log(
+                f"Downloaded ISO build {info.build} below required {min_build} — using anyway (CDN retail)",
+                "WARN",
+            )
         if info.win_family and info.win_family != win:
             log(
                 f"Downloaded ISO winver mismatch: expected Win{win}, got Win{info.win_family}",

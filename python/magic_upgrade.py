@@ -89,6 +89,21 @@ class App(tk.Tk):
         self._busy = False
         self._elevating = False
         self._auto_action = auto_action
+        self._resume_chain = False
+
+        # Autonomous resume after reboot (RunOnce / logon scheduled task)
+        if not self._auto_action:
+            try:
+                from engine.autonomy import should_auto_resume_on_startup  # type: ignore
+
+                if should_auto_resume_on_startup() and is_admin():
+                    self._auto_action = "oneclick"
+                    self._resume_chain = True
+                    self.append(
+                        "Migration in progress — auto-resuming One-Click after reboot…\n"
+                    )
+            except Exception:
+                pass
 
         # Tk callback crashes → sanitized GitHub issue
         def _tk_exc(exc, val, tb):  # type: ignore[no-untyped-def]
@@ -536,7 +551,11 @@ class App(tk.Tk):
                     install_preventive_only(sink)
                     code = 0
                 else:
-                    code = run_pipeline(sink, quiet=True)
+                    code = run_pipeline(
+                        sink,
+                        quiet=True,
+                        resume=getattr(self, "_resume_chain", False),
+                    )
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
                 SETUP_OK = {0, 3010, 3011}
                 try:
@@ -762,6 +781,7 @@ def main() -> None:
             "--diagnose",
             "--bypass",
             "--resume",
+            "--boot-resume",
             "--mbr",
             "--srp",
             "--hybrid",
@@ -837,7 +857,17 @@ def main() -> None:
                     raise
                 except Exception:
                     pass
-                code = run_pipeline(resume="--resume" in argv_l)
+                if "--boot-resume" in argv_l:
+                    try:
+                        from engine.autonomy import should_auto_resume_on_startup  # type: ignore
+
+                        if not should_auto_resume_on_startup():
+                            raise SystemExit(0)
+                    except SystemExit:
+                        raise
+                    except Exception:
+                        pass
+                code = run_pipeline(resume="--resume" in argv_l or "--boot-resume" in argv_l)
                 if code in (EXIT_BLOCKED, EXIT_FAILED):
                     kind, detail = _failure_detail(code=code)
                     _message_box(
