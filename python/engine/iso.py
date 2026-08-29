@@ -202,22 +202,56 @@ def download_file(url: str, dest: Path, log_every_mb: int = 32) -> Path:
         indeterminate=True,
     )
     existing = dest.stat().st_size if dest.exists() else 0
-    headers = {}
-    mode = "wb"
+    headers: dict[str, str] = {}
     if existing > 0:
         headers["Range"] = f"bytes={existing}-"
-        mode = "ab"
         log(f"Resuming from {existing} bytes", "INFO")
 
     req = urllib.request.Request(url, headers=headers)
     started = time.time()
     last_ui = 0.0
+    expected_total: int | None = None
     with urllib.request.urlopen(req, context=_ctx(), timeout=120) as resp:
-        total = resp.headers.get("Content-Length")
-        total_i = int(total) + existing if total and existing else (int(total) if total else None)
-        written = existing
-        last_report = existing
+        status = int(getattr(resp, "status", None) or resp.getcode() or 0)
+        # If we asked for a Range resume but got 200 (full body), rewrite — never append a full ISO onto a partial
+        mode = "ab"
+        session_base = existing
+        if existing > 0 and status == 200:
+            log(
+                "CDN ignored Range (HTTP 200) — restarting download from byte 0 to avoid corrupt ISO",
+                "WARN",
+            )
+            existing = 0
+            session_base = 0
+            mode = "wb"
+        elif existing > 0 and status not in (206, 200):
+            log(f"Unexpected resume HTTP {status} — restarting download", "WARN")
+            existing = 0
+            session_base = 0
+            mode = "wb"
+        elif existing == 0:
+            mode = "wb"
+            session_base = 0
+
+        cl_hdr = resp.headers.get("Content-Length")
+        cr_hdr = resp.headers.get("Content-Range") or ""
+        total_i: int | None = None
+        if status == 206 and cr_hdr:
+            m = re.search(r"/\s*(\d+)\s*$", cr_hdr)
+            if m:
+                total_i = int(m.group(1))
+            elif cl_hdr:
+                total_i = session_base + int(cl_hdr)
+        elif cl_hdr:
+            total_i = int(cl_hdr) if session_base == 0 or status == 200 else session_base + int(cl_hdr)
+        expected_total = total_i
+
+        written = session_base
+        last_report = session_base
         with dest.open(mode) as f:
+            if mode == "wb":
+                written = 0
+                last_report = 0
             while True:
                 chunk = resp.read(1024 * 1024)
                 if not chunk:
@@ -226,7 +260,7 @@ def download_file(url: str, dest: Path, log_every_mb: int = 32) -> Path:
                 written += len(chunk)
                 now = time.time()
                 elapsed = max(now - started, 0.001)
-                downloaded_session = max(written - existing, 0)
+                downloaded_session = written if mode == "wb" else max(written - session_base, 0)
                 speed = downloaded_session / elapsed
                 eta = None
                 pct = None
@@ -235,7 +269,6 @@ def download_file(url: str, dest: Path, log_every_mb: int = 32) -> Path:
                     remain = max(total_i - written, 0)
                     if speed > 0:
                         eta = remain / speed
-                # UI throttle ~0.4s
                 if now - last_ui >= 0.4:
                     detail = (
                         f"{format_bytes(written)}"
@@ -264,15 +297,20 @@ def download_file(url: str, dest: Path, log_every_mb: int = 32) -> Path:
                         log(f"Download {written/1e9:.2f} GB · {format_speed(speed)}")
                     last_report = written
 
-    if dest.stat().st_size < 1_000_000_000:
+    final_size = dest.stat().st_size
+    if final_size < 1_000_000_000:
         raise RuntimeError(f"ISO too small / incomplete: {dest}")
-    log(f"Download complete: {dest} ({dest.stat().st_size/1e9:.2f} GB)", "OK")
+    if expected_total and final_size + 1_048_576 < expected_total:
+        raise RuntimeError(
+            f"ISO incomplete: got {final_size} bytes, expected ~{expected_total}"
+        )
+    log(f"Download complete: {dest} ({final_size/1e9:.2f} GB)", "OK")
     report_progress(
         phase=f"Download {dest.name}",
         percent=100.0,
-        detail=f"Complete — {format_bytes(dest.stat().st_size)}",
-        bytes_done=dest.stat().st_size,
-        bytes_total=dest.stat().st_size,
+        detail=f"Complete — {format_bytes(final_size)}",
+        bytes_done=final_size,
+        bytes_total=final_size,
         speed_bps=0.0,
         eta_seconds=0.0,
     )

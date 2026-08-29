@@ -46,3 +46,34 @@ def record_event(kind: str, *, detail: str = "") -> None:
         log(f"Local stats +1 {kind} → {STATS_FILE}", "INFO")
     except OSError as e:
         log(f"stats write: {e}", "WARN")
+
+
+def format_stats_summary() -> str:
+    """Human-readable dump for --cli --stats (works even if MAGIC_STATS was off for past events)."""
+    data = _load()
+    counts = data.get("counts") or {}
+    events = data.get("events") or []
+    lines = [
+        "Win11 Magic Upgrade — local stats",
+        f"File: {STATS_FILE}",
+        f"MAGIC_STATS enabled now: {stats_enabled()}",
+        "",
+        "Counts:",
+    ]
+    if not counts:
+        lines.append("  (none yet — set MAGIC_STATS=1 and run One-Click)")
+    else:
+        for k in sorted(counts.keys()):
+            lines.append(f"  {k}: {counts[k]}")
+    lines.append("")
+    lines.append("Recent events (last 15):")
+    if not events:
+        lines.append("  (none)")
+    else:
+        for ev in events[-15:]:
+            lines.append(f"  {ev.get('ts', '?')}  {ev.get('kind')}  {ev.get('detail', '')}")
+    return "\n".join(lines)
+
+
+def print_stats() -> None:
+    print(format_stats_summary())

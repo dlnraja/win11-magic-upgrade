@@ -31,6 +31,7 @@ from .logutil import STATE_DIR, log, save_state
 _CODE_RE = re.compile(
     r"0xC1900101\s*[-–]?\s*(0x[0-9A-Fa-f]+)|"
     r"(0xC1900[0-9A-Fa-f]{3})|"
+    r"(0xC142[0-9A-Fa-f]{4})|"
     r"(0x8007[0-9A-Fa-f]{4})|"
     r"(0x800F[0-9A-Fa-f]{4})|"
     r"(0x8024[0-9A-Fa-f]{4})|"
@@ -43,6 +44,17 @@ _CRYPTO_RSA_HINT = re.compile(
     r"Crypto\\RSA|ProgramData\\Microsoft\\Crypto|"
     r"NCrypt|CNG|TPM-Driver-WMI|MigrateData|MIGRATE_DATA|"
     r"ERROR_FAIL.*arbitration|corrupt.*(cert|key|rsa)",
+    re.I,
+)
+
+_MACHINEKEYS_FILE = re.compile(
+    r"(?:MachineKeys|Crypto\\RSA)[\\/]([A-Za-z0-9_\-\.]{8,})",
+    re.I,
+)
+
+_SECONDARY_DISK_HINT = re.compile(
+    r"0x20009|80070002.*20009|secondary\s+disk|non-system\s+disk|"
+    r"InstallPathTooLong|profile\s+path.{0,40}long",
     re.I,
 )
 
@@ -88,6 +100,11 @@ SUBCODE_ACTIONS: dict[str, dict[str, str]] = {
         "cause": "Migration driver crash (often paired with 0x8007042B on 25H2)",
         "action": "Parse Panther for failing file/reg; delete corrupt ProgramData\\Microsoft\\Crypto\\RSA machine certs if flagged; try a clean local admin session; uninstall VPN leftovers; retry.",
     },
+    "0x20009": {
+        "phase": "SAFE_OS / FILE",
+        "cause": "Missing file during apply (secondary disk / USB / bad path)",
+        "action": "Offline secondary fixed disks; disconnect USB storage; check InstallPathTooLong; retry.",
+    },
 }
 
 TOP_CODE_ACTIONS: dict[str, dict[str, str]] = {
@@ -126,6 +143,26 @@ TOP_CODE_ACTIONS: dict[str, dict[str, str]] = {
         "cause": "A device attached to the system is not functioning",
         "action": "Disconnect USB storage/docks; check Device Manager problem devices; update drivers.",
     },
+    "0x80070002": {
+        "phase": "SAFE_OS / FILE",
+        "cause": "ERROR_FILE_NOT_FOUND (often 0x80070002-0x20009 secondary disk / missing package)",
+        "action": "Offline non-system disks; disconnect USB enclosures; verify ISO integrity; retry One-Click.",
+    },
+    "0xc190012e": {
+        "phase": "SAFE_OS",
+        "cause": "SafeOS image apply / DU package failure",
+        "action": "Enable Dynamic Update (or stage MAGIC_DU_CAB_DIR offline cabs); free space; update storage drivers; retry.",
+    },
+    "0x800f0922": {
+        "phase": "CBS / SERVICING",
+        "cause": "CBS package install failed (often SRP/ESP or pending reboot)",
+        "action": "Fix ESP/SRP free space; reboot once; run DISM StartComponentCleanup; retry.",
+    },
+    "0xc1420121": {
+        "phase": "MIGRATE",
+        "cause": "Hard-block during migrate / appraiser",
+        "action": "Review CompatData; neutralize BlockMigration; uninstall listed blockers; retry.",
+    },
 }
 
 
@@ -139,6 +176,8 @@ class RecoveryPlan:
     esp_hint: bool = False
     migrate_data_hint: bool = False
     crypto_rsa_hint: bool = False
+    secondary_disk_hint: bool = False
+    machinekeys_files: list[str] = field(default_factory=list)
     setupdiag_findings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -257,6 +296,13 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
             if _CRYPTO_RSA_HINT.search(text):
                 plan.crypto_rsa_hint = True
                 plan.migrate_data_hint = True
+            if _SECONDARY_DISK_HINT.search(text):
+                plan.secondary_disk_hint = True
+            for mk in _MACHINEKEYS_FILE.findall(text):
+                if mk not in plan.machinekeys_files:
+                    plan.machinekeys_files.append(mk)
+                    if len(plan.machinekeys_files) >= 8:
+                        break
         except OSError as e:
             plan.notes.append(f"read {p}: {e}")
 
@@ -281,7 +327,14 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
     for m in _CODE_RE.finditer(blob):
         sub = (m.group(1) or "").lower()
         top = _normalize_top_code(
-            m.group(2) or m.group(3) or m.group(4) or m.group(5) or m.group(6) or m.group(7) or ""
+            m.group(2)
+            or m.group(3)
+            or m.group(4)
+            or m.group(5)
+            or m.group(6)
+            or m.group(7)
+            or m.group(8)
+            or ""
         )
         if sub and sub not in seen:
             seen.add(sub)
@@ -320,6 +373,15 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
         )
     if plan.crypto_rsa_hint or plan.migrate_data_hint:
         _hint_corrupt_crypto_rsa(plan)
+        for mk in plan.machinekeys_files[:5]:
+            plan.actions.append(
+                f"Named MachineKeys candidate (manual only): {mk} — back up then remove only if SetupDiag confirms it."
+            )
+    if plan.secondary_disk_hint or "0x20009" in plan.subcodes or "0x80070002" in plan.codes_found:
+        plan.actions.append(
+            "Secondary disk / 0x20009 hint: One-Click will try offlining non-system disks before retry."
+        )
+        plan.secondary_disk_hint = True
     for fd in plan.setupdiag_findings[:8]:
         plan.actions.append(f"SetupDiag: {fd}")
     return plan
@@ -372,6 +434,24 @@ def apply_recovery_remediations(plan: RecoveryPlan | None = None) -> RecoveryPla
                 plan.auto_fixes_applied.append("migrate_data_soft_services")
             except Exception:
                 pass
+            try:
+                from .errfix import detect_duplicate_user_profiles, warn_long_profile_paths
+
+                detect_duplicate_user_profiles()
+                warn_long_profile_paths()
+                plan.auto_fixes_applied.append("profile_path_scan")
+            except Exception as e:
+                plan.notes.append(f"profile scan: {e}")
+        if plan.secondary_disk_hint or "0x20009" in plan.subcodes:
+            try:
+                from .autonomy import offline_secondary_fixed_disks
+                from .errfix import warn_secondary_fixed_disks
+
+                warn_secondary_fixed_disks()
+                n = offline_secondary_fixed_disks()
+                plan.auto_fixes_applied.append(f"offline_secondary_disks:{n}")
+            except Exception as e:
+                plan.notes.append(f"secondary disks: {e}")
     except Exception as e:
         plan.notes.append(f"patches remediations: {e}")
 
@@ -429,12 +509,23 @@ def write_recovery_to_support(plan: RecoveryPlan) -> None:
             pass
 
 
-def verify_iso_before_setup(iso_path: Path, *, win: str, arch: str, min_build: int = 0) -> bool:
+def verify_iso_before_setup(
+    iso_path: Path,
+    *,
+    win: str,
+    arch: str,
+    min_build: int = 0,
+    host_locale: str | None = None,
+) -> bool:
     """
     Strict gate: inspect ISO; require setupprep or setup + matching family/arch/min_build.
     Research: wrong language ISO / missing setupprep → silent or 'not compatible' failures.
     """
-    from .iso_inspect import inspect_iso, iso_matches_target
+    from .iso_inspect import (
+        host_locale_matches_iso,
+        inspect_iso,
+        iso_matches_target,
+    )
 
     log(f"Strict ISO verify: {iso_path.name} (Win{win} {arch} min_build≥{min_build})", "STEP")
     info = inspect_iso(iso_path, compute_hash=False, remount=True)
@@ -460,8 +551,35 @@ def verify_iso_before_setup(iso_path: Path, *, win: str, arch: str, min_build: i
             "WARN: setupprep.exe missing — using setup.exe (weaker Flyby parity; language mismatch more likely)",
             "WARN",
         )
+
+    # Language gate (when lang.ini known)
+    locale = host_locale
+    if not locale:
+        try:
+            import winreg
+
+            locale = str(
+                winreg.QueryValueEx(
+                    winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International"),
+                    "LocaleName",
+                )[0]
+            )
+        except Exception:
+            locale = ""
+    langs = list(getattr(info, "languages", None) or [])
+    if langs and locale and not host_locale_matches_iso(locale, langs):
+        log(
+            f"ISO rejected: language mismatch — OS locale={locale}, ISO offers {', '.join(langs[:6])}. "
+            "Download matching Fido locale or install the OS language pack, then retry.",
+            "ERROR",
+        )
+        return False
+    if langs and locale:
+        log(f"ISO language OK for host {locale} (media: {', '.join(langs[:6])})", "OK")
+
     log(
-        f"ISO OK: Win{info.win_family} build {b} setupprep={info.has_setupprep}",
+        f"ISO OK: Win{info.win_family} build {b} setupprep={info.has_setupprep}"
+        + (f" lang={info.primary_lang}" if info.primary_lang else ""),
         "OK",
     )
     return True

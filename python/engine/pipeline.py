@@ -138,17 +138,55 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     root = Path(setup_root)
     setup = root / "setup.exe"
     prep = root / "sources" / "setupprep.exe"
+
+    # Stage offline DU cabs before launch (air-gap / flaky network)
+    du_info: dict = {}
+    try:
+        from .du_offline import prefer_offline_du, stage_offline_du_cabs
+
+        du_info = stage_offline_du_cabs(root)
+        if du_info.get("ok"):
+            from .compat import write_setupconfig_ini
+
+            write_setupconfig_ini(du_folder=str(du_info.get("dest") or ""))
+    except Exception as e:
+        log(f"Offline DU staging: {e}", "INFO")
+
+    offline_du = False
+    try:
+        from .du_offline import prefer_offline_du
+
+        offline_du = prefer_offline_du() and bool(du_info.get("ok"))
+    except Exception:
+        offline_du = False
+
     if use_server:
         apply_hardware_bypass()
         # Flyby11: always prefer setupprep.exe when present
         exe = prep if prep.exists() else setup
         args = setup_bypass_args(quiet=quiet, experimental=True)
+        if offline_du:
+            out_args: list[str] = []
+            skip_next = False
+            for a in args:
+                if skip_next:
+                    out_args.append("disable")
+                    skip_next = False
+                    continue
+                if a.lower() == "/dynamicupdate":
+                    out_args.append(a)
+                    skip_next = True
+                else:
+                    out_args.append(a)
+            args = out_args
+            log("DynamicUpdate=disable (offline DU cabs staged / MAGIC_DU_OFFLINE)", "INFO")
         log(
             f"Launching {exe.name} (Flyby11/FlyOOBE: /Product Server + Compat IgnoreWarning + MigrateDrivers All)",
             "STEP",
         )
     else:
         exe = setup
+        du_mode = "disable" if offline_du else "enable"
         args = [
             "/auto",
             "upgrade",
@@ -157,7 +195,7 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
             "/MigrateDrivers",
             "All",
             "/dynamicupdate",
-            "enable",
+            du_mode,
             "/eula",
             "accept",
         ]
@@ -391,7 +429,9 @@ def _execute_step(
             from .version_planner import min_build_for_step
 
             mb = min_build_for_step(step.id)
-            if not verify_iso_before_setup(iso, win=win, arch=arch, min_build=mb):
+            if not verify_iso_before_setup(
+                iso, win=win, arch=arch, min_build=mb, host_locale=getattr(report, "locale", None)
+            ):
                 raise RuntimeError(
                     f"ISO verification failed for step {step.id} — refusing Setup. "
                     "Re-download official Microsoft ISO matching OS language, or place a valid local ISO."
@@ -1002,15 +1042,55 @@ def run_pipeline(
                             " Win32 ERROR_ALREADY_EXISTS: leftover C:\\$WINDOWS.~BT "
                             "(or stuck ISO/WIM). Reboot, delete those folders, eject ISO, retry."
                         )
+                    # Soft recovery + one automatic boot-resume retry
+                    retries = 0
+                    try:
+                        retries = int(load_state().get("SetupFailRetries") or 0)
+                    except (TypeError, ValueError):
+                        retries = 0
+                    try:
+                        from .setup_recovery import apply_recovery_remediations
+
+                        apply_recovery_remediations()
+                    except Exception as e:
+                        log(f"Post-Setup recovery: {e}", "WARN")
                     save_state(
                         {
                             'Phase': 'SetupFailed',
                             'ChainIndex': i,
                             'LastExitCode': code,
                             'LastStep': step.as_dict(),
+                            'SetupFailRetries': retries + 1,
                         }
                     )
-                    _runonce_unregister()
+                    if retries < 1:
+                        from .autonomy import register_boot_persistence
+
+                        register_boot_persistence()
+                        log(
+                            f"Setup failed (exit {code}) — recovery applied; "
+                            f"ONE automatic resume registered for next logon (RunOnce).{hint}",
+                            "WARN",
+                        )
+                        try:
+                            from .stats import record_event
+
+                            record_event("setup_failed_retry_armed", detail=str(code))
+                        except Exception:
+                            pass
+                    else:
+                        _runonce_unregister()
+                        log(
+                            f"Setup failed (exit {code}) — chain index not advanced; "
+                            f"auto-retry already used.{hint}",
+                            "ERROR",
+                        )
+                        try:
+                            from .stats import record_event
+
+                            record_event("setup_failed", detail=str(code))
+                        except Exception:
+                            pass
                     write_migration_report(
                         extra={
                             'Result': 'SETUP_FAILED',
@@ -1018,6 +1098,7 @@ def run_pipeline(
                             'Step': step.label,
                             'Chain': format_chain(steps),
                             'Mode': 'ONECLICK',
+                            'SetupFailRetries': retries + 1,
                             'Hint': hint.strip() if hint else '',
                             'Note_SSE42': (
                                 'CPU without SSE4.2/POPCNT: chain correctly targets Win10 22H2 '
@@ -1027,7 +1108,6 @@ def run_pipeline(
                             ),
                         }
                     )
-                    log(f'Setup failed (exit {code}) — chain index not advanced.{hint}', 'ERROR')
                     end_session(success=False)
                     return code
                 save_state(
@@ -1036,8 +1116,15 @@ def run_pipeline(
                         'ChainIndex': i + 1,
                         'LastStep': step.as_dict(),
                         'LastExitCode': code,
+                        'SetupFailRetries': 0,
                     }
                 )
+                try:
+                    from .stats import record_event
+
+                    record_event("setup_launched", detail=step.label)
+                except Exception:
+                    pass
                 log(
                     f'Setup launched ({step.label}). '
                     'PC will reboot; One-Click resumes automatically (RunOnce).',
@@ -1065,6 +1152,12 @@ def run_pipeline(
         save_state({'Phase': 'Done', 'ChainIndex': total})
         _runonce_unregister()
         log('ONE-CLICK migration chain completed.', 'OK')
+        try:
+            from .stats import record_event
+
+            record_event("migration_done", detail=format_chain(steps))
+        except Exception:
+            pass
         write_migration_report(
             extra={
                 'Result': 'DONE',

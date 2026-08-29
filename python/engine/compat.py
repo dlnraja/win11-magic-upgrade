@@ -334,21 +334,24 @@ def purge_appcompat_markers() -> None:
         log(f"Purged AppCompat tree {tree}", "OK")
 
 
-def write_setupconfig_ini() -> list[Path]:
+def write_setupconfig_ini(*, du_folder: str | None = None) -> list[Path]:
     """
     SetupConfig.ini tells setupprep/setup to IgnoreWarning on compat scans.
     Written to common locations used by feature updates / WSUS / Default user.
+    Optional du_folder: hint path for offline Dynamic Update packages.
     """
-    body = "\r\n".join(
-        [
-            "[SetupConfig]",
-            "Compat=IgnoreWarning",
-            "DynamicUpdate=Enable",
-            "ShowOobe=None",
-            "Telemetry=Disable",
-            "",
-        ]
-    )
+    lines = [
+        "[SetupConfig]",
+        "Compat=IgnoreWarning",
+        "DynamicUpdate=Enable",
+        "ShowOobe=None",
+        "Telemetry=Disable",
+    ]
+    if du_folder:
+        # Comment-style note + path for operators; Setup ignores unknown keys safely
+        lines.append(f"; MagicUpgrade_DU_Folder={du_folder}")
+    lines.append("")
+    body = "\r\n".join(lines)
     windir = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     targets = [
         windir / "System32" / "UpdateHealthTools" / "SetupConfig.ini",  # may not exist

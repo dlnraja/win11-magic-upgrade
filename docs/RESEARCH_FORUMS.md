@@ -58,7 +58,16 @@ Frequent on 25H2 feature upgrades: migration arbitration / corrupt `ProgramData\
 | Var | Purpose |
 |-----|---------|
 | `MAGIC_ENTERPRISE_ISO_DIR` | Local VL/enterprise ISO search root |
-| `MAGIC_DU_CAB_DIR` | Offline Dynamic Update cab folder hint |
-| `MAGIC_STATS=1` | Local opt-in counters (`local-stats.json`) |
+| `MAGIC_DU_CAB_DIR` | Offline Dynamic Update `.cab` folder — staged before Setup |
+| `MAGIC_DU_OFFLINE=1` | Force `/dynamicupdate disable` when cabs are staged |
+| `MAGIC_STATS=1` | Local opt-in counters (`local-stats.json`); CLI: `--cli --stats` |
 | `MAGIC_LP_DRY_RUN=1` | Language pack audit without remove |
 | `MAGIC_UNINSTALL_ALLOWLIST=1` | Extra guidance for LGS / Daemon Tools only |
+
+## v1.41 enrichments
+
+- ISO **language gate** (`sources\lang.ini` vs OS locale)
+- Resumable ISO download refuses HTTP 200 append (corrupt partials)
+- Offline DU cab staging (`du_offline.py`)
+- One automatic RunOnce retry after Setup fail + Panther recovery
+- Richer recovery codes (`0x20009`, `0x80070002`, `0xC190012E`, …) + secondary-disk offline

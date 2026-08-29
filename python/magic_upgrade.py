@@ -767,6 +767,7 @@ Win11 Magic Upgrade — CLI
   Win11MagicUpgrade.exe --cli --resume | --boot-resume
   Win11MagicUpgrade.exe --cli --bypass | --mbr | --srp | --hybrid
   Win11MagicUpgrade.exe --cli --patch | --patch-deep | --install-patches
+  Win11MagicUpgrade.exe --cli --stats
 
 Exit codes:
   0  OK / Setup launched / already done
@@ -778,11 +779,12 @@ Exit codes:
 Env (selected):
   MAGIC_ALLOW_VISTA=1          Acknowledge Vista best-effort
   MAGIC_ALLOW_AUTOMATION=1     Bypass UIA guard
-  MAGIC_STATS=1                Local failure counters (no network)
+  MAGIC_STATS=1                Local success/failure counters (no network)
   MAGIC_LP_DRY_RUN=1           Language-pack audit without DISM remove
   MAGIC_UNINSTALL_ALLOWLIST=1  Warn curated uninstall targets
   MAGIC_ENTERPRISE_ISO_DIR=    Local VL/enterprise ISO folder
-  MAGIC_DU_CAB_DIR=            Offline Dynamic Update .cab folder
+  MAGIC_DU_CAB_DIR=            Offline Dynamic Update .cab folder (staged before Setup)
+  MAGIC_DU_OFFLINE=1           Force /dynamicupdate disable when cabs staged
   MAGIC_ISO_DIRS=              Extra ISO search dirs (; separated)
   MAGIC_SRP_CONTINUE=1         DANGER: continue after ESP/SRP fail
   MAGIC_BLOCK_VISTA=1          Hard-block Vista One-Click
@@ -823,6 +825,7 @@ Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
             "--patch",
             "--patch-deep",
             "--install-patches",
+            "--stats",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -840,6 +843,11 @@ Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
             )
             from engine.errors import EXIT_BLOCKED, EXIT_FAILED, UpgradeBlockedError  # type: ignore
 
+            if "--stats" in argv_l:
+                from engine.stats import print_stats  # type: ignore
+
+                print_stats()
+                return
             if "--diagnose" in argv_l:
                 run_diagnose()
                 return

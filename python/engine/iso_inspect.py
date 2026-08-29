@@ -48,9 +48,13 @@ class IsoInfo:
     setup_pe_version: str = ""
     mount_root: str = ""
     verified: bool = False
+    languages: list[str] | None = None  # from sources\\lang.ini
+    primary_lang: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d["languages"] = list(self.languages or [])
+        return d
 
 
 def _catalog_load() -> dict:
@@ -140,6 +144,45 @@ def hash_iso_file(path: Path, *, want_md5: bool = True, want_sha256: bool = True
     log(f"ISO SHA256: {sha_hex}", "OK")
     report_progress(phase=f"Hash {path.name}", percent=100.0, detail="Hash complete")
     return md5_hex, sha_hex
+
+
+def parse_lang_ini(text: str) -> list[str]:
+    """Extract BCP-47 tags from sources\\lang.ini (Available UI Languages)."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"(?im)^\s*([a-z]{2}(?:-[A-Za-z]{2,8})?)\s*=\s*\d+", text):
+        tag = m.group(1)
+        # Normalize region case: en-us → en-US when 2-letter region
+        parts = tag.split("-")
+        if len(parts) == 2 and len(parts[1]) == 2:
+            tag = f"{parts[0].lower()}-{parts[1].upper()}"
+        else:
+            tag = parts[0].lower() + (("-" + "-".join(parts[1:])) if len(parts) > 1 else "")
+        key = tag.lower()
+        if key not in seen:
+            seen.add(key)
+            found.append(tag)
+    return found
+
+
+def host_locale_matches_iso(host_locale: str, iso_langs: list[str]) -> bool:
+    """
+    True if OS locale is compatible with ISO languages.
+    Empty iso_langs → unknown → allow (do not hard-block).
+    Matches exact tag or same language family (fr-FR ≈ fr-CA).
+    """
+    if not iso_langs:
+        return True
+    host = (host_locale or "").replace("_", "-").strip()
+    if not host:
+        return True
+    host_l = host.lower()
+    host_lang = host_l.split("-")[0]
+    for tag in iso_langs:
+        t = tag.replace("_", "-").lower()
+        if t == host_l or t.split("-")[0] == host_lang:
+            return True
+    return False
 
 
 def parse_cversion_ini(text: str) -> tuple[str, int, int]:
@@ -287,6 +330,21 @@ def inspect_mounted_root(root: str | Path) -> dict[str, Any]:
                         min_client = min_client or pe_ver
                 break
     family = build_to_family(build)
+    languages: list[str] = []
+    lang_ini = sources / "lang.ini"
+    if lang_ini.exists():
+        try:
+            languages = parse_lang_ini(lang_ini.read_text(encoding="utf-8", errors="replace"))
+            if languages:
+                log(f"ISO languages (lang.ini): {', '.join(languages[:8])}", "INFO")
+        except OSError as e:
+            log(f"lang.ini read: {e}", "WARN")
+    # Fallback: filename tokens like fr-fr / en-us
+    if not languages:
+        name = root.name if root.name.lower().endswith(".iso") else str(root)
+        for m in re.finditer(r"(?i)\b([a-z]{2}-[a-z]{2})\b", name):
+            languages.append(m.group(1))
+    primary = languages[0] if languages else ""
     return {
         "min_client": min_client,
         "build": build,
@@ -297,6 +355,8 @@ def inspect_mounted_root(root: str | Path) -> dict[str, Any]:
         "has_setupprep": prep.exists(),
         "setup_pe_version": pe_ver,
         "mount_root": str(root),
+        "languages": languages,
+        "primary_lang": primary,
     }
 
 
@@ -352,6 +412,8 @@ def inspect_iso(
             info.has_setupprep = bool(meta["has_setupprep"])
             info.setup_pe_version = meta["setup_pe_version"]
             info.mount_root = meta["mount_root"]
+            info.languages = list(meta.get("languages") or [])
+            info.primary_lang = str(meta.get("primary_lang") or "")
             # Flyby gate: setupprep preferred; setup.exe acceptable
             info.verified = bool(info.has_setupprep or info.has_setup) and info.build > 0
             if not info.has_setupprep and info.has_setup:
