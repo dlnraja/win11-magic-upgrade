@@ -38,6 +38,14 @@ Secrets (GitHub Actions → repository secrets):
 | `VIRUSTOTAL_API_KEY` / `MAGIC_VT_API_KEY` | VirusTotal submit on every `v*` Release |
 | `MAGIC_KASPERSKY_OPENTIP_KEY` / `KASPERSKY_OPENTIP_KEY` | Kaspersky OpenTIP on every `v*` Release |
 
+One-shot setup (after you have both portal keys):
+
+```powershell
+.\build\setup_av_github.ps1 -VirusTotalApiKey "<vt>" -KasperskyOpenTipKey "<kp>" -WriteLocal -RerunRelease
+```
+
+Portals: [VirusTotal API key](https://www.virustotal.com/gui/my-apikey) · [Kaspersky OpenTIP](https://opentip.kaspersky.com/)
+
 If Kaspersky still quarantines the EXE on a user PC:
 
 1. Restore from **Quarantine** → **Trusted applications** (Desktop `Win11MagicUpgrade-KIS-WHITELIST.txt` / `Fix-KIS.cmd`)
