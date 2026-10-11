@@ -32,6 +32,7 @@ python/gui_panel.py                Checkbox options → MAGIC_* env (persisted)
               ├── unlock_pack.py   MC/DVD/Win8 migration + LabConfig HW unlock (every hop)
               ├── frameworks.py    .NET / DirectX / VC++ / Media Feature Pack (winget+DISM)
               ├── boot_remediation.py  EFI/MBR failover bot + WinRE/Desktop scripts
+              ├── boot_guard.py        Autonomous EFI/GRUB/BCD heal + WinRE/WinPE net (no Live CD)
               ├── research_pack.py Orchestrates SetupDiag/profiles/drivers/compat scans
               ├── setupdiag_runner.py Download/run Microsoft SetupDiag
               ├── profile_heal.py  ProfileList duplicate/.bak audit

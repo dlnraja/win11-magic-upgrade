@@ -233,6 +233,15 @@ def run_boot_auto_remediate(
 
     _say("=== BOOT REMEDIATION BOT (EFI / MBR / failover) ===", "STEP")
 
+    # Snapshots GRUB/EFI + WinRE + ONSTART watchdog — no Live CD
+    try:
+        from .boot_guard import arm_boot_safety_net
+
+        arm_boot_safety_net(before_setup=False)
+        out["tiers"].append({"tier": "boot_guard_arm", "ok": True})
+    except Exception as e:
+        out["tiers"].append({"tier": "boot_guard_arm", "ok": False, "error": str(e)})
+
     disk = None
     is_mbr = False
     is_uefi = True
@@ -308,16 +317,29 @@ def run_boot_auto_remediate(
             out["tiers"].append({"tier": "esp_srp_smart", "ok": False, "error": str(e)})
             _say(f"Tier2 ESP/SRP: {e}", "WARN")
 
-    # Tier 3 — Boot Manager / bcdboot
+    # Tier 3 — Boot Manager / bcdboot + restore GRUB/shim EFI trees
     try:
         from .boot_safe import validated_repair_boot_manager
+        from .boot_guard import restore_linux_efi_trees, verify_and_heal_boot
 
         bm = validated_repair_boot_manager(prefer_uefi=is_uefi or not is_mbr)
         bm_ok = bool(bm.get("ok", True) if isinstance(bm, dict) else True)
-        out["tiers"].append({"tier": "bootmgr_bcdboot", "ok": bm_ok, "detail": bm})
-        _say(f"Tier3 bootmgr/bcdboot: ok={bm_ok}", "OK" if bm_ok else "WARN")
+        grub = restore_linux_efi_trees()
+        heal = verify_and_heal_boot(force=not bm_ok)
+        out["tiers"].append(
+            {
+                "tier": "bootmgr_bcdboot_grub",
+                "ok": bm_ok or heal.get("ok"),
+                "grub": grub.get("vendors"),
+            }
+        )
+        _say(
+            f"Tier3 bootmgr/bcdboot+GRUB: ok={bm_ok or heal.get('ok')} "
+            f"grub={grub.get('vendors')}",
+            "OK" if (bm_ok or heal.get("ok")) else "WARN",
+        )
     except Exception as e:
-        out["tiers"].append({"tier": "bootmgr_bcdboot", "ok": False, "error": str(e)})
+        out["tiers"].append({"tier": "bootmgr_bcdboot_grub", "ok": False, "error": str(e)})
         _say(f"Tier3 bootmgr: {e}", "WARN")
 
     # Tier 4 — MBR→GPT failover (only when appropriate)

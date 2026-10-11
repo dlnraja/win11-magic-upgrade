@@ -1,11 +1,10 @@
 ﻿# UTF-8
 #
 # PyInstaller version resource - publisher identity: dlnraja
-# Strong identity strings reduce heuristic FPs (Trojan.Python.Agent.gen / Bkav / SecureAge).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 52, 0, 0),
-    prodvers=(1, 52, 0, 0),
+    filevers=(1, 53, 0, 0),
+    prodvers=(1, 53, 0, 0),
     mask=0x3F,
     flags=0x0,
     OS=0x40004,
@@ -21,13 +20,13 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'dlnraja'),
             StringStruct('FileDescription', 'Win11 Magic Upgrade by dlnraja - Legitimate open-source Windows 11 migration helper (NOT malware, NOT a Trojan)'),
-            StringStruct('FileVersion', '1.52.0.0'),
+            StringStruct('FileVersion', '1.53.0.0'),
             StringStruct('InternalName', 'Win11MagicUpgrade'),
             StringStruct('LegalCopyright', 'Copyright (c) 2026 dlnraja. MIT License. https://github.com/dlnraja/win11-magic-upgrade'),
             StringStruct('OriginalFilename', 'Win11MagicUpgrade.exe'),
             StringStruct('ProductName', 'Win11 Magic Upgrade'),
-            StringStruct('ProductVersion', '1.52.0.0'),
-            StringStruct('Comments', 'Publisher: dlnraja. Source: github.com/dlnraja/win11-magic-upgrade. Official Microsoft ISOs only. No Trojan/PDF exploit. Prefer ZIP from GitHub Releases. Report AV false positives via SECURITY.md.'),
+            StringStruct('ProductVersion', '1.53.0.0'),
+            StringStruct('Comments', 'Publisher: dlnraja. Source: github.com/dlnraja/win11-magic-upgrade. Official Microsoft ISOs only. No Trojan/PDF exploit. Prefer ZIP from GitHub Releases.'),
             StringStruct('LegalTrademarks', 'dlnraja'),
           ]
         )

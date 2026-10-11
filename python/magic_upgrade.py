@@ -668,9 +668,11 @@ class App(tk.Tk):
                     fix_system_reserved_only(sink)
                     code = 0
                 elif action == "boot-fix":
+                    from engine.boot_guard import arm_boot_safety_net, verify_and_heal_boot  # type: ignore
                     from engine.boot_remediation import run_boot_auto_remediate  # type: ignore
                     from engine.detect import collect_report  # type: ignore
 
+                    arm_boot_safety_net(before_setup=False)
                     bot = run_boot_auto_remediate(
                         collect_report(),
                         force_esp=True,
@@ -678,11 +680,13 @@ class App(tk.Tk):
                         try_hybrid=True,
                         sink=sink,
                     )
+                    heal = verify_and_heal_boot(force=True)
                     sink(
                         f"Boot Fix: ok={bot.get('ok')} bootable={bot.get('bootable')} "
+                        f"heal={heal.get('ok')} grub={((heal.get('grub') or {}).get('vendors'))} "
                         f"scripts={bot.get('scripts', {}).get('guide', '')}\n"
                     )
-                    code = 0 if bot.get("ok") or bot.get("bootable") else 2
+                    code = 0 if bot.get("ok") or bot.get("bootable") or heal.get("ok") else 2
                 elif action == "patch":
                     run_patch_enrichment(sink, deep_heal=False)
                     code = 0
@@ -975,6 +979,9 @@ Env (selected):
   MAGIC_SKIP_FRAMEWORKS=1      Disable all framework installs
   MAGIC_BOOT_AUTO_FIX=1        Run EFI/MBR/smart-partition failover bot
   MAGIC_SKIP_BOOT_REMEDIATE=1  Disable boot remediation bot
+  MAGIC_SKIP_BOOT_GUARD=1      Disable autonomous EFI/GRUB/WinRE safety net
+  MAGIC_WINRE_BOOT=1           Force one-shot WinRE ramdisk on next reboot
+  MAGIC_WINPE_BOOT=1           Force one-shot WinPE ramdisk if WinRE unavailable
   MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
   MAGIC_FREE_SPACE=1           Aggressive disk reclaim
   MAGIC_ISO_CACHE=             Shared ISO folder(s) (; separated)
@@ -1028,6 +1035,7 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
             "--offline-pack",
             "--research",
             "--boot-fix",
+            "--boot-heal",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -1080,6 +1088,11 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
                 if "--bypass" in argv_l:
                     apply_bypass_only()
                     return
+                if "--boot-heal" in argv_l:
+                    from engine.boot_guard import verify_and_heal_boot  # type: ignore
+
+                    heal = verify_and_heal_boot(force=True)
+                    raise SystemExit(0 if heal.get("ok") or heal.get("bootable") else 2)
                 if "--boot-fix" in argv_l:
                     from engine.boot_remediation import run_boot_auto_remediate  # type: ignore
                     from engine.detect import collect_report  # type: ignore

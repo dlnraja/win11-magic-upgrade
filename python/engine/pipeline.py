@@ -206,6 +206,14 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     if not exe.exists():
         raise FileNotFoundError(exe)
 
+    # Arm autonomous boot safety net BEFORE Setup (ESP/GRUB snapshots + WinRE + watchdog)
+    try:
+        from .boot_guard import arm_boot_safety_net
+
+        arm_boot_safety_net(before_setup=True)
+    except Exception as e:
+        log(f"Boot guard arm (pre-Setup): {e}", "WARN")
+
     def _launch_once() -> int:
         cmd = [str(exe), *args]
         log(" ".join(cmd), "INFO")
@@ -948,6 +956,21 @@ def run_pipeline(
     try:
         if not is_admin() and not dry_run:
             raise PermissionError('Administrator required for upgrade pipeline')
+
+        # After reboot / Setup: heal EFI·BCD·GRUB autonomously (no Live CD)
+        if resume and not dry_run:
+            try:
+                from .boot_guard import verify_and_heal_boot
+
+                set_phase("boot", "Verifying / healing boot (EFI·GRUB·BCD)…")
+                heal = verify_and_heal_boot(force=True)
+                log(
+                    f"Post-reboot boot heal: ok={heal.get('ok')} "
+                    f"bootable={heal.get('bootable')} grub={((heal.get('grub') or {}).get('vendors'))}",
+                    "OK" if heal.get("ok") else "WARN",
+                )
+            except Exception as e:
+                log(f"Post-reboot boot heal: {e}", "WARN")
 
         # ---- Phase 1: Diagnose ----
         # AV / Kaspersky cloud trust runs in CI/CD Release only (not in One-Click).

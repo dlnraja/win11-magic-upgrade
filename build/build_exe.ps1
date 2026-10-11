@@ -69,6 +69,7 @@ python -m PyInstaller `
     --hidden-import engine.boot_partition_backup `
     --hidden-import engine.frameworks `
     --hidden-import engine.boot_remediation `
+    --hidden-import engine.boot_guard `
     --hidden-import engine.unlock_pack `
     --hidden-import engine.app_carry `
     --hidden-import engine.blocker_apps `

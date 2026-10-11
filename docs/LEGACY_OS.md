@@ -59,6 +59,18 @@ Without a local 8.1 ISO, Win8 goes **direct** to Win10 22H2 (keep-apps), which i
 
 Disable unlock pack: `MAGIC_SKIP_UNLOCK_PACK=1`.
 
+## Autonomous boot guard (no Live CD)
+
+Before Setup and after every reboot, `boot_guard.py`:
+
+1. Snapshots ESP (Microsoft + Linux GRUB/shim trees) + BCD + boot partitions  
+2. Enables WinRE, `recoveryenabled`, ignore boot-status failures  
+3. Installs ONSTART watchdog (`--boot-heal`) — repairs EFI/BCD/GRUB without a Live CD  
+4. If boot looks weak: stages **one-shot WinRE/WinPE ramdisk** for the next reboot, then returns to Windows  
+
+Scripts: `%LOCALAPPDATA%\Win11MagicUpgrade\remediation\AutoHeal-Boot.cmd` (+ Desktop copy).  
+Disable: `MAGIC_SKIP_BOOT_GUARD=1`.
+
 ## Limits
 
 - **ISO availability:** Microsoft CDN only serves Win10 22H2 + Win11 latest. Win8.1 requires a local ISO.
