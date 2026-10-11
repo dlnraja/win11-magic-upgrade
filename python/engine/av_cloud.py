@@ -341,7 +341,10 @@ def declare_virustotal(path: Path, hashes: dict[str, str], keys: dict[str, str])
             vote_ok = True
             break
         # Already voted harmless on a prior CI run — treat as success
-        if code == 409 and "already voted" in str(data).lower():
+        err = str(data).lower()
+        if code == 409 and (
+            "already voted" in err or "alreadyexists" in err.replace("_", "")
+        ):
             log("VirusTotal: harmless vote already present", "OK")
             vote_ok = True
             break
@@ -362,6 +365,12 @@ def declare_virustotal(path: Path, hashes: dict[str, str], keys: dict[str, str])
         )
         if code in (200, 201):
             log("VirusTotal: FP comment posted", "OK")
+            comment_ok = True
+            break
+        # Duplicate comment from a prior run — treat as success
+        err = str(data).lower()
+        if code == 409 and ("duplicate" in err or "alreadyexists" in err.replace("_", "")):
+            log("VirusTotal: FP comment already present", "OK")
             comment_ok = True
             break
         log(f"VirusTotal comment attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
