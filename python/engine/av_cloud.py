@@ -338,6 +338,11 @@ def declare_virustotal(path: Path, hashes: dict[str, str], keys: dict[str, str])
             log("VirusTotal: voted HARLESS (false positive)", "OK")
             vote_ok = True
             break
+        # Already voted harmless on a prior CI run — treat as success
+        if code == 409 and "already voted" in str(data).lower():
+            log("VirusTotal: harmless vote already present", "OK")
+            vote_ok = True
+            break
         log(f"VirusTotal vote attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
         time.sleep(8)
 
