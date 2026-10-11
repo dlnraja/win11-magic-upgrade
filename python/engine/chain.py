@@ -351,6 +351,37 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             )
         )
 
+    # After OS hops: restore soft-uninstalled blockers (Acronis/EaseUS/LGS/…) via winget.
+    # Always schedule when the chain includes ISO upgrades (queue filled during patch phase).
+    try:
+        from .blocker_apps import pending_restores_remaining
+
+        need_restore = pending_restores_remaining()
+    except Exception:
+        need_restore = False
+    try:
+        from .logutil import load_state
+
+        st_pending = bool(load_state().get("PendingAppRestores")) and not load_state().get(
+            "AppRestoreDone"
+        )
+    except Exception:
+        st_pending = False
+    has_iso = any(s.kind == "iso_upgrade" for s in steps)
+    if has_iso or need_restore or st_pending:
+        if not any(s.id == "restore_apps" for s in steps):
+            steps.append(
+                ChainStep(
+                    id="restore_apps",
+                    label="Restore compatible apps (soft-uninstalled blockers)",
+                    kind="restore_apps",
+                    note=(
+                        "Reinstall modern packages via winget when the same product was "
+                        "removed before Setup (LGS→GHUB, EaseUS, Macrium, VPN, …)"
+                    ),
+                )
+            )
+
     if not steps:
         steps.append(
             ChainStep(id="done", label="Nothing to do", kind="done", note=f"build {r.build}")

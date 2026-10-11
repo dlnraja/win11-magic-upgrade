@@ -60,6 +60,7 @@ Secondary GUI buttons (Diagnose / Patch / …) are optional only — One-Click a
 | Boot 32/64 | PE detect; bcdboot repair; **hybrid CSMWrap** for IA32-only UEFI |
 | Stability | Resume-safe `$WINDOWS.~BT`, no reboot loops, timeouts, atomic state |
 | Logs | Panther-style `setupact` / `setuperr` + Desktop `MigrationReport` + `SupportGuide` |
+| Blocker apps | Soft-uninstall Acronis/EaseUS/Macrium/LGS/VPN… before Setup; **winget restore** compatible versions after (LGS→G HUB) |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
 ## CLI (admin)

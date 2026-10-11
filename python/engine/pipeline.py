@@ -412,6 +412,12 @@ def _execute_step(
         claim_media_center_offers(report)
         return None
 
+    if step.kind == "restore_apps":
+        from .blocker_apps import restore_queued_apps
+
+        restore_queued_apps(host_build=int(getattr(report, "build", 0) or 0))
+        return None
+
     if step.kind == "iso_upgrade":
         arch = step.arch or "x64"
         win = step.win or "11"

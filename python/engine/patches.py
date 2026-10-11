@@ -131,19 +131,28 @@ def scan_prior_setup_logs() -> None:
 
 
 def detect_software_blockers() -> None:
-    names = _installed_names()
-    for name in names:
-        for pat, reason in BLOCKERS:
-            if re.search(pat, name, re.I):
-                log(f"Blocker software: {name} :: {reason}", "WARN")
-                break
-    maybe_uninstall_allowlist_blockers(names)
+    """Detect + soft-uninstall curated blockers; queue winget restore after migration."""
+    try:
+        from .blocker_apps import format_blocker_report, process_blockers_before_upgrade
+
+        log(format_blocker_report(), "INFO")
+        process_blockers_before_upgrade(do_uninstall=True)
+    except Exception as e:
+        log(f"Blocker catalog: {e}", "WARN")
+        # Fallback: warn-only scan
+        names = _installed_names()
+        for name in names:
+            for pat, reason in BLOCKERS:
+                if re.search(pat, name, re.I):
+                    log(f"Blocker software: {name} :: {reason}", "WARN")
+                    break
+    maybe_uninstall_allowlist_blockers()
 
 
 def maybe_uninstall_allowlist_blockers(installed_names: list[str] | None = None) -> None:
     """
-    Optional: guidance for curated uninstall when MAGIC_UNINSTALL_ALLOWLIST=1.
-    Never silent-force uninstall of AV/EDR — only legacy LGS / virtual CD toys.
+    Legacy env hint. Soft uninstall is now handled by blocker_apps (One-Click default).
+    MAGIC_UNINSTALL_ALLOWLIST=1 still logs curated targets if catalog path failed.
     """
     if os.environ.get("MAGIC_UNINSTALL_ALLOWLIST", "").strip().lower() not in (
         "1",
@@ -154,14 +163,14 @@ def maybe_uninstall_allowlist_blockers(installed_names: list[str] | None = None)
     allow = [
         (r"Logitech Gaming Software", "legacy LGS"),
         (r"Daemon Tools Lite|Alcohol 120%", "virtual CD filter"),
+        (r"Acronis|EaseUS Todo|Macrium", "backup filter"),
     ]
     names = installed_names or _installed_names()
     for name in names:
         for pat, label in allow:
             if re.search(pat, name, re.I):
                 log(
-                    f"MAGIC_UNINSTALL_ALLOWLIST=1: uninstall recommended → {name} ({label}). "
-                    "Settings → Apps, then reboot before One-Click.",
+                    f"MAGIC_UNINSTALL_ALLOWLIST=1: catalog should soft-remove → {name} ({label}).",
                     "WARN",
                 )
 

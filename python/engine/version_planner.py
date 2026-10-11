@@ -214,6 +214,20 @@ def should_skip_chain_step(step: ChainStep, report: Report, *, latest_win11: int
         return True
     if step.id == "win11_latest" and report.is_win11 and report.build >= latest:
         return True
+    if step.id == "restore_apps":
+        try:
+            from .blocker_apps import pending_restores_remaining
+            from .logutil import load_state
+
+            if load_state().get("AppRestoreDone") and not pending_restores_remaining():
+                return True
+            # Skip only when nothing queued and restore already marked done
+            items = load_state().get("PendingAppRestores") or []
+            if not items and load_state().get("AppRestoreDone"):
+                return True
+        except Exception:
+            return False
+        return False
     return False
 
 

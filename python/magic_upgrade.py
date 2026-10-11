@@ -781,7 +781,10 @@ Env (selected):
   MAGIC_ALLOW_AUTOMATION=1     Bypass UIA guard
   MAGIC_STATS=1                Local success/failure counters (no network)
   MAGIC_LP_DRY_RUN=1           Language-pack audit without DISM remove
-  MAGIC_UNINSTALL_ALLOWLIST=1  Warn curated uninstall targets
+  MAGIC_UNINSTALL_ALLOWLIST=1  Extra warn for curated uninstall targets
+  MAGIC_SOFT_UNINSTALL_AV=1    Soft-uninstall AV + restore via winget after (off by default)
+  MAGIC_SKIP_SOFT_UNINSTALL=1  Detect blockers only (no uninstall)
+  MAGIC_SKIP_APP_RESTORE=1     Do not winget-restore soft-removed apps
   MAGIC_ENTERPRISE_ISO_DIR=    Local VL/enterprise ISO folder
   MAGIC_DU_CAB_DIR=            Offline Dynamic Update .cab folder (staged before Setup)
   MAGIC_DU_OFFLINE=1           Force /dynamicupdate disable when cabs staged

@@ -26,6 +26,7 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── chain.py         Intermediate version plan across reboots
               ├── setup_recovery.py Panther/forum recovery map + strict ISO gate
               ├── legacy_os.py     Vista/7/8/8.1 + Media Center registry/media bypass
+              ├── blocker_apps.py  Soft-uninstall SafeOS blockers + winget restore
               ├── version_planner.py  Host/ISO build evaluation + smart skip logic
               ├── logutil.py       Panther logs + MigrationReport + state.json
               └── pipeline.py      Orchestration + quiet setup + resume

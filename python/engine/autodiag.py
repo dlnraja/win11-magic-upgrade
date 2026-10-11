@@ -152,6 +152,7 @@ def build_plan(report: Report | None = None) -> Plan:
                 "low",
             )
         )
+
         if getattr(r, "has_media_center", False):
             actions.append(
                 Action(
@@ -187,6 +188,29 @@ def build_plan(report: Report | None = None) -> Plan:
                     "medium",
                 )
             )
+
+    # SafeOS blocker apps (all hosts — soft-uninstall + winget restore)
+    try:
+        from .blocker_apps import match_installed_blockers
+
+        bm = match_installed_blockers()
+        if bm:
+            names = ", ".join(m.display_name for m in bm[:6])
+            more = f" (+{len(bm) - 6})" if len(bm) > 6 else ""
+            actions.append(
+                Action(
+                    "blocker_soft_uninstall",
+                    "Soft-uninstall SafeOS blocker apps",
+                    f"{names}{more} — restore via winget after Setup",
+                    "medium",
+                )
+            )
+            warnings.append(
+                f"{len(bm)} catalogued blocker app(s) — One-Click soft-removes safe ones "
+                "then restores compatible versions (see AppRestoreGuide.txt)."
+            )
+    except Exception:
+        pass
 
     if getattr(r, "bootmgr_mismatch", False):
         actions.insert(
