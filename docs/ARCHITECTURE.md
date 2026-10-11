@@ -4,7 +4,8 @@
 Win11MagicUpgrade.exe / .cmd
         │
         ▼
-python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerShell
+python/magic_upgrade.py            GUI/CLI (tkinter) — One-Click + checkboxes + progress
+python/gui_panel.py                Checkbox options → MAGIC_* env (persisted)
         │
         └── python/engine/         Pure Python pipeline (stdlib + Win32)
               ├── detect.py        winreg + ctypes + diskpart + wmi_compat
@@ -29,6 +30,7 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── blocker_apps.py  Soft-uninstall SafeOS blockers + winget restore
               ├── app_carry.py     License keys + registry/AppData carry (local-only)
               ├── unlock_pack.py   MC/DVD/Win8 migration + LabConfig HW unlock (every hop)
+              ├── frameworks.py    .NET / DirectX / VC++ / Media Feature Pack (winget+DISM)
               ├── research_pack.py Orchestrates SetupDiag/profiles/drivers/compat scans
               ├── setupdiag_runner.py Download/run Microsoft SetupDiag
               ├── profile_heal.py  ProfileList duplicate/.bak audit

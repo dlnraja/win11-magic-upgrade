@@ -568,6 +568,15 @@ def apply_migration_patches(
     except Exception as e:
         log(f"Unlock pack (patches): {e}", "WARN")
 
+    # Optional .NET / DirectX / VC++ / Media Feature Pack (GUI checkboxes / env)
+    try:
+        from .frameworks import install_frameworks, selected_framework_ids
+
+        if selected_framework_ids():
+            install_frameworks()
+    except Exception as e:
+        log(f"Frameworks install: {e}", "WARN")
+
     scan_prior_setup_logs()
     try:
         from .detect import collect_report

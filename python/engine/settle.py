@@ -52,6 +52,14 @@ def settle_after_win10(report: Any | None = None) -> dict[str, Any]:
     except Exception as e:
         log(f"Unlock pack (settle): {e}", "WARN")
 
+    try:
+        from .frameworks import install_frameworks, selected_framework_ids
+
+        if selected_framework_ids():
+            install_frameworks()
+    except Exception as e:
+        log(f"Frameworks (settle): {e}", "WARN")
+
     # Second Media Center / DVD Player pass
     try:
         from .legacy_os import claim_media_center_offers, media_center_eligible_from_state
