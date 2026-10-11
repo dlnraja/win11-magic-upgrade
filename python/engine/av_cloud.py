@@ -32,7 +32,8 @@ FP_COMMENT = (
     "FALSE POSITIVE. Win11MagicUpgrade is a legitimate open-source Windows 10→11 "
     "migration helper. It downloads official Microsoft ISOs only, mounts them, and "
     "runs Setup. It contains NO PDF exploit, NO Trojan, NO ransomware, NO credential theft. "
-    "Heuristic hits (e.g. Trojan.PDF) come from unsigned PyInstaller + UAC elevation. "
+    "Heuristic hits (HEUR:Trojan.Python.Agent.gen / Trojan.PDF) come from unsigned "
+    "PyInstaller + UAC elevation. Source: https://github.com/dlnraja/win11-magic-upgrade "
     "#false_positive #win11 #legitimate_software"
 )
 
@@ -437,7 +438,7 @@ def _write_kaspersky_email_draft(path: Path, hashes: dict[str, str]) -> Path:
     eml_body = "\n".join(
         [
             f"To: {KASP_EMAIL}",
-            "Subject: False positive — Win11MagicUpgrade.exe (NOT Trojan.PDF)",
+            "Subject: False positive — Win11MagicUpgrade.exe (HEUR:Trojan.Python.Agent.gen)",
             "",
             FP_COMMENT,
             "",
@@ -445,11 +446,13 @@ def _write_kaspersky_email_draft(path: Path, hashes: dict[str, str]) -> Path:
             f"SHA256: {hashes['sha256']}",
             f"SHA1:   {hashes['sha1']}",
             f"MD5:    {hashes['md5']}",
+            "Detection: HEUR:Trojan.Python.Agent.gen (heuristic / OpenTIP Malware zone)",
             f"OpenTIP: https://opentip.kaspersky.com/{hashes['sha256']}/results",
             f"VirusTotal: https://www.virustotal.com/gui/file/{hashes['sha256']}",
+            "Release: https://github.com/dlnraja/win11-magic-upgrade/releases/latest",
             "",
-            "Please reclassify as clean / trusted. Sample available in attached ZIP "
-            "(re-pack with password 'infected' if required).",
+            "Please reclassify as clean / trusted. Sample on GitHub Releases "
+            "(or attached ZIP; re-pack with password 'infected' if required).",
             "",
         ]
     )
