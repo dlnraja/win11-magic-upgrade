@@ -402,13 +402,24 @@ def _execute_step(
         )
         raise AutonomousRebootRequired("mbr2gpt")
 
+    if step.kind == "media_offers":
+        from .legacy_os import claim_media_center_offers, persist_media_center_eligibility
+
+        try:
+            persist_media_center_eligibility(report)
+        except Exception as e:
+            log(f"Media eligibility refresh: {e}", "WARN")
+        claim_media_center_offers(report)
+        return None
+
     if step.kind == "iso_upgrade":
         arch = step.arch or "x64"
         win = step.win or "11"
         try:
-            from .legacy_os import apply_legacy_host_registry, prepare_legacy_setup_media
+            from .legacy_os import apply_legacy_host_registry, persist_media_center_eligibility, prepare_legacy_setup_media
 
             apply_legacy_host_registry(report)
+            persist_media_center_eligibility(report)
         except Exception as e:
             log(f"Legacy host prep: {e}", "WARN")
         # Re-apply intelligent compat right before Setup (fresh Appraiser caches)
@@ -419,27 +430,50 @@ def _execute_step(
         except Exception as e:
             log(f"Pre-Setup compat refresh: {e}", "WARN")
             apply_hardware_bypass(report)
-        if win == "10":
+        if getattr(step, "iso_path", None):
+            iso = Path(step.iso_path)
+            if not iso.is_file():
+                raise RuntimeError(f"Local ISO missing for step {step.id}: {iso}")
+        elif win == "81":
+            from .legacy_os import find_optional_win81_iso
+
+            local81 = find_optional_win81_iso()
+            if local81 is None:
+                raise RuntimeError(
+                    "Windows 8.1 ISO required for win81 hop — set MAGIC_WIN81_ISO "
+                    "or place an 8.1 ISO under %LOCALAPPDATA%\\Win11MagicUpgrade\\iso\\"
+                )
+            iso = local81
+        elif win == "10":
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
         # Strict ISO gate (forum: wrong language / missing setupprep / partial CDN)
-        try:
-            from .setup_recovery import verify_iso_before_setup
-            from .version_planner import min_build_for_step
+        # Skip CDN-oriented verify for local Win8.1 media
+        if win != "81" and not getattr(step, "iso_path", None):
+            try:
+                from .setup_recovery import verify_iso_before_setup
+                from .version_planner import min_build_for_step
 
-            mb = min_build_for_step(step.id)
-            if not verify_iso_before_setup(
-                iso, win=win, arch=arch, min_build=mb, host_locale=getattr(report, "locale", None)
-            ):
-                raise RuntimeError(
-                    f"ISO verification failed for step {step.id} — refusing Setup. "
-                    "Re-download official Microsoft ISO matching OS language, or place a valid local ISO."
-                )
-        except RuntimeError:
-            raise
-        except Exception as e:
-            log(f"ISO verify skipped ({e}) — continuing with caution", "WARN")
+                mb = min_build_for_step(step.id)
+                verify_win = "10" if win == "10" else "11"
+                if not verify_iso_before_setup(
+                    iso,
+                    win=verify_win,
+                    arch=arch,
+                    min_build=mb,
+                    host_locale=getattr(report, "locale", None),
+                ):
+                    raise RuntimeError(
+                        f"ISO verification failed for step {step.id} — refusing Setup. "
+                        "Re-download official Microsoft ISO matching OS language, or place a valid local ISO."
+                    )
+            except RuntimeError:
+                raise
+            except Exception as e:
+                log(f"ISO verify skipped ({e}) — continuing with caution", "WARN")
+        else:
+            log(f"Using local ISO for {step.id}: {iso}", "OK")
         try:
             root = mount_iso(iso)
         except OSError as e:
@@ -475,7 +509,7 @@ def _execute_step(
                     root = str(prepare_setup_root(root, win11=True))
                 except Exception as e2:
                     log(f"Media Appraiser bypass stage skipped: {e2}", "WARN")
-        # Win11 always uses /product server + IgnoreWarning; Win10 also IgnoreWarning
+        # Win11 always uses /product server + IgnoreWarning; Win10/8.1 IgnoreWarning
         use_server = bool(step.use_server_product) or win == "11"
         return _run_setup(root, use_server=use_server, quiet=quiet)
 
@@ -754,7 +788,17 @@ def _prefetch_chain_isos(
         min_build = 0
         if step.id == "win10_22h2":
             min_build = 19045
-        if win == "10":
+        if getattr(step, "iso_path", None):
+            iso = Path(step.iso_path)
+        elif win == "81":
+            from .legacy_os import find_optional_win81_iso
+
+            local81 = find_optional_win81_iso()
+            if local81 is None:
+                log("Win8.1 ISO not found — hop will be skipped or fail later", "WARN")
+                continue
+            iso = local81
+        elif win == "10":
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch, min_build=min_build)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
@@ -848,6 +892,13 @@ def run_pipeline(
         print_report(r)
         plan = build_plan(r)
         print_plan(plan)
+        # Persist Media Center / DVD Player eligibility before any reboot wipes EditionID
+        try:
+            from .legacy_os import persist_media_center_eligibility
+
+            persist_media_center_eligibility(r)
+        except Exception as e:
+            log(f"Media Center eligibility persist: {e}", "WARN")
         set_step(percent=80, detail="Building version chain…", indeterminate=True)
         steps = build_version_chain(r)
         if skip_mbr:
@@ -1002,6 +1053,10 @@ def run_pipeline(
                 if key in iso_cache:
                     if (step.win or '11') == '10':
                         w10 = iso_cache[key]
+                    elif (step.win or '11') == '81':
+                        # Local 8.1 path already on step.iso_path; cache is informational
+                        if not getattr(step, "iso_path", None):
+                            step.iso_path = iso_cache[key]
                     else:
                         w11 = iso_cache[key]
 
