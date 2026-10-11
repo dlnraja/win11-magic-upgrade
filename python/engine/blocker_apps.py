@@ -4,14 +4,16 @@ Blocking-app catalog: soft uninstall before Setup, restore compatible versions a
 SafeOS / 0xC1900101 frequently fail because of backup filters, legacy LGS, AV, VPN, etc.
 One-Click:
   1) Detect installed blockers from Apps&Features registry
-  2) Soft-uninstall curated entries (QuietUninstallString / msiexec)
-  3) Persist PendingAppRestores in state.json
-  4) After final OS hop: winget-install modern compatible packages if still missing
+  2) Capture license keys + registry/AppData (app_carry) before remove
+  3) Soft-uninstall curated entries (QuietUninstallString / msiexec)
+  4) Persist PendingAppRestores in state.json
+  5) After final OS hop: winget-install modern packages, then re-apply carry
 
 Never force-uninstall EDR (CrowdStrike, SentinelOne, …).
 AV soft-uninstall only when MAGIC_SOFT_UNINSTALL_AV=1 (default: warn + schedule restore skip).
 Disable restore: MAGIC_SKIP_APP_RESTORE=1
 Disable soft uninstall: MAGIC_SKIP_SOFT_UNINSTALL=1
+Disable key/settings carry: MAGIC_SKIP_APP_CARRY=1
 """
 from __future__ import annotations
 
@@ -521,6 +523,7 @@ def process_blockers_before_upgrade(*, do_uninstall: bool = True) -> dict[str, A
         "warned": [],
         "queued_restore": [],
         "skipped": [],
+        "carry": [],
     }
     if _env_true("MAGIC_SKIP_SOFT_UNINSTALL") and do_uninstall:
         log("MAGIC_SKIP_SOFT_UNINSTALL=1 — detect only", "INFO")
@@ -529,6 +532,14 @@ def process_blockers_before_upgrade(*, do_uninstall: bool = True) -> dict[str, A
     allow_av = _env_true("MAGIC_SOFT_UNINSTALL_AV")
     matches = match_installed_blockers()
     save_state({"HostBuildAtQueue": _current_build()})
+
+    # Windows product key + activation channel (local only; digital license usually survives)
+    try:
+        from .app_carry import capture_windows_product_key_local
+
+        capture_windows_product_key_local()
+    except Exception as e:
+        log(f"Windows key carry snapshot: {e}", "WARN")
 
     log(f"=== Blocker catalog scan ({len(matches)} match(es)) ===", "STEP")
     for m in matches:
@@ -567,6 +578,14 @@ def process_blockers_before_upgrade(*, do_uninstall: bool = True) -> dict[str, A
         # Soft uninstall + queue restore (only if it was installed)
         queue_restore(m)
         summary["queued_restore"].append(m.catalog_id)
+        try:
+            from .app_carry import capture_app_carry
+
+            carry = capture_app_carry(m.catalog_id, display_name=m.display_name)
+            if carry.get("ok"):
+                summary["carry"].append(m.catalog_id)
+        except Exception as e:
+            log(f"App carry capture ({m.catalog_id}): {e}", "WARN")
         if soft_uninstall_match(m):
             summary["uninstalled"].append(m.display_name)
         else:
@@ -624,7 +643,13 @@ def restore_queued_apps(*, host_build: int | None = None) -> dict[str, Any]:
     After migration: reinstall compatible packages for apps we soft-removed
     (or queued) if they are not already present.
     """
-    result: dict[str, Any] = {"restored": [], "manual": [], "skipped": [], "failed": []}
+    result: dict[str, Any] = {
+        "restored": [],
+        "manual": [],
+        "skipped": [],
+        "failed": [],
+        "carry_applied": [],
+    }
     if _env_true("MAGIC_SKIP_APP_RESTORE"):
         log("MAGIC_SKIP_APP_RESTORE=1 — skip app restore", "INFO")
         return result
@@ -638,6 +663,17 @@ def restore_queued_apps(*, host_build: int | None = None) -> dict[str, Any]:
 
     log(f"=== Restore compatible apps ({len(items)} queued) ===", "STEP")
     remaining: list[dict[str, Any]] = []
+
+    def _apply_carry(catalog_id: str) -> None:
+        try:
+            from .app_carry import apply_app_carry
+
+            applied = apply_app_carry(str(catalog_id))
+            if applied.get("ok"):
+                result["carry_applied"].append(catalog_id)
+        except Exception as e:
+            log(f"App carry apply ({catalog_id}): {e}", "WARN")
+
     for item in items:
         cid = item.get("catalog_id", "?")
         name = item.get("display_name", cid)
@@ -647,8 +683,9 @@ def restore_queued_apps(*, host_build: int | None = None) -> dict[str, Any]:
             remaining.append(item)
             continue
         if _package_present_for_restore(item):
-            log(f"Already present — skip restore: {name}", "OK")
+            log(f"Already present — skip package install, apply carried settings: {name}", "OK")
             result["skipped"].append(name)
+            _apply_carry(str(cid))
             continue
 
         # Prefer successor (LGS → GHUB)
@@ -668,6 +705,8 @@ def restore_queued_apps(*, host_build: int | None = None) -> dict[str, Any]:
             item = dict(item)
             item["status"] = "manual"
             remaining.append(item)
+            # Still try settings restore if user reinstalled manually later
+            _apply_carry(str(cid))
             continue
 
         ok = False
@@ -675,6 +714,7 @@ def restore_queued_apps(*, host_build: int | None = None) -> dict[str, Any]:
             if _winget_install(pkg):
                 ok = True
                 result["restored"].append({"name": name, "package": pkg})
+                _apply_carry(str(cid))
                 break
         if not ok:
             result["failed"].append(name)
@@ -703,6 +743,14 @@ def restore_queued_apps(*, host_build: int | None = None) -> dict[str, Any]:
             lines.append("Restored via winget:")
             for r in result["restored"]:
                 lines.append(f"  - {r['name']} → {r['package']}")
+            lines.append("")
+        if result.get("carry_applied"):
+            lines.append("Activation keys / registry / settings re-applied (when compatible):")
+            for cid in result["carry_applied"]:
+                lines.append(f"  - {cid}")
+            lines.append(
+                "  (Stored only under %LOCALAPPDATA%\\Win11MagicUpgrade\\app-carry\\ — never in Support ZIP)"
+            )
             lines.append("")
         if result["manual"]:
             lines.append("Manual reinstall (no winget package / vendor portal):")

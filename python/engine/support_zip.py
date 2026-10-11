@@ -1,4 +1,8 @@
-"""Export SupportPack ZIP (logs + state, privacy-scrubbed paths only)."""
+"""Export SupportPack ZIP (logs + state, privacy-scrubbed paths only).
+
+Never include app-carry/ (product keys, licenses.json, userdata backups) —
+those stay under %LOCALAPPDATA%\\Win11MagicUpgrade\\app-carry\\ only.
+"""
 from __future__ import annotations
 
 import zipfile
@@ -7,6 +11,9 @@ from pathlib import Path
 
 from .logutil import STATE_DIR, log
 
+
+# Explicit denylist if future code walks STATE_DIR recursively
+EXCLUDE_PREFIXES = ("app-carry/", "app-carry\\")
 
 INCLUDE_NAMES = (
     "MigrationReport.txt",

@@ -27,6 +27,7 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── setup_recovery.py Panther/forum recovery map + strict ISO gate
               ├── legacy_os.py     Vista/7/8/8.1 + Media Center registry/media bypass
               ├── blocker_apps.py  Soft-uninstall SafeOS blockers + winget restore
+              ├── app_carry.py     License keys + registry/AppData carry (local-only)
               ├── research_pack.py Orchestrates SetupDiag/profiles/drivers/compat scans
               ├── setupdiag_runner.py Download/run Microsoft SetupDiag
               ├── profile_heal.py  ProfileList duplicate/.bak audit

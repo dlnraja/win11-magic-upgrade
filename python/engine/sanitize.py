@@ -100,14 +100,30 @@ def sanitize_obj(obj: Any, *, depth: int = 0) -> Any:
         out = {}
         for k, v in obj.items():
             key = str(k)
-            # Drop obviously sensitive keys entirely
-            if re.search(r"user|password|token|secret|email|serial|license|key|sid|mac", key, re.I):
-                if key.lower() in {"cpu_name", "disk_number", "partition_style", "build", "ubr"}:
-                    out[key] = sanitize_obj(v, depth=depth + 1)
-                elif key.lower() in {"username", "computername", "password", "token", "secret", "email"}:
-                    out[key] = "<REDACTED>"
-                else:
-                    out[key] = sanitize_obj(v, depth=depth + 1)
+            # Never leak product keys / license blobs into GitHub or Support ZIP JSON
+            kl = key.lower()
+            allow_soft = {
+                "cpu_name",
+                "disk_number",
+                "partition_style",
+                "build",
+                "ubr",
+                "key_present",  # boolean flag only
+            }
+            if kl in allow_soft:
+                out[key] = sanitize_obj(v, depth=depth + 1)
+            elif re.search(
+                r"(password|token|secret|email|serial|licen[cs]e|"
+                r"product.?key|partial.?key|activation|cd.?key|pkey|"
+                r"backupproductkey|(^|_)key$|key$)",
+                key,
+                re.I,
+            ):
+                out[key] = "<REDACTED>"
+            elif kl in {"username", "computername"}:
+                out[key] = "<REDACTED>"
+            elif re.search(r"user|sid|mac", key, re.I):
+                out[key] = sanitize_obj(v, depth=depth + 1)
             else:
                 out[key] = sanitize_obj(v, depth=depth + 1)
         return out
