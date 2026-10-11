@@ -559,11 +559,19 @@ def apply_migration_patches(
 
     scan_prior_setup_logs()
     try:
-        from .compat_scan import run_compat_scan
+        from .detect import collect_report
+        from .research_pack import apply_research_pack
 
-        run_compat_scan(soften=True)
+        # Includes compat_scan, profiles, SetupDiag, drivers, rollback, power, inventory
+        apply_research_pack(collect_report(), resume=resume)
     except Exception as e:
-        log(f"Compat scan: {e}", "WARN")
+        log(f"Research pack: {e}", "WARN")
+        try:
+            from .compat_scan import run_compat_scan
+
+            run_compat_scan(soften=True)
+        except Exception as e2:
+            log(f"Compat scan: {e2}", "WARN")
     try:
         from .disk_gate import ensure_space_for_upgrade
 

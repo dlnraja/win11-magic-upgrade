@@ -27,6 +27,12 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── setup_recovery.py Panther/forum recovery map + strict ISO gate
               ├── legacy_os.py     Vista/7/8/8.1 + Media Center registry/media bypass
               ├── blocker_apps.py  Soft-uninstall SafeOS blockers + winget restore
+              ├── research_pack.py Orchestrates SetupDiag/profiles/drivers/compat scans
+              ├── setupdiag_runner.py Download/run Microsoft SetupDiag
+              ├── profile_heal.py  ProfileList duplicate/.bak audit
+              ├── unsigned_drivers.py driverquery + pnputil problem scan
+              ├── rollback_scan.py Prior SafeOS Rollback folder analysis
+              ├── preflight_power.py AC power + sleep timeouts for Setup
               ├── version_planner.py  Host/ISO build evaluation + smart skip logic
               ├── logutil.py       Panther logs + MigrationReport + state.json
               └── pipeline.py      Orchestration + quiet setup + resume

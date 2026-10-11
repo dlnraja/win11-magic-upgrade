@@ -845,6 +845,7 @@ Win11 Magic Upgrade — CLI
   Win11MagicUpgrade.exe --cli --bypass | --mbr | --srp | --hybrid
   Win11MagicUpgrade.exe --cli --patch | --patch-deep | --install-patches
   Win11MagicUpgrade.exe --cli --support-zip | --offline-pack
+  Win11MagicUpgrade.exe --cli --research
   Win11MagicUpgrade.exe --cli --stats
 
 Exit codes:
@@ -915,6 +916,7 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
             "--dryrun",
             "--support-zip",
             "--offline-pack",
+            "--research",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -946,6 +948,12 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
                 from engine.offline_pack import create_offline_pack  # type: ignore
 
                 print(create_offline_pack())
+                return
+            if "--research" in argv_l:
+                from engine.detect import collect_report  # type: ignore
+                from engine.research_pack import apply_research_pack  # type: ignore
+
+                print(apply_research_pack(collect_report(), resume=False))
                 return
             if "--diagnose" in argv_l:
                 run_diagnose()

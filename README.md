@@ -66,7 +66,7 @@ Secondary GUI buttons (Diagnose / Patch / …) are optional only — One-Click a
 | Settle / post | WU + DVD offers 2nd pass; post-migration checklist; Support ZIP |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
 
-Full idea map: **[docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md)** · Test matrix: [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md)
+Idea maps: **[docs/IDEAS_200.md](docs/IDEAS_200.md)** (200 researched) · [IMPROVEMENTS.md](docs/IMPROVEMENTS.md) · [TEST_MATRIX.md](docs/TEST_MATRIX.md)
 
 ## CLI (admin)
 

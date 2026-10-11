@@ -945,6 +945,13 @@ def run_pipeline(
             persist_media_center_eligibility(r)
         except Exception as e:
             log(f"Media Center eligibility persist: {e}", "WARN")
+        if dry_run:
+            try:
+                from .research_pack import apply_research_pack
+
+                apply_research_pack(r, resume=False)
+            except Exception as e:
+                log(f"Dry-run research pack: {e}", "WARN")
         set_step(percent=80, detail="Building version chain…", indeterminate=True)
         steps = build_version_chain(r)
         if skip_mbr:

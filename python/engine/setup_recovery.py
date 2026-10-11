@@ -163,6 +163,21 @@ TOP_CODE_ACTIONS: dict[str, dict[str, str]] = {
         "cause": "Hard-block during migrate / appraiser",
         "action": "Review CompatData; neutralize BlockMigration; uninstall listed blockers; retry.",
     },
+    "0x000004e5": {
+        "phase": "MIGRATE / PROFILES",
+        "cause": "DuplicateUserProfileFailure — multiple SIDs for one ProfileImagePath",
+        "action": "See profile-audit.json; backup user files; create fresh local admin; remove unused account (not NTUSER.DAT copy); retry.",
+    },
+    "0xc1900210": {
+        "phase": "COMPAT",
+        "cause": "Compat scan passed (no hard blocks)",
+        "action": "Good sign — proceed with quiet Setup / One-Click.",
+    },
+    "0xc1900204": {
+        "phase": "COMPAT / MIGRATION",
+        "cause": "Migration choice / edition mismatch soft failure",
+        "action": "Media Center: ei.cfg+pid.txt; matching edition ISO; keep-apps inplace only.",
+    },
 }
 
 

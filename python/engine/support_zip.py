@@ -22,6 +22,13 @@ INCLUDE_NAMES = (
     "local-stats.json",
     "activation-pre.json",
     "activation-post.json",
+    "profile-audit.json",
+    "driver-scan.json",
+    "rollback-scan.json",
+    "hardware-inventory.json",
+    "SetupDiag-Results.txt",
+    "SetupDiagResults.xml",
+    "BitLocker-Protectors.txt",
 )
 
 
