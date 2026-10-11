@@ -31,9 +31,10 @@ APP_NAME = "Win11 Magic Upgrade"
 FP_COMMENT = (
     "FALSE POSITIVE. Win11MagicUpgrade is a legitimate open-source Windows 10→11 "
     "migration helper. It downloads official Microsoft ISOs only, mounts them, and "
-    "runs Setup. It contains NO PDF exploit, NO Trojan, NO ransomware, NO credential theft. "
-    "Heuristic hits (HEUR:Trojan.Python.Agent.gen / Trojan.PDF) come from unsigned "
-    "PyInstaller + UAC elevation. Source: https://github.com/dlnraja/win11-magic-upgrade "
+    "runs Setup. It contains NO Trojan, NO ransomware, NO credential theft. "
+    "3/70 style hits (Kaspersky HEUR:Trojan.Python.Agent.gen, Bkav W32.Malware.*, "
+    "SecureAge Malicious) are PyInstaller + invalid self-sign heuristics — not a real "
+    "trojan.python family. Source: https://github.com/dlnraja/win11-magic-upgrade "
     "#false_positive #win11 #legitimate_software"
 )
 
