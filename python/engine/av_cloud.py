@@ -306,37 +306,68 @@ def declare_virustotal(path: Path, hashes: dict[str, str], keys: dict[str, str])
         # File may already exist — continue with hash
         log(f"VirusTotal upload response {code}: {str(data)[:200]}", "WARN")
 
-    # Vote harmless
+    # Wait until analysis/file is indexed — immediate vote/comment often 404 NotFound
+    if analysis_id:
+        for _ in range(18):
+            acode, adata = _http_json(
+                "GET", f"{VT_API}/analyses/{analysis_id}", headers=headers, timeout=60
+            )
+            status = ""
+            if acode == 200 and isinstance(adata, dict):
+                status = str(
+                    ((adata.get("data") or {}).get("attributes") or {}).get("status") or ""
+                )
+            if status == "completed":
+                log("VirusTotal: analysis completed — voting/commenting", "OK")
+                break
+            time.sleep(5)
+
+    # Vote harmless (retry a few times if VT still indexing)
     vote_body = json.dumps(
         {"data": {"type": "vote", "attributes": {"verdict": "harmless"}}}
     ).encode()
-    code, data = _http_json(
-        "POST",
-        f"{VT_API}/files/{sha}/votes",
-        headers={**headers, "content-type": "application/json"},
-        data=vote_body,
-    )
-    if code in (200, 201):
-        log("VirusTotal: voted HARLESS (false positive)", "OK")
-    else:
-        log(f"VirusTotal vote: {code} {str(data)[:160]}", "WARN")
+    vote_ok = False
+    for attempt in range(4):
+        code, data = _http_json(
+            "POST",
+            f"{VT_API}/files/{sha}/votes",
+            headers={**headers, "content-type": "application/json"},
+            data=vote_body,
+        )
+        if code in (200, 201):
+            log("VirusTotal: voted HARLESS (false positive)", "OK")
+            vote_ok = True
+            break
+        log(f"VirusTotal vote attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
+        time.sleep(8)
 
     # Comment
     comment_body = json.dumps(
         {"data": {"type": "comment", "attributes": {"text": FP_COMMENT}}}
     ).encode()
-    code, data = _http_json(
-        "POST",
-        f"{VT_API}/files/{sha}/comments",
-        headers={**headers, "content-type": "application/json"},
-        data=comment_body,
-    )
-    if code in (200, 201):
-        log("VirusTotal: FP comment posted", "OK")
+    comment_ok = False
+    for attempt in range(4):
+        code, data = _http_json(
+            "POST",
+            f"{VT_API}/files/{sha}/comments",
+            headers={**headers, "content-type": "application/json"},
+            data=comment_body,
+        )
+        if code in (200, 201):
+            log("VirusTotal: FP comment posted", "OK")
+            comment_ok = True
+            break
+        log(f"VirusTotal comment attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
+        time.sleep(8)
+
+    if vote_ok and comment_ok:
         _mark_done(sha, "virustotal", "ok", {"url": vt_url, "analysis": analysis_id})
         return "ok"
 
-    log(f"VirusTotal comment: {code} {str(data)[:160]}", "WARN")
+    log(
+        f"VirusTotal partial (vote={vote_ok} comment={comment_ok}) — file still on VT",
+        "WARN",
+    )
     _mark_done(sha, "virustotal", "partial", {"url": vt_url, "analysis": analysis_id})
     return "partial"
 
