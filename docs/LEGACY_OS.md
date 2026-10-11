@@ -48,12 +48,16 @@ Without a local 8.1 ISO, Win8 goes **direct** to Win10 22H2 (keep-apps), which i
 ## What the engine does
 
 1. **Detect** — `os_family`, `is_legacy`, `has_media_center` in `detect.py`.
-2. **Registry prep** — `legacy_os.apply_legacy_host_registry()`:
-   - `AllowOSUpgrade` / `ReservationsAllowed`
-   - `SYSTEM\Setup\Compact=1` on Win8/8.1
-3. **Media Center** — writable ISO stage + `ei.cfg`/`pid.txt` on **Win10** hops only (8.1 intermediate keeps WMC).
-4. **Setup** — prefers `sources\setupprep.exe` (Flyby11 parity).
-5. **Chain** — legacy hosts hop through **Win10 22H2** then **Win11 latest**, with RunOnce after every reboot.
+2. **Full unlock pack** — `unlock_pack.apply_full_unlock_pack()` on every hop / resume:
+   - **Win8 migration / OSUpgrade / Pro Pack path** — `AllowOSUpgrade`, `ReservationsAllowed`, `AllowOSUpgradeUnlocked`, `UpgradeEligibility`, `Compact=1` (8.x), GWX soften, durable `HKLM\SOFTWARE\Win11MagicUpgrade\Unlock\*`
+   - **Media Center + DVD Player** — snapshot WMC registry trees to `app-carry\_media_center\`, write `MediaCenterOffer` / `DvdPlayerOffer` markers, restore after Win10 when EditionID becomes Pro
+   - **Hardware bypass** — full LabConfig + MoSetup + HwReqChk so **unsupported TPM/CPU/Secure Boot/RAM** can still do Win10 → Win11 (`setupprep /Product Server`)
+3. **Legacy host registry** — `legacy_os.apply_legacy_host_registry()` (same OSUpgrade/Compact baseline).
+4. **Media Center media** — writable ISO stage + `ei.cfg`/`pid.txt` on **Win10** hops only (8.1 intermediate keeps WMC).
+5. **Setup** — prefers `sources\setupprep.exe` (Flyby11 parity).
+6. **Chain** — legacy hosts hop through **Win10 22H2** then **Win11 latest**, with RunOnce after every reboot.
+
+Disable unlock pack: `MAGIC_SKIP_UNLOCK_PACK=1`.
 
 ## Limits
 
@@ -63,8 +67,9 @@ Without a local 8.1 ISO, Win8 goes **direct** to Win10 22H2 (keep-apps), which i
 - **mbr2gpt:** runs after the first Win10 hop on MBR disks.
 - **Exotic editions** (Embedded, N, Single Language): Setup may still block; Media Center is the covered special case.
 
-## Module
+## Modules
 
-`python/engine/legacy_os.py` — detection, registry prep, Media Center media patch, eligibility persistence, DVD Player claim.
+- `python/engine/legacy_os.py` — detection, registry prep, Media Center media patch, eligibility persistence, DVD Player claim.
+- `python/engine/unlock_pack.py` — unified unlock (migration + MC/DVD markers + HW bypass) before every Setup.
 
 See also `docs/ARCHITECTURE.md` (version chain + boot resume).

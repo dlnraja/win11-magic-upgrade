@@ -615,6 +615,12 @@ def claim_media_center_offers(report: Any) -> dict[str, Any]:
         return result
 
     log("=== Media Center carry-forward offers (Windows DVD Player) ===", "STEP")
+    try:
+        from .unlock_pack import restore_media_center_markers_after_hop
+
+        restore_media_center_markers_after_hop()
+    except Exception as e:
+        log(f"Media Center marker restore: {e}", "WARN")
     log(
         "In-place upgrade preserved entitlement markers. "
         "Microsoft's free DVD Player offer was time-limited (2015 WU); "

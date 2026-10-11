@@ -44,6 +44,14 @@ def settle_after_win10(report: Any | None = None) -> dict[str, Any]:
         result["wu"] = True
         log("WU settle nudge (UsoClient)", "OK")
 
+    # Re-apply unlock markers after Win10 settle (DVD / HW path to Win11)
+    try:
+        from .unlock_pack import apply_full_unlock_pack
+
+        apply_full_unlock_pack(report, phase="after_win10")
+    except Exception as e:
+        log(f"Unlock pack (settle): {e}", "WARN")
+
     # Second Media Center / DVD Player pass
     try:
         from .legacy_os import claim_media_center_offers, media_center_eligible_from_state

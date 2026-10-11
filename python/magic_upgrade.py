@@ -865,6 +865,8 @@ Env (selected):
   MAGIC_SOFT_UNINSTALL_AV=1    Soft-uninstall AV + restore via winget after (off by default)
   MAGIC_SKIP_SOFT_UNINSTALL=1  Detect blockers only (no uninstall)
   MAGIC_SKIP_APP_RESTORE=1     Do not winget-restore soft-removed apps
+  MAGIC_SKIP_APP_CARRY=1       Do not capture/restore app license keys/settings
+  MAGIC_SKIP_UNLOCK_PACK=1     Skip MC/DVD/Win8 migration + LabConfig unlock pack
   MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
   MAGIC_FREE_SPACE=1           Aggressive disk reclaim
   MAGIC_ISO_CACHE=             Shared ISO folder(s) (; separated)

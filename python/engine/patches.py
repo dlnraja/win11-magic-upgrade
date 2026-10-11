@@ -557,6 +557,17 @@ def apply_migration_patches(
         except Exception as e:
             log(f"Preventive pack install skipped: {e}", "WARN")
 
+    # Full unlock registry: Media Center / DVD / Win8 migration / LabConfig HW bypass
+    try:
+        from .detect import collect_report
+        from .unlock_pack import apply_full_unlock_pack
+
+        r = collect_report()
+        phase = "after_win10" if int(getattr(r, "build", 0) or 0) >= 10240 else "pre_setup"
+        apply_full_unlock_pack(r, phase=phase)
+    except Exception as e:
+        log(f"Unlock pack (patches): {e}", "WARN")
+
     scan_prior_setup_logs()
     try:
         from .detect import collect_report

@@ -406,6 +406,12 @@ def _execute_step(
         from .legacy_os import claim_media_center_offers, persist_media_center_eligibility
 
         try:
+            from .unlock_pack import apply_full_unlock_pack
+
+            apply_full_unlock_pack(report, phase="claim")
+        except Exception as e:
+            log(f"Unlock pack (claim): {e}", "WARN")
+        try:
             persist_media_center_eligibility(report)
         except Exception as e:
             log(f"Media eligibility refresh: {e}", "WARN")
@@ -440,14 +446,23 @@ def _execute_step(
             persist_media_center_eligibility(report)
         except Exception as e:
             log(f"Legacy host prep: {e}", "WARN")
-        # Re-apply intelligent compat right before Setup (fresh Appraiser caches)
+        # Full unlock: Win8 migration + Media Center/DVD markers + LabConfig HW bypass
+        # (Win10 hop + Win11 on unsupported TPM/CPU/SB/RAM — every Setup launch)
         try:
-            from .compat import make_system_win11_compatible
+            from .unlock_pack import apply_full_unlock_pack
 
-            make_system_win11_compatible(report)
+            build_now = int(getattr(report, "build", 0) or 0)
+            phase = "after_win10" if (win == "11" and build_now >= 10240) else "pre_setup"
+            apply_full_unlock_pack(report, phase=phase)
         except Exception as e:
-            log(f"Pre-Setup compat refresh: {e}", "WARN")
-            apply_hardware_bypass(report)
+            log(f"Unlock pack: {e}", "WARN")
+            try:
+                from .compat import make_system_win11_compatible
+
+                make_system_win11_compatible(report)
+            except Exception as e2:
+                log(f"Pre-Setup compat refresh: {e2}", "WARN")
+                apply_hardware_bypass(report)
         if getattr(step, "iso_path", None):
             iso = Path(step.iso_path)
             if not iso.is_file():
