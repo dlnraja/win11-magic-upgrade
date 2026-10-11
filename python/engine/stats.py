@@ -13,7 +13,10 @@ STATS_FILE = STATE_DIR / "local-stats.json"
 
 
 def stats_enabled() -> bool:
-    return os.environ.get("MAGIC_STATS", "").strip().lower() in ("1", "true", "yes")
+    # MAGIC_TELEMETRY=1 is an alias (still local-only unless export used)
+    return os.environ.get("MAGIC_STATS", "").strip().lower() in ("1", "true", "yes") or (
+        os.environ.get("MAGIC_TELEMETRY", "").strip().lower() in ("1", "true", "yes")
+    )
 
 
 def _load() -> dict[str, Any]:

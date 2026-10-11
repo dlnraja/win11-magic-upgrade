@@ -52,6 +52,9 @@ class Report:
     firmware_likely_ia32: bool = False
     bootmgr_mismatch: bool = False
     boot_strategy: str = "ok"
+    is_arm64: bool = False
+    is_ltsc: bool = False
+    has_rst_raid: bool = False
 
     def as_dict(self):
         return asdict(self)
@@ -240,7 +243,16 @@ def collect_report() -> Report:
     has_media_center = detect_media_center(product, edition, build=build)
     if is_win11 and "Windows 10" in product:
         product = product.replace("Windows 10", "Windows 11")
-    arch = "x64" if platform.machine().endswith("64") else "x86"
+    mach = (platform.machine() or "").lower()
+    is_arm64 = mach in ("arm64", "aarch64")
+    if is_arm64:
+        arch = "arm64"
+    elif mach.endswith("64") or mach in ("amd64", "x86_64"):
+        arch = "x64"
+    else:
+        arch = "x86"
+    blob_ed = f"{edition} {product}".lower()
+    is_ltsc = "ltsc" in blob_ed or "ltsb" in blob_ed or "enterprises" in blob_ed.replace(" ", "")
     disk_n, style = _disk_style()
     sse = has_sse42()
     locale = str(_reg_get(winreg.HKEY_CURRENT_USER, r"Control Panel\International", "LocaleName", "en-US"))
@@ -251,17 +263,29 @@ def collect_report() -> Report:
     boot_mismatch = False
     boot_strategy = "ok"
     cpu64 = arch == "x64"
+    has_rst = False
     try:
         from .bootmgr import analyze_boot_environment, cpu_is_64bit
 
-        cpu64 = cpu_is_64bit()
-        env = analyze_boot_environment(arch, is_uefi)
+        cpu64 = cpu_is_64bit() if not is_arm64 else True
+        env = analyze_boot_environment(arch if arch != "arm64" else "x64", is_uefi)
         bootmgr_arch = env.bootmgr_arch
         firmware_ia32 = env.firmware_likely_ia32
         boot_mismatch = env.mismatch
         boot_strategy = env.strategy
     except Exception as e:
         log(f"Boot env probe skipped: {e}", "WARN")
+    try:
+        from .wmi_compat import wmi_query
+
+        stor = (wmi_query("path", "Win32_SCSIController", "get", "Name") or "").lower()
+        stor2 = (wmi_query("path", "Win32_IDEController", "get", "Name") or "").lower()
+        has_rst = any(
+            x in stor or x in stor2
+            for x in ("rapid storage", "rst ", "vmd", "raid", "iastor")
+        )
+    except Exception:
+        pass
 
     return Report(
         product_name=product,
@@ -292,6 +316,9 @@ def collect_report() -> Report:
         firmware_likely_ia32=firmware_ia32,
         bootmgr_mismatch=boot_mismatch,
         boot_strategy=boot_strategy,
+        is_arm64=is_arm64,
+        is_ltsc=is_ltsc,
+        has_rst_raid=has_rst,
     )
 
 
@@ -302,6 +329,12 @@ def print_report(r: Report) -> None:
     )
     if r.is_legacy:
         log(f"Legacy family: {r.os_family} | Media Center={r.has_media_center}", "WARN")
+    if getattr(r, "is_arm64", False):
+        log("ARM64 host — x64 Win11 inplace ISO chain is not applicable", "ERROR")
+    if getattr(r, "is_ltsc", False):
+        log("LTSC/LTSB edition — prefer matching volume ISO; retail may block", "WARN")
+    if getattr(r, "has_rst_raid", False):
+        log("Intel RST / RAID storage controller detected — update RST before Setup", "WARN")
     log(f"Edition: {r.edition_id} | Locale: {r.locale} | RAM: {r.ram_gb} GB | Free: {r.free_gb} GB")
     log(f"Disk #{r.disk_number if r.disk_number is not None and r.disk_number >= 0 else '?'}: {r.partition_style} | UEFI={r.is_uefi} SecureBoot={r.secure_boot}")
     log(f"CPU: {r.cpu_name} | SSE4.2/POPCNT={r.sse42} | TPM={r.tpm_present}")

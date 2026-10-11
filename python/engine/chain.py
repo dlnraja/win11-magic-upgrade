@@ -96,6 +96,18 @@ def build_version_chain(r: Report) -> list[ChainStep]:
     from .version_planner import latest_win11_build_from_state
 
     latest_target = latest_win11_build_from_state()
+
+    # ARM64: honest stop — no x64 ISO inplace chain
+    if getattr(r, "is_arm64", False) or getattr(r, "architecture", "") == "arm64":
+        return [
+            ChainStep(
+                id="done",
+                label="ARM64 host — use Microsoft ARM64 media manually",
+                kind="done",
+                note="This tool’s CDN/ISO chain targets x86/x64. ARM64 keep-apps needs vendor ARM ISOs.",
+            )
+        ]
+
     if r.is_win11 and r.build >= latest_target:
         return [
             ChainStep(
@@ -316,6 +328,24 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 )
             )
 
+    # Settle: WU + 2nd media-offers pass after Win10 hop (before Win11)
+    if needs_win10_hop or _media_center_chain_eligible(r):
+        try:
+            from .logutil import load_state
+
+            settle_done = bool(load_state().get("SettleDone"))
+        except Exception:
+            settle_done = False
+        if not settle_done:
+            steps.append(
+                ChainStep(
+                    id="settle",
+                    label="Settle after Win10 (WU + Media Center offers 2nd pass)",
+                    kind="settle",
+                    note="UsoClient nudge; re-claim DVD Player; optional MAGIC_INSTALL_VLC=1",
+                )
+            )
+
     # Step B: MBR -> GPT after we have a modern enough OS (1703+ / after 22H2 step)
     if r.partition_style == "MBR":
         if r.mbr2gpt_available or needs_win10_hop:
@@ -381,6 +411,22 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                     ),
                 )
             )
+
+    if has_iso or any(s.kind in ("restore_apps", "settle", "media_offers") for s in steps):
+        if not any(s.id == "post_migration" for s in steps):
+            steps.append(
+                ChainStep(
+                    id="post_migration",
+                    label="Post-migration checklist + activation snapshot",
+                    kind="post_migration",
+                    note="Desktop checklist; activation snapshot; final app restore pass",
+                )
+            )
+
+    if getattr(r, "is_ltsc", False):
+        for s in steps:
+            if s.kind == "iso_upgrade" and s.win == "11":
+                s.note = (s.note + "; LTSC host — prefer MAGIC_ENTERPRISE_ISO_DIR volume media").strip("; ")
 
     if not steps:
         steps.append(

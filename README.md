@@ -61,7 +61,12 @@ Secondary GUI buttons (Diagnose / Patch / …) are optional only — One-Click a
 | Stability | Resume-safe `$WINDOWS.~BT`, no reboot loops, timeouts, atomic state |
 | Logs | Panther-style `setupact` / `setuperr` + Desktop `MigrationReport` + `SupportGuide` |
 | Blocker apps | Soft-uninstall Acronis/EaseUS/Macrium/LGS/VPN… before Setup; **winget restore** compatible versions after (LGS→G HUB) |
+| Confidence | Pre-flight score green/orange/red + dry-run chain preview |
+| Compat scan | CompatData/Appraiser soften + blocker drivers/apps |
+| Settle / post | WU + DVD offers 2nd pass; post-migration checklist; Support ZIP |
 | Runtime | Pure Python EXE — **no .NET 4.x / no PowerShell** |
+
+Full idea map: **[docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md)** · Test matrix: [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md)
 
 ## CLI (admin)
 

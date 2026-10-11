@@ -418,6 +418,18 @@ def _execute_step(
         restore_queued_apps(host_build=int(getattr(report, "build", 0) or 0))
         return None
 
+    if step.kind == "settle":
+        from .settle import settle_after_win10
+
+        settle_after_win10(report)
+        return None
+
+    if step.kind == "post_migration":
+        from .post_migration import run_post_migration
+
+        run_post_migration(report)
+        return None
+
     if step.kind == "iso_upgrade":
         arch = step.arch or "x64"
         win = step.win or "11"
@@ -826,28 +838,33 @@ def run_pipeline(
     win10_iso: str | None = None,
     win11_iso: str | None = None,
     resume: bool = False,
+    dry_run: bool = False,
 ) -> int:
     """
     ONE-CLICK intelligent full migration:
 
-      1) Diagnose + plan
+      1) Diagnose + plan + confidence score
       2) Install ALL preventive patches (persistent)
       3) Flyby11/FlyOOBE compat bypass engine
       4) Runtime remediations + enrich + SupportGuide
       5) Prefetch all needed ISOs
       6) Execute version chain (SRP / MBR / hybrid / mount ISO / Setup)
-      7) Auto-reboot + RunOnce until Done
+      7) Auto-reboot + RunOnce until Done (+ restore apps / post checklist)
 
     Quiet Setup by default. No extra clicks.
+    dry_run=True: diagnose + chain + confidence only (no patches/Setup).
     """
     init_logging(sink)
-    start_session("oneclick")
+    start_session("oneclick-dryrun" if dry_run else "oneclick")
     log("=" * 60, "STEP")
-    log("ONE-CLICK INTELLIGENT MIGRATION — full pipeline", "STEP")
+    log(
+        "ONE-CLICK DRY-RUN (no Setup)" if dry_run else "ONE-CLICK INTELLIGENT MIGRATION — full pipeline",
+        "STEP",
+    )
     log("=" * 60, "STEP")
 
     try:
-        if not is_admin():
+        if not is_admin() and not dry_run:
             raise PermissionError('Administrator required for upgrade pipeline')
 
         # ---- Phase 1: Diagnose ----
@@ -855,6 +872,12 @@ def run_pipeline(
         set_phase("diag", "Collecting system report…")
         set_step(percent=15, detail="Hardware / disk / boot mode…", indeterminate=True)
         log(">>> PHASE 1/7 — Auto-diagnose", "STEP")
+        try:
+            from .self_update import check_for_update
+
+            check_for_update()
+        except Exception as e:
+            log(f"Update check: {e}", "INFO")
         r = collect_report()
         from .version_planner import evaluate_host, format_assessment
 
@@ -863,6 +886,23 @@ def run_pipeline(
         for note in va.notes:
             log(note, "INFO")
         save_state({"VersionAssessment": va.as_dict()})
+        if getattr(r, "is_arm64", False):
+            from .errors import UpgradeBlockedError
+
+            raise UpgradeBlockedError(
+                "ARM64 host detected — this tool’s One-Click ISO chain is x86/x64 only. "
+                "Use Microsoft ARM64 installation media for keep-apps upgrades.",
+                kind="arm64-unsupported",
+            )
+        if getattr(r, "is_ltsc", False) and not (
+            os.environ.get("MAGIC_ALLOW_LTSC", "").strip().lower() in ("1", "true", "yes")
+            or os.environ.get("MAGIC_ENTERPRISE_ISO_DIR", "").strip()
+        ):
+            log(
+                "LTSC/LTSB: set MAGIC_ENTERPRISE_ISO_DIR to a matching volume ISO, "
+                "or MAGIC_ALLOW_LTSC=1 to attempt retail media (often blocked).",
+                "WARN",
+            )
         # Panther recovery on every run (especially resume after failed Setup)
         try:
             from .setup_recovery import apply_recovery_remediations, write_recovery_to_support
@@ -913,6 +953,23 @@ def run_pipeline(
             steps = [s for s in steps if s.id != 'win10_22h2']
         log('=== Intermediate version chain ===', 'STEP')
         log(format_chain(steps), 'OK')
+        try:
+            from .confidence import evaluate_confidence
+
+            evaluate_confidence(r, chain_label=format_chain(steps))
+        except Exception as e:
+            log(f"Confidence score: {e}", "WARN")
+        if dry_run:
+            log("DRY-RUN complete — no patches, ISO download, or Setup launched.", "OK")
+            write_migration_report(
+                extra={
+                    "Result": "DRY_RUN",
+                    "Chain": format_chain(steps),
+                    "Mode": "DRYRUN",
+                }
+            )
+            end_session(success=True)
+            return 0
         _runonce_register()
         try:
             out = STATE_DIR / 'last-diagnose.json'

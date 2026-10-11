@@ -228,6 +228,21 @@ def should_skip_chain_step(step: ChainStep, report: Report, *, latest_win11: int
         except Exception:
             return False
         return False
+    if step.id == "settle":
+        try:
+            from .logutil import load_state
+
+            return bool(load_state().get("SettleDone"))
+        except Exception:
+            return False
+    if step.id == "post_migration":
+        try:
+            from .logutil import load_state
+
+            # Run once when host is already on Win10+ after chain ISO hops
+            return bool(load_state().get("PostMigrationChecklist")) and report.build >= 10240
+        except Exception:
+            return False
     return False
 
 

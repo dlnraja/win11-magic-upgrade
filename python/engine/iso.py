@@ -435,6 +435,11 @@ def iso_search_roots(extra: Path | None = None) -> list[Path]:
         part = part.strip().strip('"')
         if part and Path(part).is_dir():
             roots.append(Path(part))
+    # Shared LAN / USB ISO cache (semicolon-separated)
+    for part in (os.environ.get("MAGIC_ISO_CACHE") or "").split(";"):
+        part = part.strip().strip('"')
+        if part and Path(part).is_dir():
+            roots.insert(0, Path(part))
     # Enterprise / VL cache (offline DU cabs may live beside ISOs)
     for key in ("MAGIC_ENTERPRISE_ISO_DIR", "MAGIC_DU_CAB_DIR"):
         part = (os.environ.get(key) or "").strip().strip('"')

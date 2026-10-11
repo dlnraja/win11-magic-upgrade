@@ -38,7 +38,16 @@ def _ensure_sys_path(root: Path) -> None:
 
 def load_strings(root: Path) -> dict:
     lang = (locale.getdefaultlocale()[0] or "en").lower()
-    code = "fr" if lang.startswith("fr") else "en"
+    if lang.startswith("fr"):
+        code = "fr"
+    elif lang.startswith("de"):
+        code = "de"
+    elif lang.startswith("es"):
+        code = "es"
+    elif lang.startswith("it"):
+        code = "it"
+    else:
+        code = "en"
     path = root / "i18n" / "strings.json"
     data: dict = {"en": {}, "fr": {}}
     if path.exists():
@@ -233,6 +242,49 @@ class App(tk.Tk):
             pady=8,
             command=lambda: self.start("install-patches"),
         ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            btns,
+            text=self.t.get("btn_dryrun", "Dry-run"),
+            font=("Segoe UI", 10),
+            bg="#422006",
+            fg="#fde68a",
+            relief="flat",
+            padx=12,
+            pady=8,
+            command=lambda: self.start("dryrun"),
+        ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            btns,
+            text=self.t.get("btn_support_zip", "Support ZIP"),
+            font=("Segoe UI", 10),
+            bg="#1e293b",
+            fg="#e2e8f0",
+            relief="flat",
+            padx=12,
+            pady=8,
+            command=lambda: self.start("support-zip"),
+        ).pack(side="left", padx=(8, 0))
+
+        self.chain_var = tk.StringVar(value=self.t.get("chain_idle", "Chain: (run Diagnose / One-Click)"))
+        tk.Label(
+            self,
+            textvariable=self.chain_var,
+            font=("Segoe UI", 9),
+            fg="#7dd3fc",
+            bg="#0f172a",
+            wraplength=760,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", padx=20, pady=(0, 4))
+        self.conf_var = tk.StringVar(value="")
+        tk.Label(
+            self,
+            textvariable=self.conf_var,
+            font=("Segoe UI", 9),
+            fg="#a3e635",
+            bg="#0f172a",
+            anchor="w",
+        ).pack(anchor="w", padx=20, pady=(0, 4))
 
         tk.Label(
             self,
@@ -449,7 +501,7 @@ class App(tk.Tk):
             return
         title = self.t.get("app_title", "Win11 Magic Upgrade")
         # Elevate INTO GUI (not invisible --cli) so progress bars stay visible
-        if action != "diagnose" and not is_admin():
+        if action not in ("diagnose", "dryrun", "support-zip") and not is_admin():
             self._elevating = True
             self.append(self.t.get("elevating", "Elevation required — relaunching as Administrator...\n"))
             self.phase_var.set(self.t.get("elevating_phase", "Waiting for UAC…"))
@@ -483,7 +535,7 @@ class App(tk.Tk):
                 return
 
         # UIA / automation / AI-agent guard (defense-in-depth)
-        if action in ("oneclick", "mbr", "srp", "bypass", "install-patches"):
+        if action in ("oneclick", "mbr", "srp", "bypass", "install-patches", "dryrun"):
             try:
                 from engine.uia_guard import require_human_confirm  # type: ignore
 
@@ -550,12 +602,36 @@ class App(tk.Tk):
                 elif action == "install-patches":
                     install_preventive_only(sink)
                     code = 0
+                elif action == "support-zip":
+                    from engine.support_zip import export_support_zip  # type: ignore
+
+                    z = export_support_zip()
+                    sink(f"Support ZIP: {z}\n")
+                    code = 0
+                elif action == "dryrun":
+                    code = run_pipeline(sink, quiet=True, dry_run=True)
                 else:
                     code = run_pipeline(
                         sink,
                         quiet=True,
                         resume=getattr(self, "_resume_chain", False),
                     )
+                try:
+                    from engine.logutil import load_state  # type: ignore
+
+                    st = load_state()
+                    chain = st.get("ChainLabel") or ""
+                    conf = st.get("Confidence") or {}
+                    if chain:
+                        self.after(0, self.chain_var.set, f"Chain: {chain}")
+                    if conf:
+                        self.after(
+                            0,
+                            self.conf_var.set,
+                            f"Confidence: {conf.get('score', '?')}/100 ({conf.get('level', '?')})",
+                        )
+                except Exception:
+                    pass
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
                 SETUP_OK = {0, 3010, 3011}
                 try:
@@ -764,9 +840,11 @@ Win11 Magic Upgrade — CLI
 
   Win11MagicUpgrade.exe --cli --diagnose
   Win11MagicUpgrade.exe --cli --oneclick
+  Win11MagicUpgrade.exe --cli --dry-run
   Win11MagicUpgrade.exe --cli --resume | --boot-resume
   Win11MagicUpgrade.exe --cli --bypass | --mbr | --srp | --hybrid
   Win11MagicUpgrade.exe --cli --patch | --patch-deep | --install-patches
+  Win11MagicUpgrade.exe --cli --support-zip | --offline-pack
   Win11MagicUpgrade.exe --cli --stats
 
 Exit codes:
@@ -778,13 +856,17 @@ Exit codes:
 
 Env (selected):
   MAGIC_ALLOW_VISTA=1          Acknowledge Vista best-effort
+  MAGIC_ALLOW_LTSC=1           Attempt retail ISO on LTSC (often blocked)
   MAGIC_ALLOW_AUTOMATION=1     Bypass UIA guard
-  MAGIC_STATS=1                Local success/failure counters (no network)
+  MAGIC_STATS=1 / MAGIC_TELEMETRY=1  Local success/failure counters
   MAGIC_LP_DRY_RUN=1           Language-pack audit without DISM remove
   MAGIC_UNINSTALL_ALLOWLIST=1  Extra warn for curated uninstall targets
   MAGIC_SOFT_UNINSTALL_AV=1    Soft-uninstall AV + restore via winget after (off by default)
   MAGIC_SKIP_SOFT_UNINSTALL=1  Detect blockers only (no uninstall)
   MAGIC_SKIP_APP_RESTORE=1     Do not winget-restore soft-removed apps
+  MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
+  MAGIC_FREE_SPACE=1           Aggressive disk reclaim
+  MAGIC_ISO_CACHE=             Shared ISO folder(s) (; separated)
   MAGIC_ENTERPRISE_ISO_DIR=    Local VL/enterprise ISO folder
   MAGIC_DU_CAB_DIR=            Offline Dynamic Update .cab folder (staged before Setup)
   MAGIC_DU_OFFLINE=1           Force /dynamicupdate disable when cabs staged
@@ -792,7 +874,7 @@ Env (selected):
   MAGIC_SRP_CONTINUE=1         DANGER: continue after ESP/SRP fail
   MAGIC_BLOCK_VISTA=1          Hard-block Vista One-Click
 
-Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
+Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
 """.strip()
         )
         raise SystemExit(0)
@@ -829,6 +911,10 @@ Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
             "--patch-deep",
             "--install-patches",
             "--stats",
+            "--dry-run",
+            "--dryrun",
+            "--support-zip",
+            "--offline-pack",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -851,9 +937,21 @@ Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
 
                 print_stats()
                 return
+            if "--support-zip" in argv_l:
+                from engine.support_zip import export_support_zip  # type: ignore
+
+                print(export_support_zip())
+                return
+            if "--offline-pack" in argv_l:
+                from engine.offline_pack import create_offline_pack  # type: ignore
+
+                print(create_offline_pack())
+                return
             if "--diagnose" in argv_l:
                 run_diagnose()
                 return
+            if "--dry-run" in argv_l or "--dryrun" in argv_l:
+                raise SystemExit(run_pipeline(dry_run=True))
             if not is_admin():
                 if relaunch_as_admin(argv):
                     raise SystemExit(0)

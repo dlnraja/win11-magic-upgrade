@@ -498,7 +498,29 @@ def quick_component_health() -> bool:
     return False
 
 
+def backup_bitlocker_recovery_key() -> None:
+    """Save manage-bde -protectors -get to state folder (no secrets uploaded)."""
+    try:
+        from .logutil import STATE_DIR
+
+        out = _run(["manage-bde", "-protectors", "-get", "C:"], timeout=60)
+        if not out or "ERROR" in out[:40].upper():
+            return
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path = STATE_DIR / "BitLocker-Protectors.txt"
+        path.write_text(out, encoding="utf-8", errors="replace")
+        desk = Path.home() / "Desktop" / "Win11MagicUpgrade-BitLocker-Key.txt"
+        try:
+            desk.write_text(out, encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        log(f"BitLocker protectors saved: {path} (+ Desktop copy)", "OK")
+    except Exception as e:
+        log(f"BitLocker key backup skipped: {e}", "WARN")
+
+
 def suspend_bitlocker_if_needed() -> None:
+    backup_bitlocker_recovery_key()
     try:
         from .mbrgpt import suspend_bitlocker
 
@@ -536,11 +558,30 @@ def apply_migration_patches(
             log(f"Preventive pack install skipped: {e}", "WARN")
 
     scan_prior_setup_logs()
+    try:
+        from .compat_scan import run_compat_scan
+
+        run_compat_scan(soften=True)
+    except Exception as e:
+        log(f"Compat scan: {e}", "WARN")
+    try:
+        from .disk_gate import ensure_space_for_upgrade
+
+        ensure_space_for_upgrade()
+    except Exception as e:
+        log(f"Disk gate: {e}", "WARN")
     detect_software_blockers()
     pending = check_pending_reboot()
     warn_removable_disks()
     check_problem_devices()
     audit_filter_drivers()
+    try:
+        from .activation import snapshot_activation
+
+        if not resume:
+            snapshot_activation(label="pre")
+    except Exception as e:
+        log(f"Activation snapshot: {e}", "WARN")
 
     if autonomous and not resume:
         try:
