@@ -237,7 +237,7 @@ def collect_report() -> Report:
 
     os_family = os_family_from_build(build)
     is_legacy = is_legacy_host(build, os_family)
-    has_media_center = detect_media_center(product, edition)
+    has_media_center = detect_media_center(product, edition, build=build)
     if is_win11 and "Windows 10" in product:
         product = product.replace("Windows 10", "Windows 11")
     arch = "x64" if platform.machine().endswith("64") else "x86"
@@ -337,7 +337,11 @@ def print_report(r: Report) -> None:
         else:
             log("Obsolete Win10 - intermediate Win10 22H2 required before Win11.", "WARN")
     if r.has_media_center:
-        log("Media Center edition — Setup media will be patched (ei.cfg + pid.txt).", "WARN")
+        log(
+            "Media Center Key Edition — ei.cfg/pid.txt on Win10 media; "
+            "inplace keep-apps; DVD Player offer claimed after Win10 hop.",
+            "WARN",
+        )
     if r.partition_style == "MBR":
         log("MBR disk - will convert to GPT without wipe when possible.", "WARN")
     if r.sse42 is False:

@@ -6,7 +6,7 @@
 
 **Publisher:** [dlnraja](https://github.com/dlnraja) · signed EXE / version resources identify `dlnraja`
 
-Portable **autonomous one-click** upgrader: Windows 10 (including **1511** and other obsolete builds) and older Windows 11 → **Windows 11 latest**, keeping **files and apps**.
+Portable **autonomous one-click** upgrader: **Windows 8 / 8.1** (including **Media Center Key Edition**), Windows 10 (including **1511** and other obsolete builds), and older Windows 11 → **Windows 11 latest**, keeping **files and apps**, with a recursive multi-hop chain across reboots.
 
 Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller)**:
 
@@ -42,8 +42,8 @@ Win11MagicUpgrade.exe --cli --oneclick
 3. **Flyby11/FlyOOBE** compat bypass (LabConfig / HwReqChk / unattend / setupprep)  
 4. Runtime remediations / enrich / SupportGuide  
 5. **Prefetch all needed Microsoft ISOs** for the chain  
-6. Chain: ESP/SRP → Win10 22H2 (if needed) → MBR→GPT → hybrid → **mount ISO** → quiet Setup  
-7. Auto-reboot + **RunOnce** until finished  
+6. Chain: ESP/SRP → (optional Win8→8.1) → Win10 22H2 → **Media Center offers / DVD Player** → MBR→GPT → hybrid → **mount ISO** → quiet Setup  
+7. Auto-reboot + **RunOnce** until the **latest** build (as many Windows hops as needed)  
 
 Secondary GUI buttons (Diagnose / Patch / …) are optional only — One-Click already includes them.
 
@@ -83,8 +83,11 @@ Win11MagicUpgrade.exe --cli --diagnose
 | ESP / System Reserved full | Cleanup + enlarge (`--cli --srp`) |
 | MBR disk | Auto `mbr2gpt` (no wipe) + bcdboot |
 | Win10 1511 / obsolete | Intermediate **Win10 22H2** then Win11 (RunOnce) |
+| Win8 / 8.1 (+ Media Center) | Inplace → Win10 22H2 (`ei.cfg`/`pid.txt` for MC) → DVD Player offer step → Win11 latest |
 | 32-bit Windows | Max **Win10 22H2 x86** (keep apps) — Win11 needs clean x64 |
 | No SSE4.2 / POPCNT | Max **Win10 22H2 x64** — cannot boot Win11 24H2+ |
+
+Legacy Media Center / DVD Player details: **[docs/LEGACY_OS.md](docs/LEGACY_OS.md)** · [FR](docs/LEGACY_OS.fr.md)
 
 ## Logs
 

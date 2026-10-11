@@ -39,7 +39,8 @@ Legacy PowerShell under `src/` is reference only — **not** used at runtime.
 2. Fix System Reserved / EFI (cleanup; enlarge ~512 MB if needed — idempotent).  
 3. If CPU lacks SSE4.2/POPCNT → **max Win10 22H2** (24H2+ will not boot).  
 4. If **legacy** (Vista/7/8/8.1) or Win10 build &lt; 19045 → Win10 22H2 ISO → inplace → RunOnce resume.  
-   Media Center 8.1: `ei.cfg` + `pid.txt` on staged media. See `docs/LEGACY_OS.md`.  
+   Media Center 8/8.1: `ei.cfg` + `pid.txt` on Win10 media; eligibility in state.json;
+   `media_offers` chain step (DVD Player) after Win10 hop. See `docs/LEGACY_OS.md`.  
    After failed Setup: `setup_recovery` parses Panther codes (0xC1900101-*) and remediates.  
 5. If system disk is MBR and `mbr2gpt` exists → convert (no wipe) → reboot resume.  
 6. Boot Manager / hybrid IA32 path when firmware bitness requires it (Secure Boot OFF checklist).  

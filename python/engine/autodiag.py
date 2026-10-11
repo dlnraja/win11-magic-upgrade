@@ -156,8 +156,25 @@ def build_plan(report: Report | None = None) -> Plan:
             actions.append(
                 Action(
                     "legacy_media_center",
-                    "Media Center edition bypass on Setup media",
-                    "sources\\ei.cfg + pid.txt → Professional; setupprep.exe",
+                    "Media Center Key Edition → Pro (keep apps)",
+                    "sources\\ei.cfg + pid.txt → Professional; setupprep.exe; inplace only",
+                    "medium",
+                )
+            )
+            actions.append(
+                Action(
+                    "legacy_dvd_player",
+                    "Windows DVD Player + Media Center carry-forward offers",
+                    "Persist eligibility → Win10 22H2 inplace → WU nudge → then Win11 latest",
+                    "medium",
+                )
+            )
+        if fam == "win8":
+            actions.append(
+                Action(
+                    "legacy_win8_chain",
+                    "Windows 8 recursive chain",
+                    "Optional 8.1 (MAGIC_WIN81_ISO) → Win10 22H2 → Win11; RunOnce across reboots",
                     "medium",
                 )
             )
