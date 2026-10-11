@@ -94,6 +94,22 @@ OPTIONS: list[GuiOption] = [
         False,
         group="migration",
     ),
+    GuiOption(
+        "boot_auto_fix",
+        "MAGIC_BOOT_AUTO_FIX",
+        "Extra Boot Fix pass during patches (ESP/MBR failover)",
+        "Passage Boot Fix extra pendant les patches (failover EFI/MBR)",
+        False,
+        group="migration",
+    ),
+    GuiOption(
+        "write_boot_scripts",
+        "MAGIC_BOOT_SCRIPTS",
+        "Write WinRE/Desktop remediation scripts on Boot Fix",
+        "Écrire scripts WinRE/Bureau lors du Boot Fix",
+        True,
+        group="migration",
+    ),
     # Frameworks
     GuiOption(
         "fw_master",

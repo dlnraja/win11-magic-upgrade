@@ -482,7 +482,16 @@ def apply_recovery_remediations(plan: RecoveryPlan | None = None) -> RecoveryPla
         plan.notes.append(f"compat: {e}")
 
     if plan.esp_hint or any(c in ("0xc1900200",) for c in plan.codes_found):
-        plan.notes.append("ESP/SRP flagged — chain will re-run fix_srp on next One-Click")
+        plan.notes.append("ESP/SRP flagged — running boot remediation bot (failover ladder)")
+        try:
+            from .boot_remediation import run_boot_auto_remediate
+
+            boot = run_boot_auto_remediate(force_esp=True, try_mbr2gpt=False, try_hybrid=False)
+            plan.auto_fixes_applied.append(
+                f"boot_remediation:ok={boot.get('ok')}:bootable={boot.get('bootable')}"
+            )
+        except Exception as e:
+            plan.notes.append(f"boot remediation: {e}")
     if plan.migrate_data_hint:
         plan.notes.append(
             "MIGRATE_DATA / 0x8007042B — review SetupDiag; Crypto RSA delete is manual only"

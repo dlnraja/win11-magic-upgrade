@@ -302,16 +302,29 @@ def _execute_step(
         return None
 
     if step.kind == "fix_srp":
+        from .boot_remediation import run_boot_auto_remediate
         from .boot_safe import run_esp_srp_with_restore
         from .sysreserved import scan_logs_for_srp_error
 
         force = scan_logs_for_srp_error()
         disk = getattr(report, "disk_number", None)
         rep = report.as_dict() if hasattr(report, "as_dict") else None
+        # Full failover bot first (cleanup → smart partition → bcdboot → scripts)
+        try:
+            bot = run_boot_auto_remediate(
+                report,
+                force_esp=True,
+                try_mbr2gpt=False,
+                try_hybrid=False,
+            )
+            if bot.get("ok") and (bot.get("esp") or {}).get("ok"):
+                return None
+        except Exception as e:
+            log(f"Boot remediation bot: {e}", "WARN")
         res = run_esp_srp_with_restore(
-            force_expand=force,
+            force_expand=force or True,
             system_disk=disk,
-            retries=2,
+            retries=3,
             report=rep if isinstance(rep, dict) else None,
         )
         if isinstance(res, dict) and not res.get("ok", True):
@@ -339,6 +352,12 @@ def _execute_step(
             )
             remember_failure(full, kind="esp-srp-failed", links=links if isinstance(links, dict) else {})
             raise UpgradeBlockedError(full, kind="esp-srp-failed", links=links if isinstance(links, dict) else {})
+        return None
+
+    if step.kind == "boot_fix":
+        from .boot_remediation import run_boot_auto_remediate
+
+        run_boot_auto_remediate(report, force_esp=True, try_mbr2gpt=False, try_hybrid=True)
         return None
 
     if step.kind == "fix_bootmgr":
@@ -650,6 +669,20 @@ def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
         raise PermissionError('Administrator required')
     try:
         r = collect_report()
+        # Always stage remediation scripts + ESP prep before MBR→GPT
+        try:
+            from .boot_remediation import run_boot_auto_remediate, write_remediation_scripts
+
+            write_remediation_scripts(system_disk=r.disk_number, mode="mbr-prep")
+            run_boot_auto_remediate(
+                r,
+                force_esp=True,
+                try_mbr2gpt=False,
+                try_hybrid=False,
+                sink=sink,
+            )
+        except Exception as e:
+            log(f"Pre-MBR boot remediation: {e}", "WARN")
         if r.partition_style != 'MBR':
             log(f'Disk already {r.partition_style} - repairing boot manager only', 'OK')
             from .boot_safe import validated_repair_boot_manager
@@ -664,6 +697,16 @@ def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
 
             ok, code, msg, meta = validated_mbr_to_gpt(r.disk_number)
             if not ok:
+                try:
+                    from .boot_remediation import write_remediation_scripts
+
+                    write_remediation_scripts(
+                        system_disk=r.disk_number,
+                        mode="mbr-failed",
+                        summary={"msg": msg, "code": code, "meta": meta},
+                    )
+                except Exception:
+                    pass
                 raise RuntimeError(f'MBR2GPT failed: {msg} ({code})')
         write_migration_report(extra={'Result': 'MBR_OK', 'Disk': r.disk_number})
     except Exception as e:
@@ -684,18 +727,42 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
 
         disk = None
         report_dict = None
+        r = None
         try:
             r = collect_report()
             disk = r.disk_number
             report_dict = r.as_dict()
         except Exception:
             pass
+        # Full failover bot (smart partition + bcdboot + Desktop remediation scripts)
+        try:
+            from .boot_remediation import run_boot_auto_remediate
+
+            bot = run_boot_auto_remediate(
+                r,
+                force_esp=True,
+                try_mbr2gpt=False,
+                try_hybrid=False,
+                sink=sink,
+            )
+            if bot.get("ok") and (bot.get("esp") or {}).get("ok"):
+                write_migration_report(
+                    extra={
+                        "Result": "SRP_OK",
+                        "via": "boot_remediation_bot",
+                        "bootable": bot.get("bootable"),
+                        "tiers": bot.get("tiers"),
+                    }
+                )
+                return
+        except Exception as e:
+            log(f"Boot remediation bot: {e}", "WARN")
         from .boot_safe import run_esp_srp_with_restore
 
         result = run_esp_srp_with_restore(
-            force_expand=force,
+            force_expand=force or True,
             system_disk=disk,
-            retries=2,
+            retries=3,
             report=report_dict,
         )
         if not result.get('ok'):

@@ -195,6 +195,7 @@ class App(tk.Tk):
             ("btn_bypass", "Bypass", "bypass", "#1e293b", "#e2e8f0"),
             ("btn_mbr", "MBR→GPT", "mbr", "#1e293b", "#e2e8f0"),
             ("btn_srp", "ESP/SRP", "srp", "#1e293b", "#e2e8f0"),
+            ("btn_boot_fix", "Boot Fix", "boot-fix", "#9a3412", "#ffedd5"),
             ("btn_patch", "Patch", "patch", "#334155", "#e2e8f0"),
             ("btn_install_patches", "Preventives", "install-patches", "#14532d", "#e2e8f0"),
             ("btn_frameworks", "Frameworks", "frameworks", "#7c2d12", "#ffedd5"),
@@ -592,7 +593,16 @@ class App(tk.Tk):
                 return
 
         # UIA / automation / AI-agent guard (defense-in-depth)
-        if action in ("oneclick", "mbr", "srp", "bypass", "install-patches", "dryrun", "frameworks"):
+        if action in (
+            "oneclick",
+            "mbr",
+            "srp",
+            "boot-fix",
+            "bypass",
+            "install-patches",
+            "dryrun",
+            "frameworks",
+        ):
             try:
                 from engine.uia_guard import require_human_confirm  # type: ignore
 
@@ -657,6 +667,22 @@ class App(tk.Tk):
                 elif action == "srp":
                     fix_system_reserved_only(sink)
                     code = 0
+                elif action == "boot-fix":
+                    from engine.boot_remediation import run_boot_auto_remediate  # type: ignore
+                    from engine.detect import collect_report  # type: ignore
+
+                    bot = run_boot_auto_remediate(
+                        collect_report(),
+                        force_esp=True,
+                        try_mbr2gpt=False,
+                        try_hybrid=True,
+                        sink=sink,
+                    )
+                    sink(
+                        f"Boot Fix: ok={bot.get('ok')} bootable={bot.get('bootable')} "
+                        f"scripts={bot.get('scripts', {}).get('guide', '')}\n"
+                    )
+                    code = 0 if bot.get("ok") or bot.get("bootable") else 2
                 elif action == "patch":
                     run_patch_enrichment(sink, deep_heal=False)
                     code = 0
@@ -947,6 +973,8 @@ Env (selected):
   MAGIC_INSTALL_VCREDIST=1     VC++ 2015-2022 redistributables
   MAGIC_INSTALL_MEDIA_FEATURE=1  Media Feature Pack (N editions)
   MAGIC_SKIP_FRAMEWORKS=1      Disable all framework installs
+  MAGIC_BOOT_AUTO_FIX=1        Run EFI/MBR/smart-partition failover bot
+  MAGIC_SKIP_BOOT_REMEDIATE=1  Disable boot remediation bot
   MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
   MAGIC_FREE_SPACE=1           Aggressive disk reclaim
   MAGIC_ISO_CACHE=             Shared ISO folder(s) (; separated)
@@ -999,6 +1027,7 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
             "--support-zip",
             "--offline-pack",
             "--research",
+            "--boot-fix",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -1051,6 +1080,17 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
                 if "--bypass" in argv_l:
                     apply_bypass_only()
                     return
+                if "--boot-fix" in argv_l:
+                    from engine.boot_remediation import run_boot_auto_remediate  # type: ignore
+                    from engine.detect import collect_report  # type: ignore
+
+                    bot = run_boot_auto_remediate(
+                        collect_report(),
+                        force_esp=True,
+                        try_mbr2gpt=False,
+                        try_hybrid=True,
+                    )
+                    raise SystemExit(0 if bot.get("ok") or bot.get("bootable") else 2)
                 if "--mbr" in argv_l:
                     convert_mbr_only()
                     return

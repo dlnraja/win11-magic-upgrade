@@ -660,6 +660,22 @@ def apply_migration_patches(
     if free < 12:
         raise RuntimeError(f"Not enough free disk space ({free:.1f} GB). Need ~20 GB.")
 
+    # Boot remediation bot (ESP/MBR/smart partition failover) when forced or logs say so
+    try:
+        from .sysreserved import scan_logs_for_srp_error
+        from .boot_remediation import run_boot_auto_remediate
+
+        if os.environ.get("MAGIC_BOOT_AUTO_FIX", "").strip().lower() in ("1", "true", "yes") or (
+            scan_logs_for_srp_error() and not skip_srp
+        ):
+            run_boot_auto_remediate(
+                force_esp=True,
+                try_mbr2gpt=False,  # MBR hop stays in chain after Win10
+                try_hybrid=False,
+            )
+    except Exception as e:
+        log(f"Boot remediation (patches): {e}", "WARN")
+
     # SRP: skip in prep when chain will run fix_srp (avoid double shrink)
     if not skip_srp:
         try:
