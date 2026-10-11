@@ -119,7 +119,7 @@ if ($VoteHarmless) {
         Write-Host ("VT vote skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkGray
     }
 
-    $text = "Win11 Magic Upgrade by dlnraja - open-source MIT Windows 11 migration helper (PyInstaller). Not malware. Source: https://github.com/dlnraja/win11-magic-upgrade - false positive report welcome."
+    $text = "FALSE POSITIVE. Win11 Magic Upgrade by dlnraja - open-source MIT Windows 11 migration helper (PyInstaller onefile). NOT Trojan.Python.Agent / NOT malware. Downloads official Microsoft ISOs only. Source: https://github.com/dlnraja/win11-magic-upgrade Prefer ZIP from Releases. #false_positive"
     $commentObj = @{ data = @{ type = "comment"; attributes = @{ text = $text } } }
     $commentBody = $commentObj | ConvertTo-Json -Compress -Depth 5
     try {

@@ -17,10 +17,12 @@ from .logutil import STATE_DIR, log
 
 APP_NAME = "Win11 Magic Upgrade"
 VENDOR_FP_NOTE = (
-    "Win11MagicUpgrade is an open-source Windows 10→11 migration tool. "
-    "It is NOT a Trojan, NOT a PDF exploit, and NOT ransomware. "
-    "False positives are caused by unsigned PyInstaller packaging + UAC elevation. "
-    "Official ISO downloads come only from Microsoft CDN."
+    "Win11MagicUpgrade is an open-source Windows 10→11 migration tool by dlnraja. "
+    "It is NOT a Trojan, NOT Trojan.Python.Agent, NOT a PDF exploit, and NOT ransomware. "
+    "False positives (Kaspersky HEUR:Trojan.Python.Agent.gen, Bkav W32.Malware, "
+    "SecureAge Malicious) are caused by PyInstaller onefile + UAC + signature heuristics. "
+    "Official ISO downloads come only from Microsoft CDN. "
+    "Source: https://github.com/dlnraja/win11-magic-upgrade"
 )
 
 KASPERSKY_FP_URL = "https://opentip.kaspersky.com/"

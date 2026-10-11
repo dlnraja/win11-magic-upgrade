@@ -16,7 +16,9 @@ This tool intentionally bypasses Windows 11 *setup* hardware checks using docume
 
 Win11 Magic Upgrade is **not** malware, **not** a PDF trojan, and contains **no PDF exploit code**.
 
-Heuristic engines and **Chrome Safe Browsing** sometimes flag unsigned/new PyInstaller onefile EXEs (especially with UPX or `mshta` elevation) as `Trojan.PDF` / generic HEUR / “virus detected”.
+Heuristic engines and **Chrome Safe Browsing** sometimes flag unsigned/new PyInstaller onefile EXEs (especially with UPX or `mshta` elevation) as `Trojan.PDF` / `HEUR:Trojan.Python.Agent.gen` / Bkav `W32.Malware` / SecureAge `Malicious` / “virus detected”.
+
+See also [docs/FALSE_POSITIVES.md](docs/FALSE_POSITIVES.md) (VT hash votes, vendor emails).
 
 Mitigations shipped in the build / release:
 
