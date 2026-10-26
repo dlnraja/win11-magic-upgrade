@@ -945,6 +945,10 @@ Win11 Magic Upgrade — CLI
   Win11MagicUpgrade.exe --cli --dry-run
   Win11MagicUpgrade.exe --cli --resume | --boot-resume
   Win11MagicUpgrade.exe --cli --bypass | --mbr | --srp | --hybrid
+  Win11MagicUpgrade.exe --cli --openduet-prepare
+  Win11MagicUpgrade.exe --cli --openduet-write --disk N            # dry-run (prints confirm token)
+  Win11MagicUpgrade.exe --cli --openduet-write --disk N --confirm TOKEN [--volume E:]
+  Win11MagicUpgrade.exe --cli --openduet-write --disk N --confirm TOKEN --openduet-partition
   Win11MagicUpgrade.exe --cli --patch | --patch-deep | --install-patches
   Win11MagicUpgrade.exe --cli --support-zip | --offline-pack
   Win11MagicUpgrade.exe --cli --research
@@ -991,6 +995,11 @@ Env (selected):
   MAGIC_ISO_DIRS=              Extra ISO search dirs (; separated)
   MAGIC_SRP_CONTINUE=1         DANGER: continue after ESP/SRP fail
   MAGIC_BLOCK_VISTA=1          Hard-block Vista One-Click
+  MAGIC_OPENDUET_PREPARE=1     Stage OpenDuet files during One-Click (no disk write)
+  MAGIC_OPENDUET_BLESS=        EFI loader path for OpenCore BlessOverride
+  MAGIC_KEEP_LEGACY=1          Do not convert MBR→GPT
+  MAGIC_FORCE_MBR2GPT=1        Convert MBR even when firmware looks legacy-only
+  MAGIC_OPENDUET_ALLOW_LARGE=1 Allow partitioning a USB larger than 128 GiB
 
 Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
 """.strip()
@@ -1036,6 +1045,8 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
             "--research",
             "--boot-fix",
             "--boot-heal",
+            "--openduet-prepare",
+            "--openduet-write",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -1077,6 +1088,15 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
             if "--diagnose" in argv_l:
                 run_diagnose()
                 return
+            if "--openduet-prepare" in argv_l or "--openduet-write" in argv_l:
+                if "--openduet-write" in argv_l and not is_admin():
+                    if relaunch_as_admin(argv):
+                        raise SystemExit(0)
+                    print("ERROR: UAC elevation failed or was cancelled.", file=sys.stderr)
+                    raise SystemExit(5)
+                from engine.openduet import run_openduet_cli  # type: ignore
+
+                raise SystemExit(run_openduet_cli(argv))
             if "--dry-run" in argv_l or "--dryrun" in argv_l:
                 raise SystemExit(run_pipeline(dry_run=True))
             if not is_admin():

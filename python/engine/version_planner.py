@@ -21,10 +21,12 @@ from .chain import ChainStep, WIN10_22H2_BUILD, WIN11_24H2_BUILD, mapped_version
 from .detect import Report
 from .legacy_os import is_legacy_host, os_family_from_build, inplace_notes_for_legacy
 from .logutil import log, load_state, save_state
+from .win11_release import FALLBACK_WIN11_BUILD, latest_win11_ubr_from_state
 
-# Known retail baselines (updated when Microsoft ships new GA ISOs)
-KNOWN_WIN11_BUILDS = (26200, 26100, 22631, 22621, 22000)
-DEFAULT_LATEST_WIN11_BUILD = 26200  # 25H2-class (Installation Assistant target 2026)
+# Known retail baselines. The live target comes from win11_release (release health).
+# 28000 is 26H1 (new devices only) and is intentionally not the default.
+KNOWN_WIN11_BUILDS = (26300, 28000, 26200, 26100, 22631, 22621, 22000)
+DEFAULT_LATEST_WIN11_BUILD = FALLBACK_WIN11_BUILD  # 26H2 floor when detection fails
 DEFAULT_LATEST_WIN10_BUILD = 19045  # 22H2 — only Win10 ISO on Microsoft CDN
 
 
@@ -40,6 +42,9 @@ class VersionAssessment:
     needs_win11_upgrade: bool
     iso_steps_needed: list[str]
     notes: list[str]
+    target_win11_ubr: int = 0
+    needs_cumulative: bool = False
+    detection_source: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +58,9 @@ class VersionAssessment:
             "needs_win11_upgrade": self.needs_win11_upgrade,
             "iso_steps_needed": self.iso_steps_needed,
             "notes": self.notes,
+            "target_win11_ubr": self.target_win11_ubr,
+            "needs_cumulative": self.needs_cumulative,
+            "detection_source": self.detection_source,
         }
 
 
@@ -93,11 +101,36 @@ def probe_win11_iso_build(iso_path: Path | None) -> int:
     return latest_win11_build_from_state()
 
 
+def target_label_for(latest: int) -> str:
+    """Marketing label for the detected build, else the static build map."""
+    try:
+        st = load_state()
+        if int(st.get("LatestWin11Build") or 0) == int(latest):
+            label = str(st.get("LatestWin11Label") or "").strip()
+            if label:
+                return label
+    except (TypeError, ValueError):
+        pass
+    return mapped_version(latest)
+
+
+def needs_cumulative_update(report: Any, latest_build: int | None = None) -> bool:
+    """Same feature build, UBR behind the detected cumulative. UBR 0 means unknown."""
+    latest = latest_build if latest_build is not None else latest_win11_build_from_state()
+    if not getattr(report, "is_win11", False):
+        return False
+    if int(getattr(report, "build", 0) or 0) != int(latest):
+        return False
+    host_ubr = int(getattr(report, "ubr", 0) or 0)
+    target_ubr = latest_win11_ubr_from_state()
+    return host_ubr > 0 and target_ubr > 0 and host_ubr < target_ubr
+
+
 def min_build_for_step(step_id: str) -> int:
     if step_id == "win10_22h2":
         return WIN10_22H2_BUILD
     if step_id == "win11_latest":
-        return 22000
+        return latest_win11_build_from_state()
     return 0
 
 
@@ -161,11 +194,19 @@ def evaluate_host(report: Report, *, latest_win11: int | None = None) -> Version
                     f"Win11 {host_ver} → latest retail (build {latest}) via in-place ISO upgrade"
                 )
 
-    target_label = mapped_version(latest)
-    if latest >= 26200:
-        target_label = "25H2"
-    elif latest >= 26100:
-        target_label = "24H2"
+    target_label = target_label_for(latest)
+    target_ubr = latest_win11_ubr_from_state()
+    needs_cu = needs_cumulative_update(report, latest)
+    if needs_cu:
+        notes.append(
+            f"Feature build {latest} is installed; cumulative {latest}.{target_ubr} "
+            "is still ahead of this PC (Windows Update, not a new ISO)."
+        )
+    source = ""
+    try:
+        source = str(load_state().get("LatestWin11Source") or "")
+    except Exception:
+        source = ""
 
     return VersionAssessment(
         host_build=report.build,
@@ -178,6 +219,9 @@ def evaluate_host(report: Report, *, latest_win11: int | None = None) -> Version
         needs_win11_upgrade=needs_win11,
         iso_steps_needed=iso_steps,
         notes=notes,
+        target_win11_ubr=target_ubr,
+        needs_cumulative=needs_cu,
+        detection_source=source,
     )
 
 
@@ -214,6 +258,16 @@ def should_skip_chain_step(step: ChainStep, report: Report, *, latest_win11: int
         return True
     if step.id == "win11_latest" and report.is_win11 and report.build >= latest:
         return True
+    if step.id == "win11_cumulative":
+        if not needs_cumulative_update(report, latest):
+            return True
+        try:
+            key = f"{latest}.{latest_win11_ubr_from_state()}"
+            if load_state().get("CumulativeNudgedFor") == key:
+                return True
+        except Exception:
+            return False
+        return False
     if step.id == "restore_apps":
         try:
             from .blocker_apps import pending_restores_remaining
@@ -250,5 +304,6 @@ def format_assessment(va: VersionAssessment) -> str:
     hops = " → ".join(va.iso_steps_needed) if va.iso_steps_needed else "none"
     return (
         f"Host: Win{va.host_family} {va.host_version} (build {va.host_build}.{va.host_ubr}) | "
-        f"Target Win11: {va.target_win11_label} (≥{va.target_win11_build}) | ISO hops: {hops}"
+        f"Target Win11: {va.target_win11_label} "
+        f"({va.target_win11_build}.{va.target_win11_ubr or 0}) | ISO hops: {hops}"
     )

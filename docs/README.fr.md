@@ -10,7 +10,7 @@ Inspiré de **Flyby11 / FlyOOBE**, runtime **Python pur** (PyInstaller) :
 - **Pas de PowerShell**
 - **Pas de FlyOOBE**
 
-**Docs :** [Architecture](ARCHITECTURE.md) · [Bugs FR](MIGRATION_BUGS.fr.md) · [Legacy FR](LEGACY_OS.fr.md) · [OEM FR](OEM.fr.md) · [Clean install x64](CLEAN_INSTALL_X64.md) · [README EN](../README.md) · [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
+**Docs :** [Architecture](ARCHITECTURE.md) · [Boot / Win11 latest](BOOT_FIRMWARE.md) · [Bugs FR](MIGRATION_BUGS.fr.md) · [Legacy FR](LEGACY_OS.fr.md) · [OEM FR](OEM.fr.md) · [Clean install x64](CLEAN_INSTALL_X64.md) · [README EN](../README.md) · [Releases](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
 
 ## Démarrage rapide
 
@@ -39,6 +39,12 @@ Erreur **Impossible de mettre à jour la partition réservée au système** : ne
 --cli --patch              # Préventifs + runtime + SupportGuide
 --cli --srp / --mbr / --diagnose / --hybrid
 ```
+
+## Dernier Windows 11 et démarrage
+
+La cible n’est pas une version figée. La page publique de release health choisit la mise à jour de fonctionnalité la plus récente **en place** (26H2 passe avant 26H1, même si le numéro de build 28000 est plus haut). Si la page échoue, le plancher est **26H2 / 26300**. Un cumulatif sur le même build passe par `UsoClient`, pas par un second ISO.
+
+`mbr2gpt` ne tourne que si le PC peut ensuite démarrer en UEFI. Un BIOS legacy pur garde le MBR. Une clé OpenDuet/OpenCore 1.0.7 (optionnelle) peut ajouter une couche UEFI logicielle ; elle ne s’écrit sur un disque qu’avec un jeton de confirmation, et le disque système est refusé. Détail : [BOOT_FIRMWARE.md](BOOT_FIRMWARE.md). Sources gratuites uniquement (pages Microsoft, CDN, OpenCorePkg) — pas de clé d’API.
 
 ## Limites honnêtes
 

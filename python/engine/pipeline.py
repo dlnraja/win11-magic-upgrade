@@ -377,14 +377,32 @@ def _execute_step(
     if step.kind == "hybrid_ia32":
         from .hybrid_uefi import apply_hybrid_ia32_path
 
-        # Always activate when OS is x64 — One-Click must be fully autonomous
-        activate = True
+        # Do not replace bootia32 while Secure Boot is still on.
+        activate = not bool(getattr(report, "secure_boot", False))
+        if not activate:
+            log(
+                "Secure Boot is on — CSMWrap is staged only. "
+                "Turn Secure Boot off, then run again to activate the bridge.",
+                "WARN",
+            )
         res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
         if not res.get("ok"):
             raise RuntimeError("Hybrid IA32 deploy failed — cannot continue Win11 x64 path")
         return None
 
     if step.kind == "mbr2gpt":
+        try:
+            from .firmware_matrix import mbr2gpt_wanted
+
+            if not mbr2gpt_wanted(report):
+                log(
+                    "MBR→GPT skipped — firmware plan keeps the current boot mode "
+                    "(legacy-only, IA32 hybrid, or MAGIC_KEEP_LEGACY).",
+                    "WARN",
+                )
+                return None
+        except Exception as e:
+            log(f"Firmware plan check failed ({e}) — continuing with the existing MBR step", "WARN")
         if not report.mbr2gpt_available:
             log("mbr2gpt not available yet - will retry after Win10 intermediate", "WARN")
             return None
@@ -457,6 +475,46 @@ def _execute_step(
         settle_after_win10(report)
         return None
 
+    if step.kind == "cumulative":
+        from .version_planner import latest_win11_build_from_state, needs_cumulative_update
+        from .win11_release import latest_win11_ubr_from_state, nudge_cumulative_update
+
+        latest = latest_win11_build_from_state()
+        if not needs_cumulative_update(report, latest):
+            log("Cumulative nudge skipped — host build does not need it yet.", "INFO")
+            return None
+        nudge_cumulative_update(f"{latest}.{latest_win11_ubr_from_state()}")
+        return None
+
+    if step.kind == "openduet_prepare":
+        enabled = os.environ.get("MAGIC_OPENDUET_PREPARE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        log(
+            "Legacy-only BIOS: an OpenDuet/OpenCore USB can add a software UEFI layer. "
+            "The stick must stay plugged in. This step never writes a disk by itself.",
+            "WARN",
+        )
+        if not enabled:
+            log(
+                "OpenDuet files were not built. Enable the checkbox or run "
+                "--cli --openduet-prepare. Writing a stick is --openduet-write --disk N "
+                "(dry-run until --confirm matches).",
+                "INFO",
+            )
+            return None
+        try:
+            from .openduet import prepare_openduet_stick
+
+            path = prepare_openduet_stick()
+            save_state({"OpenDuetPrepared": str(path)})
+            log(f"OpenDuet files staged at {path}", "OK")
+        except Exception as e:
+            log(f"OpenDuet prepare failed (upgrade continues): {e}", "WARN")
+        return None
+
     if step.kind == "post_migration":
         from .post_migration import run_post_migration
 
@@ -507,7 +565,18 @@ def _execute_step(
         elif win == "10":
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
         else:
-            iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
+            from .version_planner import latest_win11_build_from_state
+
+            iso = (
+                Path(win11_iso)
+                if win11_iso
+                else get_iso(
+                    "11",
+                    report.locale,
+                    arch="x64",
+                    min_build=latest_win11_build_from_state(),
+                )
+            )
         # Strict ISO gate (forum: wrong language / missing setupprep / partial CDN)
         # Skip CDN-oriented verify for local Win8.1 media
         if win != "81" and not getattr(step, "iso_path", None):
@@ -579,6 +648,13 @@ def _execute_step(
 def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
     init_logging(sink)
     r = collect_report()
+    try:
+        from .win11_release import refresh_latest_win11
+
+        rel = refresh_latest_win11(host_build=int(getattr(r, "build", 0) or 0))
+        log(f"Windows 11 target {rel.version} {rel.major}.{rel.ubr} via {rel.source}", "OK")
+    except Exception as e:
+        log(f"Latest Win11 detection failed — using saved/floor target: {e}", "WARN")
     print_report(r)
     plan = build_plan(r)
     print_plan(plan)
@@ -909,7 +985,18 @@ def _prefetch_chain_isos(
         elif win == "10":
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch, min_build=min_build)
         else:
-            iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
+            from .version_planner import latest_win11_build_from_state
+
+            iso = (
+                Path(win11_iso)
+                if win11_iso
+                else get_iso(
+                    "11",
+                    report.locale,
+                    arch="x64",
+                    min_build=latest_win11_build_from_state(),
+                )
+            )
         cached[key] = str(iso)
         log(f"ISO ready: {iso}", "OK")
         if win == "11":
@@ -984,6 +1071,16 @@ def run_pipeline(
         except Exception as e:
             log(f"Update check: {e}", "INFO")
         r = collect_report()
+        try:
+            from .win11_release import refresh_latest_win11
+
+            rel = refresh_latest_win11(host_build=int(getattr(r, "build", 0) or 0))
+            log(
+                f"Windows 11 target {rel.version} {rel.major}.{rel.ubr} via {rel.source}",
+                "OK",
+            )
+        except Exception as e:
+            log(f"Latest Win11 detection failed — using saved/floor target: {e}", "WARN")
         from .version_planner import evaluate_host, format_assessment
 
         va = evaluate_host(r)
@@ -1111,7 +1208,11 @@ def run_pipeline(
         saved_index = int(state.get('ChainIndex', 0) or 0) if resume else 0
         if resume:
             log(f'Resuming chain after reboot (saved index={saved_index})', 'STEP')
-            start_index = _next_pending_index(steps, saved_index, r)
+            if saved_index >= len(steps):
+                log("Saved chain index is past the rebuilt plan — scanning from the start", "INFO")
+                start_index = _next_pending_index(steps, 0, r)
+            else:
+                start_index = _next_pending_index(steps, saved_index, r)
         else:
             start_index = _next_pending_index(steps, 0, r)
         _persist_chain(steps, start_index)

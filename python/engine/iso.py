@@ -26,7 +26,8 @@ PRODUCTS = {
     "11": {
         "page": "windows11",
         # Consumer Fido IDs: Home/Pro/Edu. Enterprise/VL: use MAGIC_ENTERPRISE_ISO_DIR.
-        "edition_ids": [3321, 3324],
+        # Fallbacks. Live ids come from the software-download page (win11_release).
+        "edition_ids": [3813, 3816, 3321, 3324],
         "label": "Windows 11",
     },
     "10": {
@@ -107,6 +108,19 @@ def _whitelist_session(session_id: str) -> None:
         )
 
 
+def _edition_ids_for(win: str) -> list[int]:
+    if win == "11":
+        try:
+            from .win11_release import win11_edition_ids
+
+            ids = win11_edition_ids()
+            if ids:
+                return ids
+        except Exception:
+            pass
+    return list(PRODUCTS[win]["edition_ids"])
+
+
 def resolve_iso_url(win: str = "11", lang_hint: str = "en-US", arch: str = "x64") -> str:
     """Return a temporary Microsoft CDN URL for the official retail ISO."""
     meta = PRODUCTS[win]
@@ -116,7 +130,7 @@ def resolve_iso_url(win: str = "11", lang_hint: str = "en-US", arch: str = "x64"
 
     skus: list[dict] = []
     last_err = None
-    for eid in meta["edition_ids"]:
+    for eid in _edition_ids_for(win):
         url = (
             "https://www.microsoft.com/software-download-connector/api/getskuinformationbyproductedition"
             f"?profile={PROFILE_ID}&productEditionId={eid}&SKU=undefined"
@@ -325,19 +339,22 @@ def _iso_name_matches(win: str, arch: str, name: str) -> bool:
     if win == "11":
         if arch != "x64":
             return False
-        return any(
+        if "x86" in n and "x64" not in n:
+            return False
+        if any(
             k in n
             for k in (
                 "win11",
                 "windows11",
                 "windows_11",
                 "win_11",
-                "26100",
-                "26200",
-                "22631",
-                "22621",
             )
-        ) and ("x86" not in n or "x64" in n)
+        ):
+            return True
+        if re.search(r"\b2[4-9]h[12]\b", n):
+            return True
+        # Any Windows 11-era build in the file name (future feature updates included).
+        return bool(re.search(r"\b2[2-9]\d{3}\b", n)) and "win10" not in n and "windows10" not in n
     if win == "10":
         return arch_ok and any(
             k in n
@@ -620,6 +637,22 @@ def get_iso(
     url = resolve_iso_url(win=win, lang_hint=locale, arch=arch)
     m = re.search(r"/([^/?]+\.iso)", url, re.I)
     fname = m.group(1) if m else f"Windows{win}_{arch}_{int(time.time())}.iso"
+    if win == "11":
+        try:
+            from .version_planner import latest_win11_build_from_state, remember_latest_win11_build
+            from .win11_release import parse_build_from_filename
+
+            named_build = parse_build_from_filename(fname)
+            target = latest_win11_build_from_state()
+            if named_build >= target:
+                remember_latest_win11_build(named_build)
+            elif named_build:
+                log(
+                    f"CDN file name looks like build {named_build}, older than detected target {target}",
+                    "WARN",
+                )
+        except Exception as e:
+            log(f"ISO name build check: {e}", "INFO")
     dest = download_file(url, out_dir / fname)
     # Hash + catalog the freshly downloaded official ISO (skip remount if slow — still hash)
     try:

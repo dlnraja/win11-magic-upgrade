@@ -55,6 +55,10 @@ class Report:
     is_arm64: bool = False
     is_ltsc: bool = False
     has_rst_raid: bool = False
+    firmware_bitness: str = ""
+    uefi_capable: bool = False
+    partition_hybrid: bool = False
+    boot_plan_id: str = ""
 
     def as_dict(self):
         return asdict(self)
@@ -146,6 +150,32 @@ def _disk_style() -> tuple[int, str]:
         if ft == 1:
             return -1, "MBR"
         return -1, "Unknown"
+
+
+def _uefi_capable(is_uefi: bool) -> bool:
+    """True when firmware can boot UEFI, even if this OS is currently in CSM."""
+    if is_uefi:
+        return True
+    for path in (
+        r"SYSTEM\CurrentControlSet\Control\SecureBoot\State",
+        r"SYSTEM\CurrentControlSet\Control\SecureBoot",
+    ):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path):
+                return True
+        except OSError:
+            continue
+    bios = _reg_get(
+        winreg.HKEY_LOCAL_MACHINE,
+        r"HARDWARE\DESCRIPTION\System\BIOS",
+        "BIOSVersion",
+        "",
+    )
+    if isinstance(bios, (list, tuple)):
+        blob = " ".join(str(x) for x in bios)
+    else:
+        blob = str(bios or "")
+    return bool(re.search(r"UEFI", blob, re.I))
 
 
 def _firmware_uefi() -> bool:
@@ -254,9 +284,25 @@ def collect_report() -> Report:
     blob_ed = f"{edition} {product}".lower()
     is_ltsc = "ltsc" in blob_ed or "ltsb" in blob_ed or "enterprises" in blob_ed.replace(" ", "")
     disk_n, style = _disk_style()
+    partition_hybrid = False
+    try:
+        from .firmware_matrix import classify_mbr_sector
+        from .rawdisk import read_disk_sector
+
+        sector = read_disk_sector(disk_n) if is_admin() else None
+        sector_kind = classify_mbr_sector(sector)
+        if sector_kind == "hybrid":
+            partition_hybrid = True
+        elif sector_kind == "gpt" and style == "Unknown":
+            style = "GPT"
+        elif sector_kind == "mbr" and style == "Unknown":
+            style = "MBR"
+    except Exception as e:
+        log(f"Partition sector probe skipped: {e}", "INFO")
     sse = has_sse42()
     locale = str(_reg_get(winreg.HKEY_CURRENT_USER, r"Control Panel\International", "LocaleName", "en-US"))
     is_uefi = _firmware_uefi()
+    uefi_capable = _uefi_capable(is_uefi)
 
     bootmgr_arch = None
     firmware_ia32 = False
@@ -287,7 +333,7 @@ def collect_report() -> Report:
     except Exception:
         pass
 
-    return Report(
+    report = Report(
         product_name=product,
         edition_id=edition,
         display_version=display,
@@ -319,7 +365,27 @@ def collect_report() -> Report:
         is_arm64=is_arm64,
         is_ltsc=is_ltsc,
         has_rst_raid=has_rst,
+        firmware_bitness="",
+        uefi_capable=uefi_capable,
+        partition_hybrid=partition_hybrid,
+        boot_plan_id="",
     )
+    try:
+        from .firmware_matrix import decide_boot_plan, infer_firmware_bitness, snapshot_from_report
+
+        report.firmware_bitness = infer_firmware_bitness(
+            is_uefi=is_uefi,
+            os_arch=arch,
+            bootmgr_arch=bootmgr_arch or "",
+            firmware_likely_ia32=firmware_ia32,
+        )
+        plan = decide_boot_plan(snapshot_from_report(report))
+        report.boot_plan_id = plan.path_id
+        for note in plan.warnings[:4]:
+            log(note, "INFO")
+    except Exception as e:
+        log(f"Boot plan skipped: {e}", "WARN")
+    return report
 
 
 def print_report(r: Report) -> None:
@@ -340,7 +406,8 @@ def print_report(r: Report) -> None:
     log(f"CPU: {r.cpu_name} | SSE4.2/POPCNT={r.sse42} | TPM={r.tpm_present}")
     log(
         f"Boot: OS={r.architecture} CPU64={r.cpu_64bit} bootmgr={r.bootmgr_arch or '?'} "
-        f"IA32fw={r.firmware_likely_ia32} strategy={r.boot_strategy}"
+        f"IA32fw={r.firmware_likely_ia32} fw={r.firmware_bitness or '?'} "
+        f"uefi_capable={r.uefi_capable} plan={r.boot_plan_id or r.boot_strategy}"
     )
     try:
         from .oem_adapt import get_oem_profile
