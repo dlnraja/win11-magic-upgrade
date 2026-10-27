@@ -42,6 +42,14 @@ FULL_HWREQCHK_SPOOF = [
     "SQ_CpuFamily=25",
     "SQ_CpuModel=1",
     "SQ_CpuStepping=1",
+    # 24H2 / 25H2 extra soft gates (ignored if unused)
+    "SQ_CpuPopCnt=TRUE",
+    "SQ_CpuSSE4_2=TRUE",
+    "SQ_TpmEnabled=TRUE",
+    "SQ_ModernStandby=TRUE",
+    "SQ_DmaProtection=TRUE",
+    "SQ_HyperV=TRUE",
+    "SQ_CpuArchitecture=9",
 ]
 
 LABCONFIG_BYPASSES = [

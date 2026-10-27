@@ -4,7 +4,8 @@
 Win11MagicUpgrade.exe / .cmd
         │
         ▼
-python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerShell
+python/magic_upgrade.py            GUI/CLI (tkinter) — One-Click + checkboxes + progress
+python/gui_panel.py                Checkbox options → MAGIC_* env (persisted)
         │
         └── python/engine/         Pure Python pipeline (stdlib + Win32)
               ├── detect.py        winreg + ctypes + diskpart + wmi_compat
@@ -26,6 +27,18 @@ python/magic_upgrade.py            GUI/CLI (tkinter) — NO .NET 4.x / NO PowerS
               ├── chain.py         Intermediate version plan across reboots
               ├── setup_recovery.py Panther/forum recovery map + strict ISO gate
               ├── legacy_os.py     Vista/7/8/8.1 + Media Center registry/media bypass
+              ├── blocker_apps.py  Soft-uninstall SafeOS blockers + winget restore
+              ├── app_carry.py     License keys + registry/AppData carry (local-only)
+              ├── unlock_pack.py   MC/DVD/Win8 migration + LabConfig HW unlock (every hop)
+              ├── frameworks.py    .NET / DirectX / VC++ / Media Feature Pack (winget+DISM)
+              ├── boot_remediation.py  EFI/MBR failover bot + WinRE/Desktop scripts
+              ├── boot_guard.py        Autonomous EFI/GRUB/BCD heal + WinRE/WinPE net (no Live CD)
+              ├── research_pack.py Orchestrates SetupDiag/profiles/drivers/compat scans
+              ├── setupdiag_runner.py Download/run Microsoft SetupDiag
+              ├── profile_heal.py  ProfileList duplicate/.bak audit
+              ├── unsigned_drivers.py driverquery + pnputil problem scan
+              ├── rollback_scan.py Prior SafeOS Rollback folder analysis
+              ├── preflight_power.py AC power + sleep timeouts for Setup
               ├── version_planner.py  Host/ISO build evaluation + smart skip logic
               ├── logutil.py       Panther logs + MigrationReport + state.json
               └── pipeline.py      Orchestration + quiet setup + resume
@@ -39,7 +52,8 @@ Legacy PowerShell under `src/` is reference only — **not** used at runtime.
 2. Fix System Reserved / EFI (cleanup; enlarge ~512 MB if needed — idempotent).  
 3. If CPU lacks SSE4.2/POPCNT → **max Win10 22H2** (24H2+ will not boot).  
 4. If **legacy** (Vista/7/8/8.1) or Win10 build &lt; 19045 → Win10 22H2 ISO → inplace → RunOnce resume.  
-   Media Center 8.1: `ei.cfg` + `pid.txt` on staged media. See `docs/LEGACY_OS.md`.  
+   Media Center 8/8.1: `ei.cfg` + `pid.txt` on Win10 media; eligibility in state.json;
+   `media_offers` chain step (DVD Player) after Win10 hop. See `docs/LEGACY_OS.md`.  
    After failed Setup: `setup_recovery` parses Panther codes (0xC1900101-*) and remediates.  
 5. If system disk is MBR and `mbr2gpt` exists → convert (no wipe) → reboot resume.  
 6. Boot Manager / hybrid IA32 path when firmware bitness requires it (Secure Boot OFF checklist).  

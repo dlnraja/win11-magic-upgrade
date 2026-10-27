@@ -186,13 +186,63 @@ def should_skip_chain_step(step: ChainStep, report: Report, *, latest_win11: int
     latest = latest_win11 or latest_win11_build_from_state()
     if step.kind == "done":
         return True
+    if step.id == "win81":
+        # Win8.1+ already past the optional 8→8.1 hop
+        if report.build >= 9600:
+            return True
     if step.id == "win10_22h2":
         if report.is_win11 or report.build >= WIN10_22H2_BUILD:
             return True
+    if step.id == "media_offers":
+        try:
+            from .legacy_os import media_offers_already_claimed, media_center_eligible_from_state
+
+            if media_offers_already_claimed():
+                return True
+            # Not eligible and not currently Media Center → skip
+            if not (
+                media_center_eligible_from_state()
+                or getattr(report, "has_media_center", False)
+            ):
+                return True
+            # Still on pre-Win10: do not skip — but chain order puts this after Win10;
+            # if we somehow land here early, execute_step will defer without claiming.
+            return False
+        except Exception:
+            return False
     if step.id == "mbr2gpt" and report.partition_style == "GPT":
         return True
     if step.id == "win11_latest" and report.is_win11 and report.build >= latest:
         return True
+    if step.id == "restore_apps":
+        try:
+            from .blocker_apps import pending_restores_remaining
+            from .logutil import load_state
+
+            if load_state().get("AppRestoreDone") and not pending_restores_remaining():
+                return True
+            # Skip only when nothing queued and restore already marked done
+            items = load_state().get("PendingAppRestores") or []
+            if not items and load_state().get("AppRestoreDone"):
+                return True
+        except Exception:
+            return False
+        return False
+    if step.id == "settle":
+        try:
+            from .logutil import load_state
+
+            return bool(load_state().get("SettleDone"))
+        except Exception:
+            return False
+    if step.id == "post_migration":
+        try:
+            from .logutil import load_state
+
+            # Run once when host is already on Win10+ after chain ISO hops
+            return bool(load_state().get("PostMigrationChecklist")) and report.build >= 10240
+        except Exception:
+            return False
     return False
 
 

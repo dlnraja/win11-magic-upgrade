@@ -131,19 +131,28 @@ def scan_prior_setup_logs() -> None:
 
 
 def detect_software_blockers() -> None:
-    names = _installed_names()
-    for name in names:
-        for pat, reason in BLOCKERS:
-            if re.search(pat, name, re.I):
-                log(f"Blocker software: {name} :: {reason}", "WARN")
-                break
-    maybe_uninstall_allowlist_blockers(names)
+    """Detect + soft-uninstall curated blockers; queue winget restore after migration."""
+    try:
+        from .blocker_apps import format_blocker_report, process_blockers_before_upgrade
+
+        log(format_blocker_report(), "INFO")
+        process_blockers_before_upgrade(do_uninstall=True)
+    except Exception as e:
+        log(f"Blocker catalog: {e}", "WARN")
+        # Fallback: warn-only scan
+        names = _installed_names()
+        for name in names:
+            for pat, reason in BLOCKERS:
+                if re.search(pat, name, re.I):
+                    log(f"Blocker software: {name} :: {reason}", "WARN")
+                    break
+    maybe_uninstall_allowlist_blockers()
 
 
 def maybe_uninstall_allowlist_blockers(installed_names: list[str] | None = None) -> None:
     """
-    Optional: guidance for curated uninstall when MAGIC_UNINSTALL_ALLOWLIST=1.
-    Never silent-force uninstall of AV/EDR — only legacy LGS / virtual CD toys.
+    Legacy env hint. Soft uninstall is now handled by blocker_apps (One-Click default).
+    MAGIC_UNINSTALL_ALLOWLIST=1 still logs curated targets if catalog path failed.
     """
     if os.environ.get("MAGIC_UNINSTALL_ALLOWLIST", "").strip().lower() not in (
         "1",
@@ -154,14 +163,14 @@ def maybe_uninstall_allowlist_blockers(installed_names: list[str] | None = None)
     allow = [
         (r"Logitech Gaming Software", "legacy LGS"),
         (r"Daemon Tools Lite|Alcohol 120%", "virtual CD filter"),
+        (r"Acronis|EaseUS Todo|Macrium", "backup filter"),
     ]
     names = installed_names or _installed_names()
     for name in names:
         for pat, label in allow:
             if re.search(pat, name, re.I):
                 log(
-                    f"MAGIC_UNINSTALL_ALLOWLIST=1: uninstall recommended → {name} ({label}). "
-                    "Settings → Apps, then reboot before One-Click.",
+                    f"MAGIC_UNINSTALL_ALLOWLIST=1: catalog should soft-remove → {name} ({label}).",
                     "WARN",
                 )
 
@@ -489,7 +498,29 @@ def quick_component_health() -> bool:
     return False
 
 
+def backup_bitlocker_recovery_key() -> None:
+    """Save manage-bde -protectors -get to state folder (no secrets uploaded)."""
+    try:
+        from .logutil import STATE_DIR
+
+        out = _run(["manage-bde", "-protectors", "-get", "C:"], timeout=60)
+        if not out or "ERROR" in out[:40].upper():
+            return
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path = STATE_DIR / "BitLocker-Protectors.txt"
+        path.write_text(out, encoding="utf-8", errors="replace")
+        desk = Path.home() / "Desktop" / "Win11MagicUpgrade-BitLocker-Key.txt"
+        try:
+            desk.write_text(out, encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        log(f"BitLocker protectors saved: {path} (+ Desktop copy)", "OK")
+    except Exception as e:
+        log(f"BitLocker key backup skipped: {e}", "WARN")
+
+
 def suspend_bitlocker_if_needed() -> None:
+    backup_bitlocker_recovery_key()
     try:
         from .mbrgpt import suspend_bitlocker
 
@@ -526,12 +557,59 @@ def apply_migration_patches(
         except Exception as e:
             log(f"Preventive pack install skipped: {e}", "WARN")
 
+    # Full unlock registry: Media Center / DVD / Win8 migration / LabConfig HW bypass
+    try:
+        from .detect import collect_report
+        from .unlock_pack import apply_full_unlock_pack
+
+        r = collect_report()
+        phase = "after_win10" if int(getattr(r, "build", 0) or 0) >= 10240 else "pre_setup"
+        apply_full_unlock_pack(r, phase=phase)
+    except Exception as e:
+        log(f"Unlock pack (patches): {e}", "WARN")
+
+    # Optional .NET / DirectX / VC++ / Media Feature Pack (GUI checkboxes / env)
+    try:
+        from .frameworks import install_frameworks, selected_framework_ids
+
+        if selected_framework_ids():
+            install_frameworks()
+    except Exception as e:
+        log(f"Frameworks install: {e}", "WARN")
+
     scan_prior_setup_logs()
+    try:
+        from .detect import collect_report
+        from .research_pack import apply_research_pack
+
+        # Includes compat_scan, profiles, SetupDiag, drivers, rollback, power, inventory
+        apply_research_pack(collect_report(), resume=resume)
+    except Exception as e:
+        log(f"Research pack: {e}", "WARN")
+        try:
+            from .compat_scan import run_compat_scan
+
+            run_compat_scan(soften=True)
+        except Exception as e2:
+            log(f"Compat scan: {e2}", "WARN")
+    try:
+        from .disk_gate import ensure_space_for_upgrade
+
+        ensure_space_for_upgrade()
+    except Exception as e:
+        log(f"Disk gate: {e}", "WARN")
     detect_software_blockers()
     pending = check_pending_reboot()
     warn_removable_disks()
     check_problem_devices()
     audit_filter_drivers()
+    try:
+        from .activation import snapshot_activation
+
+        if not resume:
+            snapshot_activation(label="pre")
+    except Exception as e:
+        log(f"Activation snapshot: {e}", "WARN")
 
     if autonomous and not resume:
         try:
@@ -581,6 +659,22 @@ def apply_migration_patches(
     free = shutil.disk_usage(os.environ.get("SystemDrive", "C:\\")).free / (1024**3)
     if free < 12:
         raise RuntimeError(f"Not enough free disk space ({free:.1f} GB). Need ~20 GB.")
+
+    # Boot remediation bot (ESP/MBR/smart partition failover) when forced or logs say so
+    try:
+        from .sysreserved import scan_logs_for_srp_error
+        from .boot_remediation import run_boot_auto_remediate
+
+        if os.environ.get("MAGIC_BOOT_AUTO_FIX", "").strip().lower() in ("1", "true", "yes") or (
+            scan_logs_for_srp_error() and not skip_srp
+        ):
+            run_boot_auto_remediate(
+                force_esp=True,
+                try_mbr2gpt=False,  # MBR hop stays in chain after Win10
+                try_hybrid=False,
+            )
+    except Exception as e:
+        log(f"Boot remediation (patches): {e}", "WARN")
 
     # SRP: skip in prep when chain will run fix_srp (avoid double shrink)
     if not skip_srp:

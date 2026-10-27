@@ -67,6 +67,14 @@ python -m PyInstaller `
     --hidden-import engine.boot_safe `
     --hidden-import engine.boot_emergency `
     --hidden-import engine.boot_partition_backup `
+    --hidden-import engine.frameworks `
+    --hidden-import engine.boot_remediation `
+    --hidden-import engine.boot_guard `
+    --hidden-import engine.unlock_pack `
+    --hidden-import engine.app_carry `
+    --hidden-import engine.blocker_apps `
+    --hidden-import engine.legacy_os `
+    --hidden-import gui_panel `
     --add-data "$payload\engine${sep}engine" `
     --add-data "$payload\i18n${sep}i18n" `
     (Join-Path $Root "python\magic_upgrade.py")

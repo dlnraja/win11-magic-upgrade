@@ -11,14 +11,26 @@ from .detect import Report
 class ChainStep:
     id: str
     label: str
-    kind: str  # iso_upgrade | mbr2gpt | bypass | done
-    win: str | None = None  # "10" | "11"
+    kind: str  # iso_upgrade | mbr2gpt | bypass | media_offers | done
+    win: str | None = None  # "10" | "11" | "81"
     arch: str | None = None  # x64 | x86
     use_server_product: bool = False
     note: str = ""
+    iso_path: str | None = None  # optional local ISO (e.g. Win8.1)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _media_center_chain_eligible(r: Report) -> bool:
+    if getattr(r, "has_media_center", False):
+        return True
+    try:
+        from .legacy_os import media_center_eligible_from_state
+
+        return media_center_eligible_from_state()
+    except Exception:
+        return False
 
 
 # Windows 10 22H2 = build 19045. Prefer stepping through it before Win11.
@@ -84,6 +96,18 @@ def build_version_chain(r: Report) -> list[ChainStep]:
     from .version_planner import latest_win11_build_from_state
 
     latest_target = latest_win11_build_from_state()
+
+    # ARM64: honest stop — no x64 ISO inplace chain
+    if getattr(r, "is_arm64", False) or getattr(r, "architecture", "") == "arm64":
+        return [
+            ChainStep(
+                id="done",
+                label="ARM64 host — use Microsoft ARM64 media manually",
+                kind="done",
+                note="This tool’s CDN/ISO chain targets x86/x64. ARM64 keep-apps needs vendor ARM ISOs.",
+            )
+        ]
+
     if r.is_win11 and r.build >= latest_target:
         return [
             ChainStep(
@@ -232,6 +256,31 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             )
         )
 
+    # Optional Win8 → Win8.1 when a local 8.1 ISO is provided (CDN does not serve it)
+    os_fam = getattr(r, "os_family", "") or ""
+    if os_fam == "win8" and r.build < 9600:
+        try:
+            from .legacy_os import find_optional_win81_iso
+
+            w81 = find_optional_win81_iso()
+        except Exception:
+            w81 = None
+        if w81 is not None:
+            steps.append(
+                ChainStep(
+                    id="win81",
+                    label=f"Intermediate: Windows 8 -> Windows 8.1 (local ISO)",
+                    kind="iso_upgrade",
+                    win="81",
+                    arch=r.architecture if r.architecture in ("x64", "x86") else "x64",
+                    iso_path=str(w81),
+                    note=(
+                        "Optional hop via MAGIC_WIN81_ISO / local 8.1 media; "
+                        "keeps Media Center edition for the later Win10 offer path"
+                    ),
+                )
+            )
+
     # Step A: Win10 below 22H2 OR legacy Vista/7/8/8.1 must pass by 22H2 first
     needs_win10_hop = (r.is_win10 and r.build < WIN10_22H2_BUILD) or getattr(r, "is_legacy", False)
     if needs_win10_hop:
@@ -240,18 +289,62 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             if getattr(r, "is_legacy", False)
             else "Required stepping stone before Windows 11 (keeps files/apps)"
         )
-        if getattr(r, "has_media_center", False):
-            legacy_note += "; Media Center → Pro via ei.cfg/pid.txt"
+        if _media_center_chain_eligible(r):
+            legacy_note += (
+                "; Media Center Key Edition → Pro via ei.cfg/pid.txt "
+                "(inplace keep-apps; DVD Player eligibility persisted)"
+            )
+        idx = len([s for s in steps if s.kind == "iso_upgrade"]) + 1
         steps.append(
             ChainStep(
                 id="win10_22h2",
-                label=f"Intermediate 1: Windows {cur} -> Windows 10 22H2",
+                label=f"Intermediate {idx}: Windows {cur} -> Windows 10 22H2",
                 kind="iso_upgrade",
                 win="10",
                 arch="x64",
                 note=legacy_note,
             )
         )
+
+    # After Win10: claim Media Center / DVD Player carry-forward before Win11
+    # Eligibility is persisted in state.json before the Win10 hop (EditionID becomes Pro).
+    if _media_center_chain_eligible(r):
+        try:
+            from .legacy_os import media_offers_already_claimed
+
+            already = media_offers_already_claimed()
+        except Exception:
+            already = False
+        if not already:
+            steps.append(
+                ChainStep(
+                    id="media_offers",
+                    label="Claim Media Center offers (Windows DVD Player + carry-forward)",
+                    kind="media_offers",
+                    note=(
+                        "Runs after Win10 hop: nudge Windows Update / detect "
+                        "Microsoft.WindowsDVDPlayer; then continue to latest Win11"
+                    ),
+                )
+            )
+
+    # Settle: WU + 2nd media-offers pass after Win10 hop (before Win11)
+    if needs_win10_hop or _media_center_chain_eligible(r):
+        try:
+            from .logutil import load_state
+
+            settle_done = bool(load_state().get("SettleDone"))
+        except Exception:
+            settle_done = False
+        if not settle_done:
+            steps.append(
+                ChainStep(
+                    id="settle",
+                    label="Settle after Win10 (WU + Media Center offers 2nd pass)",
+                    kind="settle",
+                    note="UsoClient nudge; re-claim DVD Player; optional MAGIC_INSTALL_VLC=1",
+                )
+            )
 
     # Step B: MBR -> GPT after we have a modern enough OS (1703+ / after 22H2 step)
     if r.partition_style == "MBR":
@@ -287,6 +380,53 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 note="In-place upgrade; /product server + registry bypass; keeps files/apps",
             )
         )
+
+    # After OS hops: restore soft-uninstalled blockers (Acronis/EaseUS/LGS/…) via winget.
+    # Always schedule when the chain includes ISO upgrades (queue filled during patch phase).
+    try:
+        from .blocker_apps import pending_restores_remaining
+
+        need_restore = pending_restores_remaining()
+    except Exception:
+        need_restore = False
+    try:
+        from .logutil import load_state
+
+        st_pending = bool(load_state().get("PendingAppRestores")) and not load_state().get(
+            "AppRestoreDone"
+        )
+    except Exception:
+        st_pending = False
+    has_iso = any(s.kind == "iso_upgrade" for s in steps)
+    if has_iso or need_restore or st_pending:
+        if not any(s.id == "restore_apps" for s in steps):
+            steps.append(
+                ChainStep(
+                    id="restore_apps",
+                    label="Restore compatible apps (soft-uninstalled blockers)",
+                    kind="restore_apps",
+                    note=(
+                        "Reinstall modern packages via winget when the same product was "
+                        "removed before Setup (LGS→GHUB, EaseUS, Macrium, VPN, …)"
+                    ),
+                )
+            )
+
+    if has_iso or any(s.kind in ("restore_apps", "settle", "media_offers") for s in steps):
+        if not any(s.id == "post_migration" for s in steps):
+            steps.append(
+                ChainStep(
+                    id="post_migration",
+                    label="Post-migration checklist + activation snapshot",
+                    kind="post_migration",
+                    note="Desktop checklist; activation snapshot; final app restore pass",
+                )
+            )
+
+    if getattr(r, "is_ltsc", False):
+        for s in steps:
+            if s.kind == "iso_upgrade" and s.win == "11":
+                s.note = (s.note + "; LTSC host — prefer MAGIC_ENTERPRISE_ISO_DIR volume media").strip("; ")
 
     if not steps:
         steps.append(

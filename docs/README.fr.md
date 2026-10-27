@@ -2,7 +2,7 @@
 
 **Editeur :** [dlnraja](https://github.com/dlnraja) · EXE / ressources de version signes `dlnraja`
 
-Programme **portable one-click autonome** pour migrer Windows 10 (y compris **1511**) et Windows 11 anciens vers **Windows 11 latest**, **sans perdre fichiers ni applications**.
+Programme **portable one-click autonome** pour migrer **Windows 8 / 8.1** (y compris **Media Center Key Edition** + offre Lecteur DVD), Windows 10 (y compris **1511**) et Windows 11 anciens vers **Windows 11 latest**, **sans perdre fichiers ni applications**, en chaîne récursive multi-versions avec redémarrages.
 
 Inspiré de **Flyby11 / FlyOOBE**, runtime **Python pur** (PyInstaller) :
 
@@ -25,7 +25,7 @@ Chrome dit « virus détecté » ? → **[Aide téléchargement](DOWNLOAD.md)** 
 Win11MagicUpgrade.exe --cli --oneclick
 ```
 
-En un clic : diagnostic → preventifs → bypass Flyby11/FlyOOBE → patches → téléchargement/montage ISO → Setup silencieux → reboot/RunOnce jusqu’à Win11.
+En un clic : diagnostic → preventifs → bypass Flyby11/FlyOOBE → patches → téléchargement/montage ISO → Setup silencieux → reboot/RunOnce jusqu’au **dernier build** (ex. 8.1 Media Center → Win10 22H2 → Lecteur DVD → Win11). Détails : [LEGACY_OS.fr.md](LEGACY_OS.fr.md).
 
 ## Partition réservée / EFI
 

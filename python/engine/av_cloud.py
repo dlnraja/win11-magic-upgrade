@@ -29,12 +29,23 @@ from .logutil import STATE_DIR, log
 
 APP_NAME = "Win11 Magic Upgrade"
 FP_COMMENT = (
-    "FALSE POSITIVE. Win11MagicUpgrade is a legitimate open-source Windows 10→11 "
-    "migration helper. It downloads official Microsoft ISOs only, mounts them, and "
-    "runs Setup. It contains NO PDF exploit, NO Trojan, NO ransomware, NO credential theft. "
-    "Heuristic hits (e.g. Trojan.PDF) come from unsigned PyInstaller + UAC elevation. "
-    "#false_positive #win11 #legitimate_software"
+    "FALSE POSITIVE / NOT MALWARE. Win11MagicUpgrade by dlnraja is a legitimate "
+    "open-source (MIT) Windows migration helper. Pure Python/PyInstaller GUI: "
+    "downloads official Microsoft ISOs only, mounts them, runs Windows Setup. "
+    "NO Trojan payload, NO ransomware, NO credential theft, NO C2, NO PDF exploit. "
+    "Known heuristic FPs: Kaspersky HEUR:Trojan.Python.Agent.gen, Bkav W32.Malware.*, "
+    "SecureAge Malicious — triggered by PyInstaller onefile + UAC + self-sign/"
+    "invalid-signature metadata, NOT a real trojan.python family. "
+    "Source+releases: https://github.com/dlnraja/win11-magic-upgrade "
+    "Prefer ZIP from GitHub Releases. Publisher: dlnraja. "
+    "#false_positive #win11 #legitimate_software #pyinstaller"
 )
+
+# Vendor-specific FP portal / email targets
+BKAV_FP_URL = "https://www.bkav.com/en/false-positive"
+SECUREAGE_FP_URL = "https://www.secureage.com/false-positive"
+SECUREAGE_EMAIL = "fp@secureage.com"
+BKAV_EMAIL = "virus@bkav.com.vn"
 
 VT_API = "https://www.virustotal.com/api/v3"
 KASP_SCAN = "https://opentip.kaspersky.com/api/v1/scan/file"
@@ -204,7 +215,11 @@ def build_fp_package(path: Path, hashes: dict[str, str]) -> Path:
                 f"OpenTIP:    https://opentip.kaspersky.com/{hashes['sha256']}/results",
                 f"Kaspersky FP email: {KASP_EMAIL}",
                 "",
-                "Request: please mark as CLEAN / Trusted Application / remove Trojan.PDF heuristic.",
+                "Request: please mark as CLEAN / Trusted Application.",
+                "Remove heuristics: HEUR:Trojan.Python.Agent.gen / W32.Malware / SecureAge Malicious.",
+                "",
+                f"Bkav FP: {BKAV_FP_URL} / {BKAV_EMAIL}",
+                f"SecureAge FP: {SECUREAGE_FP_URL} / {SECUREAGE_EMAIL}",
                 "",
             ]
         ),
@@ -306,37 +321,82 @@ def declare_virustotal(path: Path, hashes: dict[str, str], keys: dict[str, str])
         # File may already exist — continue with hash
         log(f"VirusTotal upload response {code}: {str(data)[:200]}", "WARN")
 
-    # Vote harmless
+    # Wait until analysis/file is indexed — immediate vote/comment often 404 NotFound
+    if analysis_id:
+        for _ in range(18):
+            acode, adata = _http_json(
+                "GET", f"{VT_API}/analyses/{analysis_id}", headers=headers, timeout=60
+            )
+            status = ""
+            if acode == 200 and isinstance(adata, dict):
+                status = str(
+                    ((adata.get("data") or {}).get("attributes") or {}).get("status") or ""
+                )
+            if status == "completed":
+                log("VirusTotal: analysis completed — voting/commenting", "OK")
+                break
+            time.sleep(5)
+
+    # Vote harmless (retry a few times if VT still indexing)
     vote_body = json.dumps(
         {"data": {"type": "vote", "attributes": {"verdict": "harmless"}}}
     ).encode()
-    code, data = _http_json(
-        "POST",
-        f"{VT_API}/files/{sha}/votes",
-        headers={**headers, "content-type": "application/json"},
-        data=vote_body,
-    )
-    if code in (200, 201):
-        log("VirusTotal: voted HARLESS (false positive)", "OK")
-    else:
-        log(f"VirusTotal vote: {code} {str(data)[:160]}", "WARN")
+    vote_ok = False
+    for attempt in range(4):
+        code, data = _http_json(
+            "POST",
+            f"{VT_API}/files/{sha}/votes",
+            headers={**headers, "content-type": "application/json"},
+            data=vote_body,
+        )
+        if code in (200, 201):
+            log("VirusTotal: voted HARMLESS (false positive)", "OK")
+            vote_ok = True
+            break
+        # Already voted harmless on a prior CI run — treat as success
+        err = str(data).lower()
+        if code == 409 and (
+            "already voted" in err or "alreadyexists" in err.replace("_", "")
+        ):
+            log("VirusTotal: harmless vote already present", "OK")
+            vote_ok = True
+            break
+        log(f"VirusTotal vote attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
+        time.sleep(8)
 
     # Comment
     comment_body = json.dumps(
         {"data": {"type": "comment", "attributes": {"text": FP_COMMENT}}}
     ).encode()
-    code, data = _http_json(
-        "POST",
-        f"{VT_API}/files/{sha}/comments",
-        headers={**headers, "content-type": "application/json"},
-        data=comment_body,
-    )
-    if code in (200, 201):
-        log("VirusTotal: FP comment posted", "OK")
+    comment_ok = False
+    for attempt in range(4):
+        code, data = _http_json(
+            "POST",
+            f"{VT_API}/files/{sha}/comments",
+            headers={**headers, "content-type": "application/json"},
+            data=comment_body,
+        )
+        if code in (200, 201):
+            log("VirusTotal: FP comment posted", "OK")
+            comment_ok = True
+            break
+        # Duplicate comment from a prior run — treat as success
+        err = str(data).lower()
+        if code == 409 and ("duplicate" in err or "alreadyexists" in err.replace("_", "")):
+            log("VirusTotal: FP comment already present", "OK")
+            comment_ok = True
+            break
+        log(f"VirusTotal comment attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
+        time.sleep(8)
+
+    if vote_ok and comment_ok:
         _mark_done(sha, "virustotal", "ok", {"url": vt_url, "analysis": analysis_id})
         return "ok"
 
-    log(f"VirusTotal comment: {code} {str(data)[:160]}", "WARN")
+    log(
+        f"VirusTotal partial (vote={vote_ok} comment={comment_ok}) — file still on VT",
+        "WARN",
+    )
     _mark_done(sha, "virustotal", "partial", {"url": vt_url, "analysis": analysis_id})
     return "partial"
 
@@ -401,7 +461,7 @@ def _write_kaspersky_email_draft(path: Path, hashes: dict[str, str]) -> Path:
     eml_body = "\n".join(
         [
             f"To: {KASP_EMAIL}",
-            "Subject: False positive — Win11MagicUpgrade.exe (NOT Trojan.PDF)",
+            "Subject: False positive — Win11MagicUpgrade.exe (HEUR:Trojan.Python.Agent.gen)",
             "",
             FP_COMMENT,
             "",
@@ -409,11 +469,13 @@ def _write_kaspersky_email_draft(path: Path, hashes: dict[str, str]) -> Path:
             f"SHA256: {hashes['sha256']}",
             f"SHA1:   {hashes['sha1']}",
             f"MD5:    {hashes['md5']}",
+            "Detection: HEUR:Trojan.Python.Agent.gen (heuristic / OpenTIP Malware zone)",
             f"OpenTIP: https://opentip.kaspersky.com/{hashes['sha256']}/results",
             f"VirusTotal: https://www.virustotal.com/gui/file/{hashes['sha256']}",
+            "Release: https://github.com/dlnraja/win11-magic-upgrade/releases/latest",
             "",
-            "Please reclassify as clean / trusted. Sample available in attached ZIP "
-            "(re-pack with password 'infected' if required).",
+            "Please reclassify as clean / trusted. Sample on GitHub Releases "
+            "(or attached ZIP; re-pack with password 'infected' if required).",
             "",
         ]
     )
@@ -449,6 +511,154 @@ def _maybe_open_browser(url: str) -> None:
         log(f"browser open: {e}", "WARN")
 
 
+def write_vendor_fp_drafts(hashes: dict[str, str], *, filename: str = "Win11MagicUpgrade.exe") -> list[Path]:
+    """Write email/portal drafts for Kaspersky, Bkav, SecureAge (heuristic FPs)."""
+    out = STATE_DIR / "fp_submissions"
+    out.mkdir(parents=True, exist_ok=True)
+    sha = hashes.get("sha256") or ""
+    written: list[Path] = []
+    vendors = (
+        (
+            "kaspersky",
+            KASP_EMAIL,
+            "HEUR:Trojan.Python.Agent.gen",
+            f"https://opentip.kaspersky.com/{sha}/results",
+        ),
+        (
+            "bkav",
+            BKAV_EMAIL,
+            "W32.Malware.* (heuristic)",
+            BKAV_FP_URL,
+        ),
+        (
+            "secureage",
+            SECUREAGE_EMAIL,
+            "Malicious (static ML / invalid-signature heuristic)",
+            SECUREAGE_FP_URL,
+        ),
+    )
+    for slug, email, detection, portal in vendors:
+        body = "\n".join(
+            [
+                f"To: {email}",
+                f"Subject: False positive — {filename} ({detection})",
+                "",
+                FP_COMMENT,
+                "",
+                f"Filename: {filename}",
+                f"SHA256: {sha}",
+                f"SHA1:   {hashes.get('sha1', '')}",
+                f"MD5:    {hashes.get('md5', '')}",
+                f"Detection: {detection}",
+                f"Portal: {portal}",
+                f"VirusTotal: https://www.virustotal.com/gui/file/{sha}",
+                "Release: https://github.com/dlnraja/win11-magic-upgrade/releases/latest",
+                "",
+                "Please reclassify as clean / trusted application.",
+                "",
+            ]
+        )
+        path = out / f"EMAIL_{slug}_{sha[:12] or 'hash'}.txt"
+        path.write_text(body, encoding="utf-8")
+        written.append(path)
+        log(f"FP draft ({slug}): {path}", "OK")
+    # Desktop copy of combined guide
+    try:
+        desk = Path.home() / "Desktop" / "Win11MagicUpgrade-FalsePositive.txt"
+        desk.write_text(
+            "\n\n".join(p.read_text(encoding="utf-8") for p in written),
+            encoding="utf-8",
+        )
+        log(f"Desktop FP guide: {desk}", "OK")
+    except OSError:
+        pass
+    return written
+
+
+def declare_virustotal_by_hash(sha256: str, keys: dict[str, str] | None = None) -> str:
+    """
+    Vote harmless + FP comment on an already-scanned VT sample (no re-upload).
+    Use for community-reported hashes (e.g. 3/70 Trojan.Python.Agent.gen).
+    """
+    sha = (sha256 or "").strip().lower()
+    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+        log("declare_virustotal_by_hash: invalid SHA256", "WARN")
+        return "error"
+    keys = keys or load_api_keys()
+    key = keys.get("virustotal", "")
+    if not key:
+        log("VirusTotal: no API key for hash declare", "WARN")
+        write_vendor_fp_drafts({"sha256": sha, "sha1": "", "md5": ""})
+        return "pending_key"
+
+    vt_url = f"https://www.virustotal.com/gui/file/{sha}"
+    headers = {"x-apikey": key, "accept": "application/json"}
+    log(f"VirusTotal: FP declare by hash {sha[:16]}…", "STEP")
+
+    # Confirm file exists
+    code, data = _http_json("GET", f"{VT_API}/files/{sha}", headers=headers, timeout=60)
+    if code == 404:
+        log("VirusTotal: hash not found yet — upload EXE first or wait for indexing", "WARN")
+        return "not_found"
+    if code != 200:
+        log(f"VirusTotal file lookup {code}: {str(data)[:160]}", "WARN")
+
+    vote_body = json.dumps(
+        {"data": {"type": "vote", "attributes": {"verdict": "harmless"}}}
+    ).encode()
+    vote_ok = False
+    for attempt in range(4):
+        code, data = _http_json(
+            "POST",
+            f"{VT_API}/files/{sha}/votes",
+            headers={**headers, "content-type": "application/json"},
+            data=vote_body,
+        )
+        if code in (200, 201):
+            log("VirusTotal: voted HARMLESS (by hash)", "OK")
+            vote_ok = True
+            break
+        err = str(data).lower()
+        if code == 409 and ("already voted" in err or "alreadyexists" in err.replace("_", "")):
+            log("VirusTotal: harmless vote already present", "OK")
+            vote_ok = True
+            break
+        log(f"VirusTotal vote attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
+        time.sleep(5)
+
+    comment_body = json.dumps(
+        {"data": {"type": "comment", "attributes": {"text": FP_COMMENT}}}
+    ).encode()
+    comment_ok = False
+    for attempt in range(4):
+        code, data = _http_json(
+            "POST",
+            f"{VT_API}/files/{sha}/comments",
+            headers={**headers, "content-type": "application/json"},
+            data=comment_body,
+        )
+        if code in (200, 201):
+            log("VirusTotal: FP comment posted (by hash)", "OK")
+            comment_ok = True
+            break
+        err = str(data).lower()
+        if code == 409 and ("duplicate" in err or "alreadyexists" in err.replace("_", "")):
+            log("VirusTotal: FP comment already present", "OK")
+            comment_ok = True
+            break
+        log(f"VirusTotal comment attempt {attempt + 1}: {code} {str(data)[:120]}", "WARN")
+        time.sleep(5)
+
+    write_vendor_fp_drafts({"sha256": sha, "sha1": "", "md5": ""})
+    _maybe_open_browser(vt_url)
+    _maybe_open_browser(f"https://opentip.kaspersky.com/{sha}/results")
+
+    status = "ok" if vote_ok and comment_ok else ("partial" if vote_ok or comment_ok else "error")
+    _mark_done(sha, "virustotal_hash", status, {"url": vt_url})
+    log(f"VirusTotal by-hash declare: {status} → {vt_url}", "OK" if status == "ok" else "WARN")
+    return status
+
+
 def declare_virustotal_and_kaspersky(path: Path | None = None) -> dict[str, str]:
     """
     Cloud FP declarations for VirusTotal + Kaspersky.
@@ -457,7 +667,7 @@ def declare_virustotal_and_kaspersky(path: Path | None = None) -> dict[str, str]
     """
     ensure_keys_template()
     path = path or target_binary()
-    result = {"virustotal": "skip", "kaspersky": "skip", "package": ""}
+    result = {"virustotal": "skip", "kaspersky": "skip", "package": "", "vendors": "skip"}
     if path is None or not path.exists():
         log("Cloud FP: no EXE found to declare", "WARN")
         return result
@@ -489,6 +699,13 @@ def declare_virustotal_and_kaspersky(path: Path | None = None) -> dict[str, str]
     except Exception as e:
         log(f"Kaspersky declare error: {e}", "WARN")
         result["kaspersky"] = "error"
+
+    try:
+        write_vendor_fp_drafts(hashes, filename=path.name)
+        result["vendors"] = "ok"
+    except Exception as e:
+        log(f"Vendor FP drafts: {e}", "WARN")
+        result["vendors"] = "error"
 
     summary = STATE_DIR / "fp_submissions" / "LAST_CLOUD_DECLARE.json"
     summary.write_text(

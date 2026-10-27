@@ -118,7 +118,13 @@ def clear_boot_persistence() -> None:
     _run(["schtasks", "/Delete", "/TN", "Win11MagicUpgradeResume", "/F"])
     _reg_set_migration_active(False)
     save_state({"MigrationActive": False})
-    log("Boot persistence cleared (RunOnce + scheduled task)", "OK")
+    try:
+        from .boot_guard import disarm_boot_safety_net
+
+        disarm_boot_safety_net()
+    except Exception:
+        pass
+    log("Boot persistence cleared (RunOnce + scheduled task + watchdog)", "OK")
 
 
 def register_boot_persistence() -> None:
@@ -127,6 +133,13 @@ def register_boot_persistence() -> None:
     register_scheduled_task_resume()
     _reg_set_migration_active(True)
     save_state({"MigrationActive": True, "Phase": load_state().get("Phase") or "Active"})
+    # Autonomous EFI/GRUB/BCD heal after reboot (no Live CD)
+    try:
+        from .boot_guard import arm_boot_safety_net
+
+        arm_boot_safety_net(before_setup=False)
+    except Exception as e:
+        log(f"Boot guard arm: {e}", "WARN")
 
 
 def migration_in_progress(state: dict | None = None) -> bool:

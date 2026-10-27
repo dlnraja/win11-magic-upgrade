@@ -206,6 +206,14 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     if not exe.exists():
         raise FileNotFoundError(exe)
 
+    # Arm autonomous boot safety net BEFORE Setup (ESP/GRUB snapshots + WinRE + watchdog)
+    try:
+        from .boot_guard import arm_boot_safety_net
+
+        arm_boot_safety_net(before_setup=True)
+    except Exception as e:
+        log(f"Boot guard arm (pre-Setup): {e}", "WARN")
+
     def _launch_once() -> int:
         cmd = [str(exe), *args]
         log(" ".join(cmd), "INFO")
@@ -302,16 +310,29 @@ def _execute_step(
         return None
 
     if step.kind == "fix_srp":
+        from .boot_remediation import run_boot_auto_remediate
         from .boot_safe import run_esp_srp_with_restore
         from .sysreserved import scan_logs_for_srp_error
 
         force = scan_logs_for_srp_error()
         disk = getattr(report, "disk_number", None)
         rep = report.as_dict() if hasattr(report, "as_dict") else None
+        # Full failover bot first (cleanup → smart partition → bcdboot → scripts)
+        try:
+            bot = run_boot_auto_remediate(
+                report,
+                force_esp=True,
+                try_mbr2gpt=False,
+                try_hybrid=False,
+            )
+            if bot.get("ok") and (bot.get("esp") or {}).get("ok"):
+                return None
+        except Exception as e:
+            log(f"Boot remediation bot: {e}", "WARN")
         res = run_esp_srp_with_restore(
-            force_expand=force,
+            force_expand=force or True,
             system_disk=disk,
-            retries=2,
+            retries=3,
             report=rep if isinstance(rep, dict) else None,
         )
         if isinstance(res, dict) and not res.get("ok", True):
@@ -339,6 +360,12 @@ def _execute_step(
             )
             remember_failure(full, kind="esp-srp-failed", links=links if isinstance(links, dict) else {})
             raise UpgradeBlockedError(full, kind="esp-srp-failed", links=links if isinstance(links, dict) else {})
+        return None
+
+    if step.kind == "boot_fix":
+        from .boot_remediation import run_boot_auto_remediate
+
+        run_boot_auto_remediate(report, force_esp=True, try_mbr2gpt=False, try_hybrid=True)
         return None
 
     if step.kind == "fix_bootmgr":
@@ -402,44 +429,111 @@ def _execute_step(
         )
         raise AutonomousRebootRequired("mbr2gpt")
 
+    if step.kind == "media_offers":
+        from .legacy_os import claim_media_center_offers, persist_media_center_eligibility
+
+        try:
+            from .unlock_pack import apply_full_unlock_pack
+
+            apply_full_unlock_pack(report, phase="claim")
+        except Exception as e:
+            log(f"Unlock pack (claim): {e}", "WARN")
+        try:
+            persist_media_center_eligibility(report)
+        except Exception as e:
+            log(f"Media eligibility refresh: {e}", "WARN")
+        claim_media_center_offers(report)
+        return None
+
+    if step.kind == "restore_apps":
+        from .blocker_apps import restore_queued_apps
+
+        restore_queued_apps(host_build=int(getattr(report, "build", 0) or 0))
+        return None
+
+    if step.kind == "settle":
+        from .settle import settle_after_win10
+
+        settle_after_win10(report)
+        return None
+
+    if step.kind == "post_migration":
+        from .post_migration import run_post_migration
+
+        run_post_migration(report)
+        return None
+
     if step.kind == "iso_upgrade":
         arch = step.arch or "x64"
         win = step.win or "11"
         try:
-            from .legacy_os import apply_legacy_host_registry, prepare_legacy_setup_media
+            from .legacy_os import apply_legacy_host_registry, persist_media_center_eligibility, prepare_legacy_setup_media
 
             apply_legacy_host_registry(report)
+            persist_media_center_eligibility(report)
         except Exception as e:
             log(f"Legacy host prep: {e}", "WARN")
-        # Re-apply intelligent compat right before Setup (fresh Appraiser caches)
+        # Full unlock: Win8 migration + Media Center/DVD markers + LabConfig HW bypass
+        # (Win10 hop + Win11 on unsupported TPM/CPU/SB/RAM — every Setup launch)
         try:
-            from .compat import make_system_win11_compatible
+            from .unlock_pack import apply_full_unlock_pack
 
-            make_system_win11_compatible(report)
+            build_now = int(getattr(report, "build", 0) or 0)
+            phase = "after_win10" if (win == "11" and build_now >= 10240) else "pre_setup"
+            apply_full_unlock_pack(report, phase=phase)
         except Exception as e:
-            log(f"Pre-Setup compat refresh: {e}", "WARN")
-            apply_hardware_bypass(report)
-        if win == "10":
+            log(f"Unlock pack: {e}", "WARN")
+            try:
+                from .compat import make_system_win11_compatible
+
+                make_system_win11_compatible(report)
+            except Exception as e2:
+                log(f"Pre-Setup compat refresh: {e2}", "WARN")
+                apply_hardware_bypass(report)
+        if getattr(step, "iso_path", None):
+            iso = Path(step.iso_path)
+            if not iso.is_file():
+                raise RuntimeError(f"Local ISO missing for step {step.id}: {iso}")
+        elif win == "81":
+            from .legacy_os import find_optional_win81_iso
+
+            local81 = find_optional_win81_iso()
+            if local81 is None:
+                raise RuntimeError(
+                    "Windows 8.1 ISO required for win81 hop — set MAGIC_WIN81_ISO "
+                    "or place an 8.1 ISO under %LOCALAPPDATA%\\Win11MagicUpgrade\\iso\\"
+                )
+            iso = local81
+        elif win == "10":
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
         # Strict ISO gate (forum: wrong language / missing setupprep / partial CDN)
-        try:
-            from .setup_recovery import verify_iso_before_setup
-            from .version_planner import min_build_for_step
+        # Skip CDN-oriented verify for local Win8.1 media
+        if win != "81" and not getattr(step, "iso_path", None):
+            try:
+                from .setup_recovery import verify_iso_before_setup
+                from .version_planner import min_build_for_step
 
-            mb = min_build_for_step(step.id)
-            if not verify_iso_before_setup(
-                iso, win=win, arch=arch, min_build=mb, host_locale=getattr(report, "locale", None)
-            ):
-                raise RuntimeError(
-                    f"ISO verification failed for step {step.id} — refusing Setup. "
-                    "Re-download official Microsoft ISO matching OS language, or place a valid local ISO."
-                )
-        except RuntimeError:
-            raise
-        except Exception as e:
-            log(f"ISO verify skipped ({e}) — continuing with caution", "WARN")
+                mb = min_build_for_step(step.id)
+                verify_win = "10" if win == "10" else "11"
+                if not verify_iso_before_setup(
+                    iso,
+                    win=verify_win,
+                    arch=arch,
+                    min_build=mb,
+                    host_locale=getattr(report, "locale", None),
+                ):
+                    raise RuntimeError(
+                        f"ISO verification failed for step {step.id} — refusing Setup. "
+                        "Re-download official Microsoft ISO matching OS language, or place a valid local ISO."
+                    )
+            except RuntimeError:
+                raise
+            except Exception as e:
+                log(f"ISO verify skipped ({e}) — continuing with caution", "WARN")
+        else:
+            log(f"Using local ISO for {step.id}: {iso}", "OK")
         try:
             root = mount_iso(iso)
         except OSError as e:
@@ -475,7 +569,7 @@ def _execute_step(
                     root = str(prepare_setup_root(root, win11=True))
                 except Exception as e2:
                     log(f"Media Appraiser bypass stage skipped: {e2}", "WARN")
-        # Win11 always uses /product server + IgnoreWarning; Win10 also IgnoreWarning
+        # Win11 always uses /product server + IgnoreWarning; Win10/8.1 IgnoreWarning
         use_server = bool(step.use_server_product) or win == "11"
         return _run_setup(root, use_server=use_server, quiet=quiet)
 
@@ -583,6 +677,20 @@ def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
         raise PermissionError('Administrator required')
     try:
         r = collect_report()
+        # Always stage remediation scripts + ESP prep before MBR→GPT
+        try:
+            from .boot_remediation import run_boot_auto_remediate, write_remediation_scripts
+
+            write_remediation_scripts(system_disk=r.disk_number, mode="mbr-prep")
+            run_boot_auto_remediate(
+                r,
+                force_esp=True,
+                try_mbr2gpt=False,
+                try_hybrid=False,
+                sink=sink,
+            )
+        except Exception as e:
+            log(f"Pre-MBR boot remediation: {e}", "WARN")
         if r.partition_style != 'MBR':
             log(f'Disk already {r.partition_style} - repairing boot manager only', 'OK')
             from .boot_safe import validated_repair_boot_manager
@@ -597,6 +705,16 @@ def convert_mbr_only(sink: Callable[[str], None] | None = None) -> None:
 
             ok, code, msg, meta = validated_mbr_to_gpt(r.disk_number)
             if not ok:
+                try:
+                    from .boot_remediation import write_remediation_scripts
+
+                    write_remediation_scripts(
+                        system_disk=r.disk_number,
+                        mode="mbr-failed",
+                        summary={"msg": msg, "code": code, "meta": meta},
+                    )
+                except Exception:
+                    pass
                 raise RuntimeError(f'MBR2GPT failed: {msg} ({code})')
         write_migration_report(extra={'Result': 'MBR_OK', 'Disk': r.disk_number})
     except Exception as e:
@@ -617,18 +735,42 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
 
         disk = None
         report_dict = None
+        r = None
         try:
             r = collect_report()
             disk = r.disk_number
             report_dict = r.as_dict()
         except Exception:
             pass
+        # Full failover bot (smart partition + bcdboot + Desktop remediation scripts)
+        try:
+            from .boot_remediation import run_boot_auto_remediate
+
+            bot = run_boot_auto_remediate(
+                r,
+                force_esp=True,
+                try_mbr2gpt=False,
+                try_hybrid=False,
+                sink=sink,
+            )
+            if bot.get("ok") and (bot.get("esp") or {}).get("ok"):
+                write_migration_report(
+                    extra={
+                        "Result": "SRP_OK",
+                        "via": "boot_remediation_bot",
+                        "bootable": bot.get("bootable"),
+                        "tiers": bot.get("tiers"),
+                    }
+                )
+                return
+        except Exception as e:
+            log(f"Boot remediation bot: {e}", "WARN")
         from .boot_safe import run_esp_srp_with_restore
 
         result = run_esp_srp_with_restore(
-            force_expand=force,
+            force_expand=force or True,
             system_disk=disk,
-            retries=2,
+            retries=3,
             report=report_dict,
         )
         if not result.get('ok'):
@@ -754,7 +896,17 @@ def _prefetch_chain_isos(
         min_build = 0
         if step.id == "win10_22h2":
             min_build = 19045
-        if win == "10":
+        if getattr(step, "iso_path", None):
+            iso = Path(step.iso_path)
+        elif win == "81":
+            from .legacy_os import find_optional_win81_iso
+
+            local81 = find_optional_win81_iso()
+            if local81 is None:
+                log("Win8.1 ISO not found — hop will be skipped or fail later", "WARN")
+                continue
+            iso = local81
+        elif win == "10":
             iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch, min_build=min_build)
         else:
             iso = Path(win11_iso) if win11_iso else get_iso("11", report.locale, arch="x64")
@@ -776,35 +928,61 @@ def run_pipeline(
     win10_iso: str | None = None,
     win11_iso: str | None = None,
     resume: bool = False,
+    dry_run: bool = False,
 ) -> int:
     """
     ONE-CLICK intelligent full migration:
 
-      1) Diagnose + plan
+      1) Diagnose + plan + confidence score
       2) Install ALL preventive patches (persistent)
       3) Flyby11/FlyOOBE compat bypass engine
       4) Runtime remediations + enrich + SupportGuide
       5) Prefetch all needed ISOs
       6) Execute version chain (SRP / MBR / hybrid / mount ISO / Setup)
-      7) Auto-reboot + RunOnce until Done
+      7) Auto-reboot + RunOnce until Done (+ restore apps / post checklist)
 
     Quiet Setup by default. No extra clicks.
+    dry_run=True: diagnose + chain + confidence only (no patches/Setup).
     """
     init_logging(sink)
-    start_session("oneclick")
+    start_session("oneclick-dryrun" if dry_run else "oneclick")
     log("=" * 60, "STEP")
-    log("ONE-CLICK INTELLIGENT MIGRATION — full pipeline", "STEP")
+    log(
+        "ONE-CLICK DRY-RUN (no Setup)" if dry_run else "ONE-CLICK INTELLIGENT MIGRATION — full pipeline",
+        "STEP",
+    )
     log("=" * 60, "STEP")
 
     try:
-        if not is_admin():
+        if not is_admin() and not dry_run:
             raise PermissionError('Administrator required for upgrade pipeline')
+
+        # After reboot / Setup: heal EFI·BCD·GRUB autonomously (no Live CD)
+        if resume and not dry_run:
+            try:
+                from .boot_guard import verify_and_heal_boot
+
+                set_phase("boot", "Verifying / healing boot (EFI·GRUB·BCD)…")
+                heal = verify_and_heal_boot(force=True)
+                log(
+                    f"Post-reboot boot heal: ok={heal.get('ok')} "
+                    f"bootable={heal.get('bootable')} grub={((heal.get('grub') or {}).get('vendors'))}",
+                    "OK" if heal.get("ok") else "WARN",
+                )
+            except Exception as e:
+                log(f"Post-reboot boot heal: {e}", "WARN")
 
         # ---- Phase 1: Diagnose ----
         # AV / Kaspersky cloud trust runs in CI/CD Release only (not in One-Click).
         set_phase("diag", "Collecting system report…")
         set_step(percent=15, detail="Hardware / disk / boot mode…", indeterminate=True)
         log(">>> PHASE 1/7 — Auto-diagnose", "STEP")
+        try:
+            from .self_update import check_for_update
+
+            check_for_update()
+        except Exception as e:
+            log(f"Update check: {e}", "INFO")
         r = collect_report()
         from .version_planner import evaluate_host, format_assessment
 
@@ -813,6 +991,23 @@ def run_pipeline(
         for note in va.notes:
             log(note, "INFO")
         save_state({"VersionAssessment": va.as_dict()})
+        if getattr(r, "is_arm64", False):
+            from .errors import UpgradeBlockedError
+
+            raise UpgradeBlockedError(
+                "ARM64 host detected — this tool’s One-Click ISO chain is x86/x64 only. "
+                "Use Microsoft ARM64 installation media for keep-apps upgrades.",
+                kind="arm64-unsupported",
+            )
+        if getattr(r, "is_ltsc", False) and not (
+            os.environ.get("MAGIC_ALLOW_LTSC", "").strip().lower() in ("1", "true", "yes")
+            or os.environ.get("MAGIC_ENTERPRISE_ISO_DIR", "").strip()
+        ):
+            log(
+                "LTSC/LTSB: set MAGIC_ENTERPRISE_ISO_DIR to a matching volume ISO, "
+                "or MAGIC_ALLOW_LTSC=1 to attempt retail media (often blocked).",
+                "WARN",
+            )
         # Panther recovery on every run (especially resume after failed Setup)
         try:
             from .setup_recovery import apply_recovery_remediations, write_recovery_to_support
@@ -848,6 +1043,20 @@ def run_pipeline(
         print_report(r)
         plan = build_plan(r)
         print_plan(plan)
+        # Persist Media Center / DVD Player eligibility before any reboot wipes EditionID
+        try:
+            from .legacy_os import persist_media_center_eligibility
+
+            persist_media_center_eligibility(r)
+        except Exception as e:
+            log(f"Media Center eligibility persist: {e}", "WARN")
+        if dry_run:
+            try:
+                from .research_pack import apply_research_pack
+
+                apply_research_pack(r, resume=False)
+            except Exception as e:
+                log(f"Dry-run research pack: {e}", "WARN")
         set_step(percent=80, detail="Building version chain…", indeterminate=True)
         steps = build_version_chain(r)
         if skip_mbr:
@@ -856,6 +1065,23 @@ def run_pipeline(
             steps = [s for s in steps if s.id != 'win10_22h2']
         log('=== Intermediate version chain ===', 'STEP')
         log(format_chain(steps), 'OK')
+        try:
+            from .confidence import evaluate_confidence
+
+            evaluate_confidence(r, chain_label=format_chain(steps))
+        except Exception as e:
+            log(f"Confidence score: {e}", "WARN")
+        if dry_run:
+            log("DRY-RUN complete — no patches, ISO download, or Setup launched.", "OK")
+            write_migration_report(
+                extra={
+                    "Result": "DRY_RUN",
+                    "Chain": format_chain(steps),
+                    "Mode": "DRYRUN",
+                }
+            )
+            end_session(success=True)
+            return 0
         _runonce_register()
         try:
             out = STATE_DIR / 'last-diagnose.json'
@@ -1002,6 +1228,10 @@ def run_pipeline(
                 if key in iso_cache:
                     if (step.win or '11') == '10':
                         w10 = iso_cache[key]
+                    elif (step.win or '11') == '81':
+                        # Local 8.1 path already on step.iso_path; cache is informational
+                        if not getattr(step, "iso_path", None):
+                            step.iso_path = iso_cache[key]
                     else:
                         w11 = iso_cache[key]
 

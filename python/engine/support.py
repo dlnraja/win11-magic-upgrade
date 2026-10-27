@@ -92,6 +92,15 @@ def write_support_pack(extra: dict[str, Any] | None = None) -> Path:
             "--patch / One-Click : install preventives + runtime remediation each run",
             "Inventory: %LOCALAPPDATA%\\Win11MagicUpgrade\\installed-preventive-patches.json",
             "",
+            "Blocker apps (soft uninstall → restore)",
+            "-" * 40,
+            "One-Click soft-uninstalls backup filters (Acronis/EaseUS/Macrium), legacy LGS,",
+            "Daemon Tools, selected VPNs — then restores compatible versions via winget after Setup.",
+            "LGS → prefers Logitech G HUB. AV: warn only unless MAGIC_SOFT_UNINSTALL_AV=1.",
+            "EDR (CrowdStrike/SentinelOne): never auto-removed.",
+            "MAGIC_SKIP_SOFT_UNINSTALL=1 / MAGIC_SKIP_APP_RESTORE=1 to disable.",
+            "Guide: %LOCALAPPDATA%\\Win11MagicUpgrade\\AppRestoreGuide.txt (+ Desktop copy)",
+            "",
         ]
     )
     if extra:

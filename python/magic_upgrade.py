@@ -38,7 +38,16 @@ def _ensure_sys_path(root: Path) -> None:
 
 def load_strings(root: Path) -> dict:
     lang = (locale.getdefaultlocale()[0] or "en").lower()
-    code = "fr" if lang.startswith("fr") else "en"
+    if lang.startswith("fr"):
+        code = "fr"
+    elif lang.startswith("de"):
+        code = "de"
+    elif lang.startswith("es"):
+        code = "es"
+    elif lang.startswith("it"):
+        code = "it"
+    else:
+        code = "en"
     path = root / "i18n" / "strings.json"
     data: dict = {"en": {}, "fr": {}}
     if path.exists():
@@ -83,8 +92,6 @@ class App(tk.Tk):
         _ensure_sys_path(self.root_dir)
         self.t = load_strings(self.root_dir)
         self.title(self.t.get("app_title", "Win11 Magic Upgrade"))
-        self.geometry("820x620")
-        self.minsize(700, 500)
         self.configure(bg="#0f172a")
         self._busy = False
         self._elevating = False
@@ -120,12 +127,20 @@ class App(tk.Tk):
 
         self.report_callback_exception = _tk_exc  # type: ignore[method-assign]
 
+        self.geometry("980x760")
+        self.minsize(860, 640)
+        self._action_buttons: list[tk.Button] = []
+        self._opt_vars: dict[str, tk.BooleanVar] = {}
+        lang = (locale.getdefaultlocale()[0] or "en").lower()
+        self._lang = lang
+
+        # --- Header ---
         header = tk.Frame(self, bg="#0f172a")
-        header.pack(fill="x", padx=20, pady=(18, 8))
+        header.pack(fill="x", padx=20, pady=(16, 6))
         tk.Label(
             header,
             text=self.t.get("app_title", "Win11 Magic Upgrade"),
-            font=("Segoe UI Semibold", 18),
+            font=("Segoe UI Semibold", 20),
             fg="#38bdf8",
             bg="#0f172a",
         ).pack(anchor="w")
@@ -136,7 +151,7 @@ class App(tk.Tk):
         )
         tk.Label(
             header,
-            text=self.t.get("app_sub", "") + "  |  " + admin_txt,
+            text=self.t.get("app_sub", "") + "  ·  " + admin_txt,
             font=("Segoe UI", 10),
             fg="#94a3b8",
             bg="#0f172a",
@@ -152,101 +167,87 @@ class App(tk.Tk):
             bg="#0f172a",
         ).pack(anchor="w", pady=(2, 0))
 
-        btns = tk.Frame(self, bg="#0f172a")
-        btns.pack(fill="x", padx=20, pady=8)
+        # --- One-Click hero ---
+        hero = tk.Frame(self, bg="#0f172a")
+        hero.pack(fill="x", padx=20, pady=(8, 4))
         self.btn_go = tk.Button(
-            btns,
-            text=self.t.get("btn_oneclick", "One-Click"),
-            font=("Segoe UI Semibold", 11),
+            hero,
+            text=self.t.get("btn_oneclick", "ONE-CLICK — Full migration"),
+            font=("Segoe UI Semibold", 14),
             bg="#0284c7",
             fg="white",
             activebackground="#0369a1",
+            activeforeground="white",
             relief="flat",
-            padx=14,
-            pady=8,
+            cursor="hand2",
+            padx=18,
+            pady=14,
             command=lambda: self.start("oneclick"),
         )
-        self.btn_go.pack(side="left")
-        tk.Button(
-            btns,
-            text=self.t.get("btn_diagnose", "Diagnose"),
-            font=("Segoe UI", 10),
-            bg="#1e293b",
-            fg="#e2e8f0",
-            relief="flat",
-            padx=12,
-            pady=8,
-            command=lambda: self.start("diagnose"),
-        ).pack(side="left", padx=(8, 0))
-        tk.Button(
-            btns,
-            text=self.t.get("btn_bypass", "Bypass"),
-            font=("Segoe UI", 10),
-            bg="#1e293b",
-            fg="#e2e8f0",
-            relief="flat",
-            padx=12,
-            pady=8,
-            command=lambda: self.start("bypass"),
-        ).pack(side="left", padx=(8, 0))
-        tk.Button(
-            btns,
-            text=self.t.get("btn_mbr", "MBR->GPT + Boot"),
-            font=("Segoe UI", 10),
-            bg="#1e293b",
-            fg="#e2e8f0",
-            relief="flat",
-            padx=12,
-            pady=8,
-            command=lambda: self.start("mbr"),
-        ).pack(side="left", padx=(8, 0))
-        tk.Button(
-            btns,
-            text=self.t.get("btn_srp", "Fix ESP/SRP"),
-            font=("Segoe UI", 10),
-            bg="#1e293b",
-            fg="#e2e8f0",
-            relief="flat",
-            padx=12,
-            pady=8,
-            command=lambda: self.start("srp"),
-        ).pack(side="left", padx=(8, 0))
-        tk.Button(
-            btns,
-            text=self.t.get("btn_patch", "Patch / Enrich"),
-            font=("Segoe UI", 10),
-            bg="#334155",
-            fg="#e2e8f0",
-            relief="flat",
-            padx=12,
-            pady=8,
-            command=lambda: self.start("patch"),
-        ).pack(side="left", padx=(8, 0))
-        tk.Button(
-            btns,
-            text=self.t.get("btn_install_patches", "Install preventives"),
-            font=("Segoe UI", 10),
-            bg="#14532d",
-            fg="#e2e8f0",
-            relief="flat",
-            padx=12,
-            pady=8,
-            command=lambda: self.start("install-patches"),
-        ).pack(side="left", padx=(8, 0))
+        self.btn_go.pack(fill="x")
+        self._action_buttons.append(self.btn_go)
 
+        # --- Secondary actions ---
+        btns = tk.Frame(self, bg="#0f172a")
+        btns.pack(fill="x", padx=20, pady=(6, 4))
+        secondary = [
+            ("btn_diagnose", "Diagnose", "diagnose", "#1e293b", "#e2e8f0"),
+            ("btn_bypass", "Bypass", "bypass", "#1e293b", "#e2e8f0"),
+            ("btn_mbr", "MBR→GPT", "mbr", "#1e293b", "#e2e8f0"),
+            ("btn_srp", "ESP/SRP", "srp", "#1e293b", "#e2e8f0"),
+            ("btn_boot_fix", "Boot Fix", "boot-fix", "#9a3412", "#ffedd5"),
+            ("btn_patch", "Patch", "patch", "#334155", "#e2e8f0"),
+            ("btn_install_patches", "Preventives", "install-patches", "#14532d", "#e2e8f0"),
+            ("btn_frameworks", "Frameworks", "frameworks", "#7c2d12", "#ffedd5"),
+            ("btn_dryrun", "Dry-run", "dryrun", "#422006", "#fde68a"),
+            ("btn_support_zip", "Support ZIP", "support-zip", "#1e293b", "#e2e8f0"),
+        ]
+        for key, fallback, action, bg, fg in secondary:
+            b = tk.Button(
+                btns,
+                text=self.t.get(key, fallback),
+                font=("Segoe UI", 9),
+                bg=bg,
+                fg=fg,
+                activebackground=bg,
+                relief="flat",
+                cursor="hand2",
+                padx=8,
+                pady=6,
+                command=lambda a=action: self.start(a),
+            )
+            b.pack(side="left", padx=(0, 6), pady=2)
+            self._action_buttons.append(b)
+
+        self.chain_var = tk.StringVar(value=self.t.get("chain_idle", "Chain: (run Diagnose / One-Click)"))
+        self.conf_var = tk.StringVar(value="")
+        status_row = tk.Frame(self, bg="#0f172a")
+        status_row.pack(fill="x", padx=20, pady=(2, 4))
         tk.Label(
-            self,
-            text=self.t.get("note", ""),
+            status_row,
+            textvariable=self.chain_var,
             font=("Segoe UI", 9),
-            fg="#64748b",
+            fg="#7dd3fc",
             bg="#0f172a",
-            wraplength=760,
+            wraplength=900,
             justify="left",
-        ).pack(anchor="w", padx=20, pady=(0, 6))
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            status_row,
+            textvariable=self.conf_var,
+            font=("Segoe UI", 9),
+            fg="#a3e635",
+            bg="#0f172a",
+            anchor="w",
+        ).pack(anchor="w")
 
-        # --- Progress panel: overall + step, elapsed / remaining, alive pulse ---
+        # --- Options (checkboxes) ---
+        self._build_options_panel()
+
+        # --- Progress panel ---
         prog = tk.Frame(self, bg="#0f172a")
-        prog.pack(fill="x", padx=20, pady=(0, 8))
+        prog.pack(fill="x", padx=20, pady=(4, 6))
         self.phase_var = tk.StringVar(value=self.t.get("progress_idle", "Idle"))
         self.detail_var = tk.StringVar(value="")
         self.pct_var = tk.StringVar(value="0%")
@@ -285,6 +286,13 @@ class App(tk.Tk):
             darkcolor="#16a34a",
             thickness=10,
         )
+        style.configure(
+            "Magic.TCheckbutton",
+            background="#111827",
+            foreground="#e2e8f0",
+            focuscolor="#111827",
+        )
+        style.map("Magic.TCheckbutton", background=[("active", "#1e293b")])
         tk.Label(
             prog,
             text=self.t.get("progress_overall", "Overall"),
@@ -354,16 +362,112 @@ class App(tk.Tk):
             fg="#cbd5e1",
             insertbackground="#cbd5e1",
             relief="flat",
+            height=12,
         )
-        self.log.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self.log.pack(fill="both", expand=True, padx=20, pady=(0, 16))
         self.append(f"Root: {self.root_dir}\n")
-        self.append("Runtime: pure Python - no .NET 4.x / no PowerShell\n")
+        self.append("GUI: check options below, then ONE-CLICK. Engine is pure Python.\n")
         if is_admin():
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
 
         if self._auto_action:
             self.after(350, lambda: self.start(self._auto_action or "oneclick"))
+
+    def _build_options_panel(self) -> None:
+        from gui_panel import (  # type: ignore
+            OPTIONS,
+            apply_options_to_environ,
+            group_label,
+            load_option_values,
+            option_label,
+            save_option_values,
+            snapshot_for_log,
+        )
+
+        self._gui_panel = {
+            "apply": apply_options_to_environ,
+            "save": save_option_values,
+            "snapshot": snapshot_for_log,
+            "OPTIONS": OPTIONS,
+        }
+        saved = load_option_values()
+        wrap = tk.LabelFrame(
+            self,
+            text=self.t.get("opts_title", "Options (check / uncheck)"),
+            font=("Segoe UI Semibold", 10),
+            fg="#e2e8f0",
+            bg="#111827",
+            bd=1,
+            relief="groove",
+            labelanchor="nw",
+        )
+        wrap.pack(fill="x", padx=20, pady=(4, 6))
+
+        body = tk.Frame(wrap, bg="#111827")
+        body.pack(fill="x", padx=8, pady=6)
+        cols = {
+            "migration": tk.Frame(body, bg="#111827"),
+            "frameworks": tk.Frame(body, bg="#111827"),
+        }
+        cols["migration"].pack(side="left", fill="both", expand=True, padx=(0, 8))
+        cols["frameworks"].pack(side="left", fill="both", expand=True)
+
+        for group, frame in cols.items():
+            tk.Label(
+                frame,
+                text=group_label(group, self._lang),
+                font=("Segoe UI Semibold", 9),
+                fg="#38bdf8",
+                bg="#111827",
+                anchor="w",
+            ).pack(fill="x", pady=(0, 4))
+
+        for opt in OPTIONS:
+            var = tk.BooleanVar(value=bool(saved.get(opt.key, opt.default)))
+            self._opt_vars[opt.key] = var
+            parent = cols.get(opt.group, cols["migration"])
+            cb = ttk.Checkbutton(
+                parent,
+                text=option_label(opt, self._lang),
+                variable=var,
+                style="Magic.TCheckbutton",
+                command=self._on_option_changed,
+            )
+            cb.pack(anchor="w", pady=1)
+
+        tip = tk.Label(
+            wrap,
+            text=self.t.get(
+                "opts_tip",
+                "Checked options are applied on One-Click / Frameworks. Preferences are saved automatically.",
+            ),
+            font=("Segoe UI", 8),
+            fg="#64748b",
+            bg="#111827",
+            wraplength=920,
+            justify="left",
+            anchor="w",
+        )
+        tip.pack(fill="x", padx=8, pady=(0, 6))
+
+    def _option_values(self) -> dict:
+        return {k: bool(v.get()) for k, v in self._opt_vars.items()}
+
+    def _on_option_changed(self) -> None:
+        try:
+            self._gui_panel["save"](self._option_values())
+        except Exception:
+            pass
+
+    def _apply_gui_options(self) -> None:
+        vals = self._option_values()
+        try:
+            self._gui_panel["save"](vals)
+            self._gui_panel["apply"](vals)
+            self.append(self._gui_panel["snapshot"](vals) + "\n")
+        except Exception as e:
+            self.append(f"Options apply: {e}\n")
 
     def append(self, text: str) -> None:
         self.log.insert("end", text)
@@ -448,8 +552,14 @@ class App(tk.Tk):
         if self._busy or self._elevating:
             return
         title = self.t.get("app_title", "Win11 Magic Upgrade")
+        # Persist + apply checkbox options before elevate / run
+        try:
+            self._apply_gui_options()
+        except Exception as e:
+            self.append(f"Options: {e}\n")
+
         # Elevate INTO GUI (not invisible --cli) so progress bars stay visible
-        if action != "diagnose" and not is_admin():
+        if action not in ("diagnose", "dryrun", "support-zip") and not is_admin():
             self._elevating = True
             self.append(self.t.get("elevating", "Elevation required — relaunching as Administrator...\n"))
             self.phase_var.set(self.t.get("elevating_phase", "Waiting for UAC…"))
@@ -483,7 +593,16 @@ class App(tk.Tk):
                 return
 
         # UIA / automation / AI-agent guard (defense-in-depth)
-        if action in ("oneclick", "mbr", "srp", "bypass", "install-patches"):
+        if action in (
+            "oneclick",
+            "mbr",
+            "srp",
+            "boot-fix",
+            "bypass",
+            "install-patches",
+            "dryrun",
+            "frameworks",
+        ):
             try:
                 from engine.uia_guard import require_human_confirm  # type: ignore
 
@@ -503,7 +622,11 @@ class App(tk.Tk):
                 self.append(f"UIA guard skip: {e}\n")
 
         self._busy = True
-        self.btn_go.configure(state="disabled")
+        for b in self._action_buttons:
+            try:
+                b.configure(state="disabled")
+            except Exception:
+                pass
         self.phase_var.set(self.t.get("progress_running", "Running…"))
         self.detail_var.set(self.t.get("progress_starting", "Starting…"))
         self.pct_var.set("0%")
@@ -544,18 +667,69 @@ class App(tk.Tk):
                 elif action == "srp":
                     fix_system_reserved_only(sink)
                     code = 0
+                elif action == "boot-fix":
+                    from engine.boot_guard import arm_boot_safety_net, verify_and_heal_boot  # type: ignore
+                    from engine.boot_remediation import run_boot_auto_remediate  # type: ignore
+                    from engine.detect import collect_report  # type: ignore
+
+                    arm_boot_safety_net(before_setup=False)
+                    bot = run_boot_auto_remediate(
+                        collect_report(),
+                        force_esp=True,
+                        try_mbr2gpt=False,
+                        try_hybrid=True,
+                        sink=sink,
+                    )
+                    heal = verify_and_heal_boot(force=True)
+                    sink(
+                        f"Boot Fix: ok={bot.get('ok')} bootable={bot.get('bootable')} "
+                        f"heal={heal.get('ok')} grub={((heal.get('grub') or {}).get('vendors'))} "
+                        f"scripts={bot.get('scripts', {}).get('guide', '')}\n"
+                    )
+                    code = 0 if bot.get("ok") or bot.get("bootable") or heal.get("ok") else 2
                 elif action == "patch":
                     run_patch_enrichment(sink, deep_heal=False)
                     code = 0
                 elif action == "install-patches":
                     install_preventive_only(sink)
                     code = 0
+                elif action == "frameworks":
+                    from engine.frameworks import install_frameworks  # type: ignore
+
+                    # Force selected (or defaults) even if master was the only switch
+                    r = install_frameworks(force_all_defaults=True)
+                    sink(f"Frameworks: ok={r.get('ok')} failed={r.get('failed')}\n")
+                    code = 0 if not r.get("failed") else 1
+                elif action == "support-zip":
+                    from engine.support_zip import export_support_zip  # type: ignore
+
+                    z = export_support_zip()
+                    sink(f"Support ZIP: {z}\n")
+                    code = 0
+                elif action == "dryrun":
+                    code = run_pipeline(sink, quiet=True, dry_run=True)
                 else:
                     code = run_pipeline(
                         sink,
                         quiet=True,
                         resume=getattr(self, "_resume_chain", False),
                     )
+                try:
+                    from engine.logutil import load_state  # type: ignore
+
+                    st = load_state()
+                    chain = st.get("ChainLabel") or ""
+                    conf = st.get("Confidence") or {}
+                    if chain:
+                        self.after(0, self.chain_var.set, f"Chain: {chain}")
+                    if conf:
+                        self.after(
+                            0,
+                            self.conf_var.set,
+                            f"Confidence: {conf.get('score', '?')}/100 ({conf.get('level', '?')})",
+                        )
+                except Exception:
+                    pass
                 self.after(0, self.append, f"\n--- exit {code} ---\n")
                 SETUP_OK = {0, 3010, 3011}
                 try:
@@ -629,7 +803,11 @@ class App(tk.Tk):
 
     def _done(self) -> None:
         self._busy = False
-        self.btn_go.configure(state="normal")
+        for b in getattr(self, "_action_buttons", []) or [self.btn_go]:
+            try:
+                b.configure(state="normal")
+            except Exception:
+                pass
         if self._progress_job is not None:
             try:
                 self.after_cancel(self._progress_job)
@@ -764,9 +942,12 @@ Win11 Magic Upgrade — CLI
 
   Win11MagicUpgrade.exe --cli --diagnose
   Win11MagicUpgrade.exe --cli --oneclick
+  Win11MagicUpgrade.exe --cli --dry-run
   Win11MagicUpgrade.exe --cli --resume | --boot-resume
   Win11MagicUpgrade.exe --cli --bypass | --mbr | --srp | --hybrid
   Win11MagicUpgrade.exe --cli --patch | --patch-deep | --install-patches
+  Win11MagicUpgrade.exe --cli --support-zip | --offline-pack
+  Win11MagicUpgrade.exe --cli --research
   Win11MagicUpgrade.exe --cli --stats
 
 Exit codes:
@@ -778,10 +959,32 @@ Exit codes:
 
 Env (selected):
   MAGIC_ALLOW_VISTA=1          Acknowledge Vista best-effort
+  MAGIC_ALLOW_LTSC=1           Attempt retail ISO on LTSC (often blocked)
   MAGIC_ALLOW_AUTOMATION=1     Bypass UIA guard
-  MAGIC_STATS=1                Local success/failure counters (no network)
+  MAGIC_STATS=1 / MAGIC_TELEMETRY=1  Local success/failure counters
   MAGIC_LP_DRY_RUN=1           Language-pack audit without DISM remove
-  MAGIC_UNINSTALL_ALLOWLIST=1  Warn curated uninstall targets
+  MAGIC_UNINSTALL_ALLOWLIST=1  Extra warn for curated uninstall targets
+  MAGIC_SOFT_UNINSTALL_AV=1    Soft-uninstall AV + restore via winget after (off by default)
+  MAGIC_SKIP_SOFT_UNINSTALL=1  Detect blockers only (no uninstall)
+  MAGIC_SKIP_APP_RESTORE=1     Do not winget-restore soft-removed apps
+  MAGIC_SKIP_APP_CARRY=1       Do not capture/restore app license keys/settings
+  MAGIC_SKIP_UNLOCK_PACK=1     Skip MC/DVD/Win8 migration + LabConfig unlock pack
+  MAGIC_INSTALL_FRAMEWORKS=1   Install .NET / DirectX / VC++ (GUI checkboxes)
+  MAGIC_INSTALL_NETFX35=1      .NET Framework 3.5 (DISM)
+  MAGIC_INSTALL_NETFX48=1      .NET Framework 4.8
+  MAGIC_INSTALL_DOTNET_DESKTOP=1  .NET Desktop Runtime 8
+  MAGIC_INSTALL_DIRECTX=1      DirectX End-User Runtime
+  MAGIC_INSTALL_VCREDIST=1     VC++ 2015-2022 redistributables
+  MAGIC_INSTALL_MEDIA_FEATURE=1  Media Feature Pack (N editions)
+  MAGIC_SKIP_FRAMEWORKS=1      Disable all framework installs
+  MAGIC_BOOT_AUTO_FIX=1        Run EFI/MBR/smart-partition failover bot
+  MAGIC_SKIP_BOOT_REMEDIATE=1  Disable boot remediation bot
+  MAGIC_SKIP_BOOT_GUARD=1      Disable autonomous EFI/GRUB/WinRE safety net
+  MAGIC_WINRE_BOOT=1           Force one-shot WinRE ramdisk on next reboot
+  MAGIC_WINPE_BOOT=1           Force one-shot WinPE ramdisk if WinRE unavailable
+  MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
+  MAGIC_FREE_SPACE=1           Aggressive disk reclaim
+  MAGIC_ISO_CACHE=             Shared ISO folder(s) (; separated)
   MAGIC_ENTERPRISE_ISO_DIR=    Local VL/enterprise ISO folder
   MAGIC_DU_CAB_DIR=            Offline Dynamic Update .cab folder (staged before Setup)
   MAGIC_DU_OFFLINE=1           Force /dynamicupdate disable when cabs staged
@@ -789,7 +992,7 @@ Env (selected):
   MAGIC_SRP_CONTINUE=1         DANGER: continue after ESP/SRP fail
   MAGIC_BLOCK_VISTA=1          Hard-block Vista One-Click
 
-Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
+Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
 """.strip()
         )
         raise SystemExit(0)
@@ -826,6 +1029,13 @@ Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
             "--patch-deep",
             "--install-patches",
             "--stats",
+            "--dry-run",
+            "--dryrun",
+            "--support-zip",
+            "--offline-pack",
+            "--research",
+            "--boot-fix",
+            "--boot-heal",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -848,9 +1058,27 @@ Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
 
                 print_stats()
                 return
+            if "--support-zip" in argv_l:
+                from engine.support_zip import export_support_zip  # type: ignore
+
+                print(export_support_zip())
+                return
+            if "--offline-pack" in argv_l:
+                from engine.offline_pack import create_offline_pack  # type: ignore
+
+                print(create_offline_pack())
+                return
+            if "--research" in argv_l:
+                from engine.detect import collect_report  # type: ignore
+                from engine.research_pack import apply_research_pack  # type: ignore
+
+                print(apply_research_pack(collect_report(), resume=False))
+                return
             if "--diagnose" in argv_l:
                 run_diagnose()
                 return
+            if "--dry-run" in argv_l or "--dryrun" in argv_l:
+                raise SystemExit(run_pipeline(dry_run=True))
             if not is_admin():
                 if relaunch_as_admin(argv):
                     raise SystemExit(0)
@@ -860,6 +1088,22 @@ Docs: docs/ARCHITECTURE.md  docs/RESEARCH_FORUMS.md  docs/MIGRATION_BUGS.md
                 if "--bypass" in argv_l:
                     apply_bypass_only()
                     return
+                if "--boot-heal" in argv_l:
+                    from engine.boot_guard import verify_and_heal_boot  # type: ignore
+
+                    heal = verify_and_heal_boot(force=True)
+                    raise SystemExit(0 if heal.get("ok") or heal.get("bootable") else 2)
+                if "--boot-fix" in argv_l:
+                    from engine.boot_remediation import run_boot_auto_remediate  # type: ignore
+                    from engine.detect import collect_report  # type: ignore
+
+                    bot = run_boot_auto_remediate(
+                        collect_report(),
+                        force_esp=True,
+                        try_mbr2gpt=False,
+                        try_hybrid=True,
+                    )
+                    raise SystemExit(0 if bot.get("ok") or bot.get("bootable") else 2)
                 if "--mbr" in argv_l:
                     convert_mbr_only()
                     return
