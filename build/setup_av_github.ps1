@@ -1,5 +1,6 @@
 # Push VirusTotal + Kaspersky OpenTIP secrets to GitHub (Release AV trust).
-# ASCII-only for Windows PowerShell 5.1.
+# ASCII-only, no BOM: Windows PowerShell 5.1 parses this file as the ANSI
+# code page, and a UTF-8 em dash turns into a stray quote that fails ParseFile.
 #
 # Get keys:
 #   VirusTotal:  https://www.virustotal.com/gui/my-apikey  (free API key)
@@ -34,7 +35,7 @@ function Test-RealKey([string]$Value, [string]$Name, [int]$MinLen) {
         throw "$Name missing or too short (min $MinLen). Get it from the portal, then re-run."
     }
     if ($v -match 'paste|<|>|your.?key|example|TODO|template') {
-        throw "$Name still looks like a template placeholder — paste the real key."
+        throw "$Name still looks like a template placeholder - paste the real key."
     }
 }
 
@@ -80,7 +81,7 @@ if ($NewPatchTag) {
         git push origin HEAD
         git tag $next
         git push origin $next
-        Write-Host "Pushed $next — Release workflow will submit VT + OpenTIP." -ForegroundColor Green
+        Write-Host "Pushed $next - Release workflow will submit VT + OpenTIP." -ForegroundColor Green
     } finally {
         Pop-Location
     }

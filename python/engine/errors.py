@@ -1,7 +1,18 @@
 """Controlled upgrade failures — never crash the frozen EXE with PyInstaller dialogs."""
 from __future__ import annotations
 
+import os
 from typing import Any
+
+def unattended_session() -> bool:
+    """True in CI or when a modal dialog would block with nobody to click it."""
+    flag = os.environ.get("MAGIC_NO_DIALOG", "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    if flag in ("0", "false", "no"):
+        return False
+    return bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+
 
 # Process exit codes (CLI / pipeline)
 EXIT_OK = 0

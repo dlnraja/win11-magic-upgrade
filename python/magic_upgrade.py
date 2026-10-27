@@ -839,7 +839,15 @@ def _parse_auto_action(argv: list[str]) -> str | None:
 
 
 def _message_box(title: str, message: str, *, error: bool = True) -> None:
-    """Native Windows dialog — works even when stdout is hidden (windowed EXE)."""
+    """Native Windows dialog. In CI, print and return so the job cannot wait on OK."""
+    try:
+        from engine.errors import unattended_session  # type: ignore
+
+        if unattended_session():
+            print(f"{title}: {message}", file=sys.stderr)
+            return
+    except Exception:
+        pass
     try:
         flags = 0x00000010 if error else 0x00000040  # MB_ICONERROR / MB_ICONINFORMATION
         ctypes.windll.user32.MessageBoxW(None, str(message)[:1500], str(title)[:120], flags)
@@ -930,21 +938,20 @@ def absorb_fatal(exc: BaseException, *, strings: dict | None = None) -> int:
     return EXIT_BLOCKED if isinstance(exc, UpgradeBlockedError) or "ESP/SRP" in str(exc) else EXIT_FAILED
 
 
-def main() -> None:
-    root = app_root()
-    _ensure_sys_path(root)
-    argv = sys.argv[1:]
-    argv_l = [a.lower() for a in argv]
-    if any(a in argv_l for a in ("-h", "--help", "/?")):
-        print(
-            """
-Win11 Magic Upgrade — CLI
+def cli_help_text() -> str:
+    """Console help. Kept encodable in cp1252 so Windows PowerShell 5.1 can print it."""
+    return """
+Win11 Magic Upgrade - CLI
 
   Win11MagicUpgrade.exe --cli --diagnose
   Win11MagicUpgrade.exe --cli --oneclick
   Win11MagicUpgrade.exe --cli --dry-run
   Win11MagicUpgrade.exe --cli --resume | --boot-resume
   Win11MagicUpgrade.exe --cli --bypass | --mbr | --srp | --hybrid
+  Win11MagicUpgrade.exe --cli --openduet-prepare
+  Win11MagicUpgrade.exe --cli --openduet-write --disk N            # dry-run (prints confirm token)
+  Win11MagicUpgrade.exe --cli --openduet-write --disk N --confirm TOKEN [--volume E:]
+  Win11MagicUpgrade.exe --cli --openduet-write --disk N --confirm TOKEN --openduet-partition
   Win11MagicUpgrade.exe --cli --patch | --patch-deep | --install-patches
   Win11MagicUpgrade.exe --cli --support-zip | --offline-pack
   Win11MagicUpgrade.exe --cli --research
@@ -952,7 +959,7 @@ Win11 Magic Upgrade — CLI
 
 Exit codes:
   0  OK / Setup launched / already done
-  2  Upgrade blocked (ESP/SRP, Vista gate, ISO verify, …)
+  2  Upgrade blocked (ESP/SRP, Vista gate, ISO verify, ...)
   3  Unexpected failure
   4  UIA / automation guard
   5  UAC elevation failed
@@ -991,10 +998,41 @@ Env (selected):
   MAGIC_ISO_DIRS=              Extra ISO search dirs (; separated)
   MAGIC_SRP_CONTINUE=1         DANGER: continue after ESP/SRP fail
   MAGIC_BLOCK_VISTA=1          Hard-block Vista One-Click
+  MAGIC_OPENDUET_PREPARE=1     Stage OpenDuet files during One-Click (no disk write)
+  MAGIC_OPENDUET_BLESS=        EFI loader path for OpenCore BlessOverride
+  MAGIC_KEEP_LEGACY=1          Do not convert MBR to GPT
+  MAGIC_FORCE_MBR2GPT=1        Convert MBR even when firmware looks legacy-only
+  MAGIC_OPENDUET_ALLOW_LARGE=1 Allow partitioning a USB larger than 128 GiB
+  MAGIC_NO_DIALOG=1            Print errors instead of a modal dialog (set in CI)
 
 Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
 """.strip()
-        )
+
+
+def _emit_cli_help() -> None:
+    text = cli_help_text()
+    try:
+        print(text)
+        return
+    except UnicodeEncodeError:
+        pass
+    encoding = getattr(sys.stdout, "encoding", None) or "cp1252"
+    data = (text + "\n").encode(encoding, errors="replace")
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(data)
+        buffer.flush()
+        return
+    print(data.decode("ascii", errors="replace"))
+
+
+def main() -> None:
+    root = app_root()
+    _ensure_sys_path(root)
+    argv = sys.argv[1:]
+    argv_l = [a.lower() for a in argv]
+    if any(a in argv_l for a in ("-h", "--help", "/?")):
+        _emit_cli_help()
         raise SystemExit(0)
     try:
         from engine.uia_guard import mark_app_start  # type: ignore
@@ -1036,6 +1074,8 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
             "--research",
             "--boot-fix",
             "--boot-heal",
+            "--openduet-prepare",
+            "--openduet-write",
         )
     )
     # --auto keeps GUI (not CLI)
@@ -1077,6 +1117,15 @@ Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
             if "--diagnose" in argv_l:
                 run_diagnose()
                 return
+            if "--openduet-prepare" in argv_l or "--openduet-write" in argv_l:
+                if "--openduet-write" in argv_l and not is_admin():
+                    if relaunch_as_admin(argv):
+                        raise SystemExit(0)
+                    print("ERROR: UAC elevation failed or was cancelled.", file=sys.stderr)
+                    raise SystemExit(5)
+                from engine.openduet import run_openduet_cli  # type: ignore
+
+                raise SystemExit(run_openduet_cli(argv))
             if "--dry-run" in argv_l or "--dryrun" in argv_l:
                 raise SystemExit(run_pipeline(dry_run=True))
             if not is_admin():

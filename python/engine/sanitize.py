@@ -162,6 +162,10 @@ def safe_report_fields(report: dict[str, Any] | None) -> dict[str, Any]:
         "firmware_likely_ia32",
         "bootmgr_mismatch",
         "boot_strategy",
+        "firmware_bitness",
+        "uefi_capable",
+        "partition_hybrid",
+        "boot_plan_id",
     }
     out = {k: report.get(k) for k in allow if k in report}
     # Soften CPU name brand strings only (keep model family)
