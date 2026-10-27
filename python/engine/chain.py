@@ -37,7 +37,8 @@ def _media_center_chain_eligible(r: Report) -> bool:
 WIN10_22H2_BUILD = 19045
 # Win11 24H2 baseline (dynamic latest tracked in state.json LatestWin11Build)
 WIN11_24H2_BUILD = 26100
-WIN11_LATEST_DEFAULT = 26200  # 25H2-class retail when CDN serves it
+# Floor only. Live detection is win11_release (26H2 = 26300; 26H1/28000 is not in-place).
+WIN11_LATEST_DEFAULT = 26300
 
 
 def mapped_version(build: int) -> str:
@@ -69,6 +70,8 @@ def mapped_version(build: int) -> str:
         22631: "23H2",
         26100: "24H2",
         26200: "25H2",
+        26300: "26H2",
+        28000: "26H1",
     }
     if build in table:
         return table[build]
@@ -92,8 +95,10 @@ def build_version_chain(r: Report) -> list[ChainStep]:
     steps: list[ChainStep] = []
     cur = mapped_version(r.build)
 
-    # Already latest-class Win11 (build from state / default 25H2 baseline)
-    from .version_planner import latest_win11_build_from_state
+    # Already on the detected feature update (state / floor). A higher build
+    # (device-scoped 26H1) is not pulled backwards. Same build + older UBR
+    # only needs the cumulative nudge.
+    from .version_planner import latest_win11_build_from_state, needs_cumulative_update
 
     latest_target = latest_win11_build_from_state()
 
@@ -108,11 +113,29 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             )
         ]
 
-    if r.is_win11 and r.build >= latest_target:
+    if r.is_win11 and r.build > latest_target:
         return [
             ChainStep(
                 id="done",
-                label="Already on Windows 11 24H2+",
+                label=f"Already on Windows 11 {mapped_version(r.build)}",
+                kind="done",
+                note=f"Current {cur} build {r.build} is newer than target {latest_target}",
+            )
+        ]
+    if r.is_win11 and r.build == latest_target:
+        if needs_cumulative_update(r, latest_target):
+            return [
+                ChainStep(
+                    id="win11_cumulative",
+                    label=f"Latest cumulative for Windows 11 {mapped_version(latest_target)}",
+                    kind="cumulative",
+                    note="Feature update is installed; nudge Windows Update for the current cumulative",
+                )
+            ]
+        return [
+            ChainStep(
+                id="done",
+                label=f"Already on Windows 11 {mapped_version(latest_target)}",
                 kind="done",
                 note=f"Current {cur} build {r.build}",
             )
@@ -170,6 +193,7 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                     note="Legacy x86 host — max keep-apps path via Win10 22H2",
                 )
             )
+        _maybe_openduet(steps, r)
         steps.append(
             ChainStep(
                 id="done",
@@ -346,18 +370,19 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 )
             )
 
-    # Step B: MBR -> GPT after we have a modern enough OS (1703+ / after 22H2 step)
-    if r.partition_style == "MBR":
-        if r.mbr2gpt_available or needs_win10_hop:
-            # Schedule MBR after 22H2 if not yet available
+    # Step B: MBR -> GPT only when the firmware matrix says the PC can boot UEFI afterwards.
+    # Legacy-only BIOS keeps MBR. IA32 UEFI keeps the hybrid/legacy handoff.
+    if str(getattr(r, "partition_style", "")).upper() == "MBR" and not getattr(r, "partition_hybrid", False):
+        if _mbr2gpt_wanted(r) and (r.mbr2gpt_available or needs_win10_hop):
             steps.append(
                 ChainStep(
                     id="mbr2gpt",
                     label="Intermediate: MBR -> GPT + Boot Manager (no wipe)",
                     kind="mbr2gpt",
-                    note="Required for Windows 11 UEFI boot; runs after Win10 22H2 if build was <1703",
+                    note="UEFI-capable firmware; runs after Win10 22H2 if mbr2gpt was missing",
                 )
             )
+    _maybe_openduet(steps, r)
 
     # Step C: Windows 11 latest (from Win10 22H2, legacy hosts, older Win10, or older Win11)
     if r.is_win10 or getattr(r, "is_legacy", False) or (r.is_win11 and r.build < latest_target):
@@ -378,6 +403,14 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 arch="x64",
                 use_server_product=True,
                 note="In-place upgrade; /product server + registry bypass; keeps files/apps",
+            )
+        )
+        steps.append(
+            ChainStep(
+                id="win11_cumulative",
+                label=f"Latest cumulative for Windows 11 {mapped_version(latest_target)}",
+                kind="cumulative",
+                note="After the feature update, nudge Windows Update if the ISO lagged the current cumulative",
             )
         )
 
@@ -433,6 +466,40 @@ def build_version_chain(r: Report) -> list[ChainStep]:
             ChainStep(id="done", label="Nothing to do", kind="done", note=f"build {r.build}")
         )
     return steps
+
+
+def _mbr2gpt_wanted(report: Report) -> bool:
+    try:
+        from .firmware_matrix import mbr2gpt_wanted
+
+        return bool(mbr2gpt_wanted(report))
+    except Exception:
+        # Detection failed: keep the historical "MBR gets converted" behavior.
+        return True
+
+
+def _maybe_openduet(steps: list[ChainStep], report: Report) -> None:
+    if any(s.id == "openduet_prepare" for s in steps):
+        return
+    try:
+        from .firmware_matrix import decide_boot_plan, snapshot_from_report
+
+        plan = decide_boot_plan(snapshot_from_report(report))
+    except Exception:
+        return
+    if not plan.suggest_openduet:
+        return
+    steps.append(
+        ChainStep(
+            id="openduet_prepare",
+            label="Optional: prepare OpenDuet/OpenCore files for a legacy-only BIOS",
+            kind="openduet_prepare",
+            note=(
+                "Stages a GPT+FAT32 bridge folder. Does not write a disk. "
+                "Writing needs --openduet-write and a confirm token. The stick stays plugged in."
+            ),
+        )
+    )
 
 
 def format_chain(steps: list[ChainStep]) -> str:

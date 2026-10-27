@@ -334,8 +334,19 @@ def apply_smart_boot_strategy(env: BootEnv | None = None, os_arch: str = "x64", 
         try:
             from .hybrid_uefi import apply_hybrid_ia32_path
 
-            # Non-destructive stage by default; activate only if OS already x64
+            # Stage always. Do not replace bootia32 while Secure Boot is on.
             activate = env.os_arch == "x64"
+            try:
+                from .detect import _secure_boot
+
+                if _secure_boot():
+                    activate = False
+                    log(
+                        "Secure Boot is on — CSMWrap staged only. Disable Secure Boot before activation.",
+                        "WARN",
+                    )
+            except Exception:
+                pass
             res = apply_hybrid_ia32_path(activate=activate, prepare_bios=True)
             if res.get("ok"):
                 log(

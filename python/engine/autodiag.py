@@ -65,11 +65,34 @@ def build_plan(report: Report | None = None) -> Plan:
         )
     )
 
-    # Already latest-class Win11
-    if r.is_win11 and r.build >= 26100:
+    # Already on the detected feature update (not a hardcoded 24H2/25H2 cutoff).
+    from .version_planner import latest_win11_build_from_state, needs_cumulative_update, target_label_for
+
+    latest = latest_win11_build_from_state()
+    label = target_label_for(latest)
+    if r.is_win11 and r.build > latest:
         return Plan(
             target="already_done",
-            summary="Already on Windows 11 24H2/25H2-class. Optional: re-apply bypasses for future feature updates.",
+            summary=(
+                f"Already on Windows 11 build {r.build}, newer than the in-place target "
+                f"{label} ({latest}). Device-scoped releases are not pulled backwards."
+            ),
+            can_win11=True,
+            actions=[a for a in actions if a.id == "registry_bypass"],
+            report=r.as_dict(),
+        )
+    if r.is_win11 and r.build == latest and needs_cumulative_update(r, latest):
+        return Plan(
+            target="win11_latest",
+            summary=f"Windows 11 {label} is installed; the latest cumulative is still pending.",
+            can_win11=True,
+            actions=actions,
+            report=r.as_dict(),
+        )
+    if r.is_win11 and r.build >= latest:
+        return Plan(
+            target="already_done",
+            summary=f"Already on Windows 11 {label} (build {latest}). Optional: re-apply bypasses.",
             can_win11=True,
             actions=[a for a in actions if a.id == "registry_bypass"],
             report=r.as_dict(),

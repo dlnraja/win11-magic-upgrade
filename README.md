@@ -17,7 +17,7 @@ Inspired by **Flyby11 / FlyOOBE**, but the runtime is **pure Python (PyInstaller
 
 > **English** · [Français](docs/README.fr.md)
 
-**Docs:** [Architecture](docs/ARCHITECTURE.md) · [Migration bugs & patches](docs/MIGRATION_BUGS.md) · [Latest release](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
+**Docs:** [Architecture](docs/ARCHITECTURE.md) · [Boot / latest Win11](docs/BOOT_FIRMWARE.md) · [Migration bugs & patches](docs/MIGRATION_BUGS.md) · [Latest release](https://github.com/dlnraja/win11-magic-upgrade/releases/latest)
 
 ## Quick start
 
@@ -54,10 +54,11 @@ Secondary GUI buttons (Diagnose / Patch / …) are optional only — One-Click a
 | Auto-diag | Action plan (32-bit / MBR / obsolete / no SSE4.2 / unsupported HW) |
 | Compat engine | LabConfig + MoSetup + HwReqChk spoof + CompatData soften + SetupConfig.ini |
 | Preventives | Durable pack installed on the PC (`--install-patches`) |
-| ISO | Official Microsoft CDN via urllib (Fido-compatible API) |
-| MBR→GPT | `mbr2gpt` without wipe + bcdboot repair |
+| ISO | Official Microsoft CDN via urllib (Fido-compatible API). No API key |
+| Latest Win11 | Release-health page picks the newest in-place feature update (26H2 over 26H1). Floor 26300 if the page fails. Cumulative via `UsoClient` |
+| MBR→GPT | `mbr2gpt` without wipe only when the PC can boot UEFI afterwards. Legacy-only BIOS keeps MBR |
 | ESP / SRP | Cleanup + enlarge (~512 MB) — idempotent, resume-safe |
-| Boot 32/64 | PE detect; bcdboot repair; **hybrid CSMWrap** for IA32-only UEFI |
+| Boot 32/64 | PE detect; bcdboot repair; **hybrid CSMWrap** for IA32-only UEFI; optional **OpenDuet** stick for legacy-only BIOS |
 | Stability | Resume-safe `$WINDOWS.~BT`, no reboot loops, timeouts, atomic state |
 | Logs | Panther-style `setupact` / `setuperr` + Desktop `MigrationReport` + `SupportGuide` |
 | Blocker apps | Soft-uninstall Acronis/EaseUS/Macrium/LGS/VPN… before Setup; **winget restore** compatible versions after (LGS→G HUB) |
@@ -79,6 +80,8 @@ Win11MagicUpgrade.exe --cli --srp              # Fix ESP / System Reserved only
 Win11MagicUpgrade.exe --cli --mbr              # MBR→GPT + bootmgr
 Win11MagicUpgrade.exe --cli --hybrid           # Stage CSMWrap IA32 hybrid
 Win11MagicUpgrade.exe --cli --diagnose
+Win11MagicUpgrade.exe --cli --openduet-prepare
+Win11MagicUpgrade.exe --cli --openduet-write --disk N          # dry-run, prints confirm token
 ```
 
 ## Situation → action
@@ -87,8 +90,9 @@ Win11MagicUpgrade.exe --cli --diagnose
 |-----------|-------------------|
 | Unsupported TPM / CPU / Secure Boot | Full bypass stack: LabConfig + MoSetup + HwReqChk + CompatData soften + **media Appraiser neutralize** + `/product server` + `/compat IgnoreWarning` |
 | ESP / System Reserved full | Cleanup + enlarge (`--cli --srp`) |
-| MBR disk | Auto `mbr2gpt` (no wipe) + bcdboot |
-| Win10 1511 / obsolete | Intermediate **Win10 22H2** then Win11 (RunOnce) |
+| MBR disk on UEFI (or UEFI-capable CSM) | Auto `mbr2gpt` (no wipe) + bcdboot |
+| Legacy-only BIOS (no UEFI) | Keep MBR/BIOS boot. Optional OpenDuet USB (`docs/BOOT_FIRMWARE.md`) — never writes a disk without a confirm token |
+| Win10 1511 / obsolete | Intermediate **Win10 22H2** then the detected Win11 feature update (RunOnce) |
 | Win8 / 8.1 (+ Media Center) | Inplace → Win10 22H2 (`ei.cfg`/`pid.txt` for MC) → DVD Player offer step → Win11 latest |
 | 32-bit Windows | Max **Win10 22H2 x86** (keep apps) — Win11 needs clean x64 |
 | No SSE4.2 / POPCNT | Max **Win10 22H2 x64** — cannot boot Win11 24H2+ |

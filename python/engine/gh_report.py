@@ -29,7 +29,7 @@ from .logutil import STATE_DIR, SETUPACT, SETUPERR, log
 from .sanitize import safe_report_fields, sanitize_obj, sanitize_text
 
 DEFAULT_REPO = "dlnraja/win11-magic-upgrade"
-APP_VERSION = "1.53.0"
+APP_VERSION = "1.55.0"
 LABELS = ("autodiag", "esp-srp")
 _UNHANDLED_LABELS = ("autodiag", "unhandled")
 _reporting_lock = False
@@ -474,6 +474,15 @@ def report_failure_to_github(
     md = write_local_diag(payload)
     issue_url = None
     pr_url = None
+    try:
+        from .errors import unattended_session
+
+        forced = os.environ.get("MAGIC_GH_AUTODIAG", "").strip().lower() in ("1", "true", "yes")
+        if unattended_session() and not forced:
+            log("CI/unattended: autodiag kept on disk (no browser, no GitHub call)", "INFO")
+            return {"issue": None, "pr": None, "local_md": str(md)}
+    except Exception:
+        pass
     try:
         issue_url = create_github_issue(payload)
     except Exception as e:

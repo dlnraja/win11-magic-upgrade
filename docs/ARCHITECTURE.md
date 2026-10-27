@@ -20,8 +20,12 @@ python/gui_panel.py                Checkbox options → MAGIC_* env (persisted)
               ├── support.py       SupportGuide.txt checklist
               ├── sysreserved.py   ESP / System Reserved cleanup + enlarge
               ├── bootmgr.py       PE bitness + bcdboot / hybrid handoff
+              ├── firmware_matrix.py  UEFI/BIOS/CSM/bitness/partition decision
               ├── hybrid_uefi.py   CSMWrap IA32 → SeaBIOS → BIOS bootmgr
+              ├── openduet.py      Optional OpenCore 1.0.8 OpenDuet stick (no disk write unless confirmed)
+              ├── rawdisk.py       512-byte sector splice for the OpenDuet boot code
               ├── mbrgpt.py        mbr2gpt.exe + diskpart
+              ├── win11_release.py Release-health + download-page target (floor if offline)
               ├── iso.py           Microsoft CDN API (Fido-compatible, urllib)
               ├── virtdisk.py      Mount ISO via virtdisk.dll
               ├── chain.py         Intermediate version plan across reboots
@@ -55,10 +59,10 @@ Legacy PowerShell under `src/` is reference only — **not** used at runtime.
    Media Center 8/8.1: `ei.cfg` + `pid.txt` on Win10 media; eligibility in state.json;
    `media_offers` chain step (DVD Player) after Win10 hop. See `docs/LEGACY_OS.md`.  
    After failed Setup: `setup_recovery` parses Panther codes (0xC1900101-*) and remediates.  
-5. If system disk is MBR and `mbr2gpt` exists → convert (no wipe) → reboot resume.  
-6. Boot Manager / hybrid IA32 path when firmware bitness requires it (Secure Boot OFF checklist).  
-7. Strict ISO verify (family/arch/min_build/setupprep) then Win11 latest → `setupprep` + `/product server`.  
-   See `docs/RESEARCH_FORUMS.md` for forum-backed notes.  
+5. If the system disk is MBR **and** the firmware matrix says the PC can boot UEFI afterwards, and `mbr2gpt` exists → convert (no wipe) → reboot resume. Legacy-only BIOS keeps MBR. `MAGIC_KEEP_LEGACY=1` skips conversion; `MAGIC_FORCE_MBR2GPT=1` allows it.  
+6. Boot Manager / hybrid IA32 path when firmware bitness requires it (Secure Boot OFF checklist). 64-bit firmware with a 32-bit OS uses `bootx64.efi` media, not `bootia32.efi`. Optional OpenDuet/OpenCore 1.0.8 stick for legacy-only BIOS (`docs/BOOT_FIRMWARE.md`).  
+7. Strict ISO verify (family/arch/min_build/setupprep) then the detected Win11 feature update → `setupprep` + `/product server`. Target comes from Microsoft release health (version label, not raw build). Floor is 26H2 / 26300 when the page fails. Same build + older cumulative → `UsoClient`, not a second ISO.  
+   See `docs/BOOT_FIRMWARE.md` and `docs/RESEARCH_FORUMS.md`.  
 
 ## Why `/product server`
 

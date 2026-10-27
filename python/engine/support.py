@@ -12,7 +12,12 @@ from .logutil import STATE_DIR, MIGRATION_REPORT, SETUPACT, SETUPERR, log, write
 SUPPORT_CHECKLIST = [
     ("Backup", "Confirm important files backed up (OneDrive / external disk)."),
     ("Power", "Plug laptop into AC power; disable sleep during upgrade."),
-    ("Secure Boot", "If using hybrid IA32 CSMWrap: disable Secure Boot in firmware."),
+    ("Secure Boot", "If using hybrid IA32 CSMWrap or OpenDuet: disable Secure Boot in firmware."),
+    (
+        "Legacy-only BIOS",
+        "Optional OpenDuet/OpenCore USB (OpenCore 1.0.8) adds a software UEFI layer. "
+        "The stick must stay plugged in. The tool will not write a disk without a confirm token.",
+    ),
     ("UEFI after MBR2GPT", "After MBR->GPT: set firmware boot mode to UEFI (CSM off)."),
     ("USB", "Unplug USB disks, docks, SD cards, printers (keep keyboard/mouse)."),
     ("VPN / AV", "Uninstall or fully quit 3rd-party VPN and antivirus before retry."),

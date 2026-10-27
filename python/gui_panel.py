@@ -110,6 +110,14 @@ OPTIONS: list[GuiOption] = [
         True,
         group="migration",
     ),
+    GuiOption(
+        "openduet_prepare",
+        "MAGIC_OPENDUET_PREPARE",
+        "Legacy BIOS only: prepare OpenDuet/OpenCore USB files (no disk write)",
+        "BIOS Legacy seulement : préparer les fichiers USB OpenDuet/OpenCore (sans écriture disque)",
+        False,
+        group="migration",
+    ),
     # Frameworks
     GuiOption(
         "fw_master",
