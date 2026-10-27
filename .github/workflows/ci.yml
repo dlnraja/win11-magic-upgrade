@@ -56,15 +56,23 @@ jobs:
         run: |
           $script:failed = 0
           $limitMs = 180000
+          $python = (Get-Command python).Source
           Get-ChildItem build -Filter "test_*.py" | ForEach-Object {
             Write-Host "=== $($_.Name) ==="
-            $proc = Start-Process -FilePath "python" -ArgumentList @($_.FullName) -NoNewWindow -PassThru
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo.FileName = $python
+            $proc.StartInfo.Arguments = "`"$($_.FullName)`""
+            $proc.StartInfo.UseShellExecute = $false
+            $proc.StartInfo.WorkingDirectory = (Get-Location).Path
+            if (-not $proc.Start()) { throw "could not start $($_.Name)" }
             if (-not $proc.WaitForExit($limitMs)) {
               Write-Host "TIMEOUT $($_.Name) after $($limitMs / 1000)s"
-              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              try { $proc.Kill() } catch {}
               $script:failed++
               return
             }
+            # The timed WaitForExit does not always publish ExitCode.
+            $proc.WaitForExit()
             if ($proc.ExitCode -ne 0) {
               Write-Host "FAIL $($_.Name) exit $($proc.ExitCode)"
               $script:failed++
