@@ -15,7 +15,7 @@ SUPPORT_CHECKLIST = [
     ("Secure Boot", "If using hybrid IA32 CSMWrap or OpenDuet: disable Secure Boot in firmware."),
     (
         "Legacy-only BIOS",
-        "Optional OpenDuet/OpenCore USB (OpenCore 1.0.7) adds a software UEFI layer. "
+        "Optional OpenDuet/OpenCore USB (OpenCore 1.0.8) adds a software UEFI layer. "
         "The stick must stay plugged in. The tool will not write a disk without a confirm token.",
     ),
     ("UEFI after MBR2GPT", "After MBR->GPT: set firmware boot mode to UEFI (CSM off)."),

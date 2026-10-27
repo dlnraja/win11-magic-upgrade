@@ -53,11 +53,11 @@ The dry-run prints a confirm token (`disk|size|bus|boot=yes|no|part=yes|no`) and
 
 Boot-code splice (from the OpenCore legacy-boot installer, rewritten): MBR keeps the existing partition table (bytes 446–512); the FAT32 boot sector keeps the formatted BPB (87 bytes at offset 3). No BOOTICE and no Rufus.
 
-Pinned archive: **OpenCorePkg 1.0.7** (`OpenCore-1.0.7-RELEASE.zip`, sha256 `2ffab6ebf58c7aefb0bcb3a1a385d207746823d6dd87d44bd666e1286939943e`). 1.0.8 (2026-09-27) is not used until `Sample.plist` and `ocvalidate` are checked again. Config written for Windows: `ScanPolicy` 0, `SecureBootModel` Disabled, `Vault` Optional, `HfsPlus.efi` off, `OpenUsbKbDxe.efi` on, `KeySupport` false. `BlessOverride` stays empty because OpenCore 1.0.7 already scans `\EFI\Microsoft\Boot\bootmgfw.efi` when `ScanPolicy` is 0 (`ocvalidate` calls that path redundant). `MAGIC_OPENDUET_BLESS` can add a different loader path.
+Pinned archive: **OpenCorePkg 1.0.8** (`OpenCore-1.0.8-RELEASE.zip`, sha256 `2011e8b7216ecb2645d97ea710df965947edd406846e92050b9bc4190be6d27b`, published 2026-09-27). The 1.0.8 notes that touch this bridge are additive: OpenLegacyBoot detects grub4dos, and `Sample.plist` adds an optional driver key `HideVerbose` (left as shipped). Config written for Windows: `ScanPolicy` 0, `SecureBootModel` Disabled, `Vault` Optional, `HfsPlus.efi` off, `OpenUsbKbDxe.efi` on, `KeySupport` false. `BlessOverride` stays empty because OpenCore already scans `\EFI\Microsoft\Boot\bootmgfw.efi` when `ScanPolicy` is 0 (`ocvalidate` calls that path redundant). `MAGIC_OPENDUET_BLESS` can add a different loader path.
 
 Background for the legacy-BIOS technique (rewritten here, not copied): <https://chainesteve.be/ajouter-uefi-pc-bios-legacy-opendued-opencore/>.
 
-`ocvalidate.linux` from the 1.0.7 archive was run on this config (empty `BlessOverride`, and a non-Windows bless path). Both returned “No issues found”. A Windows `bootmgfw.efi` bless is the one case treated as acceptable when it is the only issue.
+`ocvalidate.linux` from the 1.0.8 archive was run on this config (empty `BlessOverride`, and a non-Windows bless path). Both returned “No issues found”. A Windows `bootmgfw.efi` bless is the one case treated as acceptable when it is the only issue.
 
 ## What still needs real hardware
 

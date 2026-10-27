@@ -688,6 +688,43 @@ def test_chain_firmware_and_latest_label():
     assert target_label_for(26300) == "26H2"
 
 
+def test_help_and_unattended_ci():
+    from engine.errors import unattended_session
+
+    saved = {name: os.environ.get(name) for name in ("CI", "GITHUB_ACTIONS", "MAGIC_NO_DIALOG")}
+    try:
+        for name in saved:
+            os.environ.pop(name, None)
+        assert unattended_session() is False
+        os.environ["GITHUB_ACTIONS"] = "true"
+        assert unattended_session() is True
+        os.environ["MAGIC_NO_DIALOG"] = "0"
+        assert unattended_session() is False
+        os.environ["MAGIC_NO_DIALOG"] = "1"
+        assert unattended_session() is True
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    if "tkinter" not in sys.modules:
+        tk = types.ModuleType("tkinter")
+        tk.Tk = type("Tk", (), {})
+        for sub_name in ("messagebox", "scrolledtext", "ttk"):
+            sub = types.ModuleType("tkinter." + sub_name)
+            sys.modules["tkinter." + sub_name] = sub
+            setattr(tk, sub_name, sub)
+        sys.modules["tkinter"] = tk
+    from magic_upgrade import cli_help_text
+
+    text = cli_help_text()
+    text.encode("cp1252")
+    assert "--openduet-write" in text
+    assert "\u2192" not in text
+
+
 if __name__ == "__main__":
     test_selects_26h2_not_higher_build_26h1()
     test_host_on_26h1_stays_on_that_branch()
@@ -699,4 +736,5 @@ if __name__ == "__main__":
     test_authorize_write_refusals()
     test_stage_tree_leaves_windows_bless_empty()
     test_chain_firmware_and_latest_label()
+    test_help_and_unattended_ci()
     print("OK test_v154_latest_and_firmware")

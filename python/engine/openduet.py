@@ -5,13 +5,14 @@ Chain (software UEFI on top of BIOS):
     BIOS → boot0 (MBR) → boot1f32 (FAT32 VBR) → OpenDuet (`boot`) → OpenCore → OS loader
 
 The Windows loader OpenCore should reach is \\EFI\\Microsoft\\Boot\\bootmgfw.efi.
-OpenCore 1.0.7's ocvalidate flags that exact path as redundant when ScanPolicy is 0,
+OpenCore's ocvalidate flags that exact path as redundant when ScanPolicy is 0,
 because the default scan already finds it. The Windows config therefore leaves
 BlessOverride empty. A non-standard loader path (the article used a Linux grub
 path) is written into BlessOverride and does pass ocvalidate.
 
-Pinned to OpenCorePkg 1.0.7. 1.0.8 (2026-09-27) is not used until this config
-contract is re-checked against that release's Sample.plist and ocvalidate.
+Pinned to OpenCorePkg 1.0.8. Its changelog adds grub4dos detection in
+OpenLegacyBoot and an optional driver key HideVerbose. Neither changes the
+Windows bridge keys. ocvalidate from that archive accepted this config.
 
 The stick has to stay plugged in; firmware has no UEFI of its own.
 Nothing is written to a disk unless the caller passes a confirm token that
@@ -37,20 +38,20 @@ from typing import Callable
 
 from .logutil import STATE_DIR, log
 
-OPENCORE_VERSION = "1.0.7"
+OPENCORE_VERSION = "1.0.8"
 OPENCORE_ZIP_NAME = f"OpenCore-{OPENCORE_VERSION}-RELEASE.zip"
 OPENCORE_URL = (
     "https://github.com/acidanthera/OpenCorePkg/releases/download/"
     f"{OPENCORE_VERSION}/{OPENCORE_ZIP_NAME}"
 )
-# sha256 of the official 1.0.7 RELEASE asset (2026-03-20).
-OPENCORE_SHA256 = "2ffab6ebf58c7aefb0bcb3a1a385d207746823d6dd87d44bd666e1286939943e"
+# sha256 of the official 1.0.8 RELEASE asset (2026-09-27).
+OPENCORE_SHA256 = "2011e8b7216ecb2645d97ea710df965947edd406846e92050b9bc4190be6d27b"
 OPENCORE_NEWER_NOTE = (
-    "OpenCore 1.0.8 was published on 2026-09-27. This bridge stays on 1.0.7 "
-    "until Sample.plist keys and ocvalidate are checked again."
+    "Checked against the 1.0.8 changelog and ocvalidate: OpenLegacyBoot only "
+    "adds grub4dos detection, and Sample.plist adds optional HideVerbose."
 )
 WINDOWS_LOADER = r"\EFI\Microsoft\Boot\bootmgfw.efi"
-USER_AGENT = "Win11MagicUpgrade/1.54 (openduet; +https://github.com/dlnraja/win11-magic-upgrade)"
+USER_AGENT = "Win11MagicUpgrade/1.55 (openduet; +https://github.com/dlnraja/win11-magic-upgrade)"
 LARGE_DISK_BYTES = 128 * (1024**3)
 SOURCE_CREDIT = "https://chainesteve.be/ajouter-uefi-pc-bios-legacy-opendued-opencore/"
 
