@@ -733,6 +733,13 @@ def fix_boot_for_new_layout(
             pass
 
     mode = "UEFI" if prefer_uefi else "BIOS"
+    from .secureboot_certs import efi_write_block_reason
+
+    cert_reason = efi_write_block_reason(mode)
+    if cert_reason:
+        log(cert_reason, "ERROR")
+        out["actions"].append("bcdboot_cert_refused")
+        return out
     if not bcdboot.is_file():
         out["actions"].append("bcdboot_missing")
     elif targets:
@@ -1128,6 +1135,12 @@ def create_boot_in_unallocated(
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     mode = "UEFI" if use_efi else "BIOS"
+    from .secureboot_certs import efi_write_block_reason
+
+    cert_reason = efi_write_block_reason(mode)
+    if cert_reason:
+        log(cert_reason, "ERROR")
+        return None
     if bcdboot.is_file():
         c, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", mode], timeout=180)
         if c != 0:

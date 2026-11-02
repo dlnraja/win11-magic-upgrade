@@ -12,9 +12,13 @@ Selection follows the version label (26H2 > 26H1 > 25H2), not the raw build,
 and drops versions the page says are not offered in place. A PC already on that
 device-scoped branch stays there and only tracks its own cumulative.
 
-The built-in floor is the last GA feature update known when this file shipped.
-A successful parse of a newer version replaces it. A failed or truncated page
-never lowers the target below the floor or a newer cached result.
+The built-in floor is the last consumer security baseline known when this file
+shipped (monthly B release, or a later out-of-band security update). Optional
+D-week previews are parsed and ignored unless ``MAGIC_WIN11_PREVIEW=1``.
+A successful parse of a newer in-place version replaces the floor. A failed or
+truncated page never lowers the target below the floor or a newer cached result.
+A cached cumulative that is older than the floor on the same version does not
+hide the floor.
 """
 from __future__ import annotations
 
@@ -34,11 +38,15 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Win11MagicUpgrade"
 )
 
-# Last consumer GA feature update verified against release health (2026-10-13).
+# Last consumer security baseline verified against release health (2026-11-02).
+# 26H2 October B is 26300.9711 (KB5127648). The 2026-10-26 OOB is 26300.9725
+# (KB5134133) and is the floor. The same page's 26300.9818 row is the optional
+# 2026-10 D preview (KB5127936) and is not the floor.
 # 26H1 / 28000 is intentionally not the floor: it is not an in-place target.
 FALLBACK_WIN11_VERSION = "26H2"
 FALLBACK_WIN11_BUILD = 26300
-FALLBACK_WIN11_UBR = 9711
+FALLBACK_WIN11_UBR = 9725
+PREVIEW_ENV = "MAGIC_WIN11_PREVIEW"
 FALLBACK_EXCLUDED = ("26H1",)
 # Current x64 consumer id, then older ids used only if the page and the first id fail.
 FALLBACK_EDITION_IDS = (3813, 3816, 3321, 3324)
@@ -139,41 +147,133 @@ class ServicingRow:
     major: int
     ubr: int
     servicing: str
+    # ga | security | oob | preview | ltsc
+    update_class: str = "ga"
+
+
+def classify_update(servicing: str, update_type: str = "") -> str:
+    """Map a release-health row to ga, security, oob, preview, or ltsc.
+
+    Microsoft's history tables label the week: B is the monthly security
+    release, OOB is an out-of-band security update, and D is the optional
+    non-security preview. The summary table puts that same label in
+    "Latest update" while "Servicing option" still says General Availability.
+    """
+    svc = (servicing or "").lower()
+    kind = (update_type or "").strip().lower()
+    if "ltsc" in svc or "ltsc" in kind:
+        return "ltsc"
+    if re.search(r"(?:^|[\s._-])d$", kind) or "preview" in kind:
+        return "preview"
+    if "oob" in kind or "out-of-band" in kind or "out of band" in kind:
+        return "oob"
+    if re.search(r"(?:^|[\s._-])b$", kind) or "baseline" in kind or "security" in kind:
+        return "security"
+    return "ga"
+
+
+def _column(header: list[str], *needles: str) -> int | None:
+    for index, cell in enumerate(header):
+        low = cell.lower()
+        if all(needle in low for needle in needles):
+            return index
+    return None
+
+
+def _version_before(html: str, start: int) -> str:
+    window = html[max(0, start - 2500) : start]
+    text = re.sub(r"(?is)<[^>]+>", " ", window)
+    found = list(_VERSION_RE.finditer(text))
+    return found[-1].group(1).upper() if found else ""
+
+
+def _row_build(row: list[str], build_idx: int | None) -> re.Match[str] | None:
+    if build_idx is not None and build_idx < len(row):
+        match = _BUILD_RE.search(row[build_idx] or "")
+        if match:
+            return match
+    return _BUILD_RE.search(" ".join(row))
 
 
 def parse_servicing_rows(html: str) -> list[ServicingRow]:
-    """Rows from 'current versions' tables (header contains Version and Build)."""
+    """Rows from current-version tables and from per-version history tables.
+
+    History tables have no Version column. The version is the nearest
+    ``NNH1`` / ``NNH2`` heading before the table. Update class keeps a D
+    preview from replacing the B/OOB security baseline of the same version.
+    """
     found: list[ServicingRow] = []
-    for rows in html_tables(html):
+    for start, rows in _html_tables_at(html):
         header = rows[0]
         joined = " | ".join(header).lower()
-        if "version" not in joined or "build" not in joined:
+        if "build" not in joined:
             continue
-        ver_idx = next((i for i, c in enumerate(header) if "version" in c.lower()), 0)
-        svc_idx = next((i for i, c in enumerate(header) if "servicing" in c.lower()), None)
+        has_version = "version" in joined
+        has_history = "update type" in joined or "latest update" in joined
+        if not has_version and not has_history:
+            continue
+        ver_idx = _column(header, "version") if has_version else None
+        if ver_idx is not None and "revision" in header[ver_idx].lower():
+            ver_idx = next(
+                (
+                    i
+                    for i, cell in enumerate(header)
+                    if "version" in cell.lower() and "revision" not in cell.lower()
+                ),
+                ver_idx,
+            )
+        svc_idx = _column(header, "servicing")
+        type_idx = _column(header, "update type")
+        if type_idx is None:
+            type_idx = _column(header, "latest update")
+        build_idx = _column(header, "latest build")
+        if build_idx is None:
+            build_idx = _column(header, "build")
+        heading = "" if has_version else _version_before(html, start)
         for row in rows[1:]:
-            if ver_idx >= len(row):
+            build = _row_build(row, build_idx)
+            if not build:
                 continue
-            ver = _VERSION_RE.search(row[ver_idx] or "")
-            build = _BUILD_RE.search(" ".join(row))
-            if not ver or not build:
+            if ver_idx is not None and ver_idx < len(row):
+                ver = _VERSION_RE.search(row[ver_idx] or "")
+            else:
+                ver = _VERSION_RE.search(heading)
+            if not ver:
                 continue
             servicing = row[svc_idx] if svc_idx is not None and svc_idx < len(row) else ""
+            update_type = row[type_idx] if type_idx is not None and type_idx < len(row) else ""
             found.append(
                 ServicingRow(
                     version=ver.group(1).upper(),
                     major=int(build.group(1)),
                     ubr=int(build.group(2)),
-                    servicing=servicing,
+                    servicing=servicing or update_type,
+                    update_class=classify_update(servicing, update_type),
                 )
             )
     return _dedupe_rows(found)
 
 
+def _html_tables_at(html: str) -> list[tuple[int, list[list[str]]]]:
+    found: list[tuple[int, list[list[str]]]] = []
+    for table in re.finditer(r"(?is)<table[\s\S]*?</table>", html or ""):
+        rows: list[list[str]] = []
+        for tr in re.finditer(r"(?is)<tr[\s\S]*?</tr>", table.group(0)):
+            cells = [
+                _cell_text(c.group(1))
+                for c in re.finditer(r"(?is)<t[hd][^>]*>([\s\S]*?)</t[hd]>", tr.group(0))
+            ]
+            if any(cells):
+                rows.append(cells)
+        if rows:
+            found.append((table.start(), rows))
+    return found
+
+
 def _dedupe_rows(rows: list[ServicingRow]) -> list[ServicingRow]:
     best: dict[tuple[str, str], ServicingRow] = {}
     for row in rows:
-        key = (row.version, "ltsc" if "ltsc" in row.servicing.lower() else "ga")
+        key = (row.version, row.update_class or "ga")
         cur = best.get(key)
         if cur is None or (row.major, row.ubr) > (cur.major, cur.ubr):
             best[key] = row
@@ -214,33 +314,87 @@ def merge_edition_ids(parsed: list[int] | None) -> tuple[int, ...]:
     return tuple(ids)
 
 
+_BASELINE_CLASSES = frozenset({"ga", "security", "oob"})
+
+
+def _preview_allowed(flag: bool | None) -> bool:
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get(PREVIEW_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def _best_row(rows: list[ServicingRow]) -> ServicingRow | None:
+    if not rows:
+        return None
+    return max(rows, key=lambda row: (version_key(row.version), row.major, row.ubr))
+
+
 def select_latest(
     rows: list[ServicingRow],
     excluded: set[str],
     host_build: int = 0,
+    *,
+    allow_preview: bool | None = None,
 ) -> ReleaseTarget | None:
-    """Pick the consumer GA feature update, or the host's own device-scoped branch."""
-    ga = [r for r in rows if "ltsc" not in (r.servicing or "").lower()]
+    """Pick the latest in-place security baseline, or the host's own branch.
+
+    B (monthly security) and OOB rows are eligible. D-week optional previews
+    are not, unless ``allow_preview`` / ``MAGIC_WIN11_PREVIEW`` is set.
+    A newer version that exists only as a preview does not cause an older
+    feature update to be chosen; the caller keeps the floor instead.
+    """
+    preview = _preview_allowed(allow_preview)
+    classes = set(_BASELINE_CLASSES)
+    if preview:
+        classes.add("preview")
+    consumer = [row for row in rows if row.update_class != "ltsc"]
+    excluded_up = {item.upper() for item in excluded}
     if host_build:
-        for row in ga:
-            if row.version.upper() in excluded and row.major == int(host_build):
+        on_branch = [
+            row
+            for row in consumer
+            if row.version.upper() in excluded_up and row.major == int(host_build)
+        ]
+        if on_branch:
+            chosen = _best_row([row for row in on_branch if row.update_class in classes])
+            if chosen is None:
                 return ReleaseTarget(
-                    version=row.version,
-                    major=row.major,
-                    ubr=row.ubr,
+                    version=on_branch[0].version,
+                    major=int(host_build),
+                    ubr=0,
                     source="host-branch",
-                    excluded=tuple(sorted(excluded)),
+                    excluded=tuple(sorted(excluded_up)),
                 )
-    eligible = [r for r in ga if r.version.upper() not in excluded]
-    if not eligible:
+            return ReleaseTarget(
+                version=chosen.version,
+                major=chosen.major,
+                ubr=chosen.ubr,
+                source="host-branch",
+                excluded=tuple(sorted(excluded_up)),
+            )
+    eligible = [
+        row
+        for row in consumer
+        if row.version.upper() not in excluded_up and row.update_class in classes
+    ]
+    best = _best_row(eligible)
+    if best is None:
         return None
-    best = max(eligible, key=lambda r: version_key(r.version))
+    if not preview:
+        newer_preview = [
+            row
+            for row in consumer
+            if row.version.upper() not in excluded_up
+            and version_key(row.version) > version_key(best.version)
+        ]
+        if newer_preview:
+            return None
     return ReleaseTarget(
         version=best.version,
         major=best.major,
         ubr=best.ubr,
         source="release-health",
-        excluded=tuple(sorted(excluded)),
+        excluded=tuple(sorted(excluded_up)),
     )
 
 
@@ -260,10 +414,18 @@ def merge_release(
         )
         if not truncated:
             return live
-    if cache is not None and version_key(cache.version) >= version_key(floor.version):
-        if cache.major >= floor.major or version_key(cache.version) > version_key(floor.version):
-            return replace(cache, source="cache")
+    if cache is not None and _cache_beats_floor(cache, floor):
+        return replace(cache, source="cache")
     return floor
+
+
+def _cache_beats_floor(cache: ReleaseTarget, floor: ReleaseTarget) -> bool:
+    """A same-version cache wins only when its cumulative is at least the floor."""
+    if version_key(cache.version) != version_key(floor.version):
+        return version_key(cache.version) > version_key(floor.version)
+    if cache.major != floor.major:
+        return cache.major > floor.major
+    return cache.ubr >= floor.ubr
 
 
 def _fetch_url(url: str, timeout: int = 25) -> str:
@@ -336,6 +498,7 @@ def refresh_latest_win11(
     fetch_text: Callable[[str], str] | None = None,
     save: bool = True,
     state: dict[str, Any] | None = None,
+    allow_preview: bool | None = None,
 ) -> ReleaseTarget:
     """Query Microsoft, merge with cache and the floor, optionally persist."""
     fetch = fetch_text or _fetch_url
@@ -345,7 +508,7 @@ def refresh_latest_win11(
     excluded = parse_excluded_versions(strip_html(health)) if health else set()
     if not excluded:
         excluded = set(FALLBACK_EXCLUDED)
-    live = select_latest(rows, excluded, host_build) if rows else None
+    live = select_latest(rows, excluded, host_build, allow_preview=allow_preview) if rows else None
     parsed_versions = {r.version for r in rows}
     cache = cache_from_state(state)
     chosen = merge_release(
@@ -372,10 +535,13 @@ def refresh_latest_win11(
 
 def latest_win11_ubr_from_state() -> int:
     cached = cache_from_state()
+    floor = floor_target()
     if cached and cached.ubr > 0:
+        if cached.version.upper() == floor.version.upper() and cached.major == floor.major:
+            return max(cached.ubr, floor.ubr)
         return cached.ubr
-    if cached is None or cached.major == FALLBACK_WIN11_BUILD:
-        return FALLBACK_WIN11_UBR
+    if cached is None or cached.major == floor.major:
+        return floor.ubr
     return 0
 
 

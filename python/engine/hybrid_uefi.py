@@ -132,6 +132,18 @@ def deploy_hybrid_ia32(*, activate: bool = False) -> dict:
         stock_bak = efi_boot / "bootia32.stock.efi"
 
         if activate:
+            from .secureboot_certs import secure_boot_is_on
+
+            if secure_boot_is_on():
+                log(
+                    "Secure Boot is on. CSMWrap is not signed for this firmware db, "
+                    "so EFI\\Boot\\bootia32.efi is left unchanged. "
+                    "Disable Secure Boot before activating the bridge.",
+                    "ERROR",
+                )
+                result["activate_refused"] = "secure_boot"
+                activate = False
+        if activate:
             if stock.exists() and not stock_bak.exists():
                 shutil.copy2(stock, stock_bak)
                 log("Backed up stock bootia32.efi -> bootia32.stock.efi", "OK")

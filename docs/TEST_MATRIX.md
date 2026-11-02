@@ -9,8 +9,11 @@
 | Win10 22H2 MBR on UEFI | mbr2gpt | GPT + UEFI note |
 | Win10 22H2 MBR, legacy-only BIOS | chain | keep MBR; optional OpenDuet prepare, no disk write |
 | Win10 22H2 no SSE4.2 | chain | stop at 22H2 (honest) |
-| Win11 22H2 / 25H2 | latest | in-place to detected feature update (26H2 floor), then cumulative if UBR lags |
-| Already on 26H1 (28000) | latest | stay on that branch; do not offer 26H2 as a downgrade |
+| Win11 22H2 / 25H2 | latest | in-place to detected feature update (26H2 security/OOB floor), then cumulative if UBR lags |
+| Already on 26H1 (28000) | latest | stay on that branch; track its B/OOB cumulative, not the D preview |
+| Release health shows a D preview above the OOB build | latest | default target stays on the OOB/B row; `MAGIC_WIN11_PREVIEW=1` selects the D row |
+| Secure Boot on, db lacks Windows UEFI CA 2023, target bootmgr is 2023-only | boot files | refuse bcdboot/Setup/mbr2gpt; keep the current loader; snapshot stays |
+| Secure Boot off, legacy BIOS, or 32-bit | boot files | certificate gate does not change the existing path |
 | IA32 UEFI (Bay Trail class) | hybrid | CSMWrap, no mbr2gpt; Secure Boot must be off to activate |
 | Win10 LTSC | retail ISO | warn; needs enterprise ISO |
 | ARM64 | One-Click | blocked with clear message |

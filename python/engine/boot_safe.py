@@ -185,6 +185,11 @@ def restore_bcd_from_last() -> bool:
     return False
 
 
+def _is_uefi_loader(rel: Path) -> bool:
+    """UEFI Secure Boot checks .efi loaders. BCD and BIOS bootmgr are not gated."""
+    return rel.name.lower().endswith(".efi")
+
+
 _CRITICAL_REL_PATHS = (
     Path("EFI") / "Microsoft" / "Boot" / "bootmgfw.efi",
     Path("EFI") / "Microsoft" / "Boot" / "BCD",
@@ -262,12 +267,32 @@ def restore_esp_critical_files() -> bool:
             log("Cannot mount ESP to restore snapshot", "ERROR")
             return False
         dst_root = Path(f"{mounted.rstrip(':\\')}:\\")
+        cert_state = None
+        snapshot_restore_allowed = None
+        try:
+            from .secureboot_certs import probe_secure_boot_state
+            from .secureboot_certs import snapshot_restore_allowed as _snapshot_restore_allowed
+
+            snapshot_restore_allowed = _snapshot_restore_allowed
+            cert_state = probe_secure_boot_state()
+        except Exception as e:
+            log(f"Secure Boot cert check before snapshot restore skipped: {e}", "WARN")
         for rel in _CRITICAL_REL_PATHS:
             src = src_root / rel
             if not src.is_file():
                 continue
             dst = dst_root / rel
             try:
+                if (
+                    snapshot_restore_allowed is not None
+                    and cert_state is not None
+                    and cert_state.secure_boot == "on"
+                    and _is_uefi_loader(rel)
+                ):
+                    decision = snapshot_restore_allowed(src.read_bytes(), cert_state)
+                    if not decision.allow:
+                        log(f"Snapshot restore skipped {rel}: {decision.reason}", "ERROR")
+                        continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
                 restored += 1
@@ -576,7 +601,14 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     if bcdboot.exists():
+        from .secureboot_certs import efi_write_block_reason
+
         for mode in (("ALL", "UEFI", "BIOS") if uefi else ("ALL", "BIOS", "UEFI")):
+            cert_reason = efi_write_block_reason(mode)
+            if cert_reason:
+                log(cert_reason, "ERROR")
+                summary["actions"].append(f"bcdboot_{mode}:cert_refused")
+                continue
             code, out = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
             summary["actions"].append(f"bcdboot_{mode}:{code}")
             if code == 0 or "successfully" in (out or "").lower():
@@ -1062,7 +1094,8 @@ def preflight_boot_edit(
             if intend in ("esp-expand", "mbr2gpt"):
                 snap.block_reasons.append("bcd_backup_required")
 
-    # Critical ESP file snapshot for restore-on-failure
+    # Critical ESP file snapshot for restore-on-failure. Taken before the
+    # certificate gate so a refused rewrite still has the pre-change files.
     try:
         if snapshot_esp_critical_files():
             snap.notes.append("esp_snapshot_ok")
@@ -1071,6 +1104,20 @@ def preflight_boot_edit(
     except Exception as e:
         snap.notes.append(f"esp_snapshot_skip")
         log(f"ESP snapshot: {e}", "WARN")
+
+    try:
+        from .secureboot_certs import efi_write_block_reason, format_cert_state, probe_secure_boot_state
+
+        cert_state = probe_secure_boot_state()
+        snap.notes.append(format_cert_state(cert_state))
+        cert_reason = efi_write_block_reason("UEFI", state=cert_state)
+        if cert_reason:
+            snap.block_reasons.append("secure_boot_cert")
+            snap.notes.append(cert_reason)
+            log(cert_reason, "ERROR")
+    except Exception as e:
+        snap.notes.append("secure_boot_cert_probe_skipped")
+        log(f"Secure Boot certificate probe skipped: {e}", "WARN")
 
     # Full partition backup (ESP/SRP tree + WIM + metadata) for dynamic regenerate
     try:
@@ -1383,9 +1430,14 @@ def validated_repair_boot_manager(*, prefer_uefi: bool = True) -> dict[str, Any]
         "repaired": False,
         "postflight": {},
     }
-    # Soft blocks only for locked BitLocker
+    # Soft blocks only for locked BitLocker. A Secure Boot certificate mismatch
+    # is a hard block: bcdboot would replace the loader the firmware accepts.
     if "bitlocker_locked" in snap.block_reasons:
         result["error"] = "bitlocker_locked"
+        return result
+    if "secure_boot_cert" in snap.block_reasons:
+        result["error"] = "secure_boot_cert"
+        log("Boot Manager repair refused — Secure Boot would reject the new loader.", "ERROR")
         return result
 
     repaired = repair_boot_manager(prefer_uefi=prefer_uefi)

@@ -693,9 +693,17 @@ def dynamic_regenerate_boot_partition(
         bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
         if bcdboot.exists():
             mode = "UEFI" if uefi else "BIOS"
-            c, o = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode], timeout=180)
-            out["actions"].append(f"bcdboot_s_{mode}:{c}")
-            out["ok"] = c == 0 or "successfully" in (o or "").lower()
+            from .secureboot_certs import efi_write_block_reason
+
+            cert_reason = efi_write_block_reason(mode)
+            if cert_reason:
+                log(cert_reason, "ERROR")
+                out["actions"].append(f"bcdboot_s_{mode}:cert_refused")
+                out["ok"] = False
+            else:
+                c, o = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode], timeout=180)
+                out["actions"].append(f"bcdboot_s_{mode}:{c}")
+                out["ok"] = c == 0 or "successfully" in (o or "").lower()
 
     # Persist regenerate status
     try:

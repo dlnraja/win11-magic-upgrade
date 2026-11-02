@@ -90,7 +90,8 @@ Win11MagicUpgrade.exe --cli --openduet-write --disk N          # dry-run, prints
 |-----------|-------------------|
 | Unsupported TPM / CPU / Secure Boot | Full bypass stack: LabConfig + MoSetup + HwReqChk + CompatData soften + **media Appraiser neutralize** + `/product server` + `/compat IgnoreWarning` |
 | ESP / System Reserved full | Cleanup + enlarge (`--cli --srp`) |
-| MBR disk on UEFI (or UEFI-capable CSM) | Auto `mbr2gpt` (no wipe) + bcdboot |
+| MBR disk on UEFI (or UEFI-capable CSM) | Auto `mbr2gpt` (no wipe) + bcdboot, unless Secure Boot would reject the new boot manager |
+| Secure Boot on, 2023-signed boot manager, db missing Windows UEFI CA 2023 (or SVN/dbx would reject it) | Refuse the boot-file change and Setup, explain why, keep the current loader (`docs/BOOT_FIRMWARE.md`) |
 | Legacy-only BIOS (no UEFI) | Keep MBR/BIOS boot. Optional OpenDuet USB (`docs/BOOT_FIRMWARE.md`) — never writes a disk without a confirm token |
 | Win10 1511 / obsolete | Intermediate **Win10 22H2** then the detected Win11 feature update (RunOnce) |
 | Win8 / 8.1 (+ Media Center) | Inplace → Win10 22H2 (`ei.cfg`/`pid.txt` for MC) → DVD Player offer step → Win11 latest |
