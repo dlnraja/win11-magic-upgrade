@@ -674,7 +674,9 @@ def test_chain_firmware_and_latest_label():
     ahead = _ids(_R(is_win11=True, is_win10=False, build=28000, os_family="win11"))
     assert ahead == ["done"]
 
-    current = _ids(_R(is_win11=True, is_win10=False, build=26300, ubr=9711, os_family="win11"))
+    current = _ids(
+        _R(is_win11=True, is_win10=False, build=26300, ubr=FALLBACK_WIN11_UBR, os_family="win11")
+    )
     assert current == ["done"]
 
     behind_cu = _ids(_R(is_win11=True, is_win10=False, build=26300, ubr=100, os_family="win11"))

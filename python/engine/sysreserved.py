@@ -357,6 +357,12 @@ def create_larger_esp(
 
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
+    from .secureboot_certs import efi_write_block_reason
+
+    cert_reason = efi_write_block_reason("UEFI")
+    if cert_reason:
+        log(cert_reason, "ERROR")
+        return None
     code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "UEFI"], timeout=180)
     log(f"bcdboot -> {code}: {bout[:300]}")
     if code != 0 and "successfully" not in bout.lower() and "reussi" not in bout.lower().replace("é", "e"):

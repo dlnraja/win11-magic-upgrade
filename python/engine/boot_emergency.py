@@ -353,6 +353,14 @@ Write-Output ("OK|" + $letter + "|" + $partStyle + "|" + $diskN)
         bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
         mode = "UEFI" if prefer_uefi or m.group(2).upper() == "GPT" else "BIOS"
         if bcdboot.exists():
+            from .secureboot_certs import efi_write_block_reason
+
+            cert_reason = efi_write_block_reason(mode)
+            if cert_reason:
+                log(cert_reason, "ERROR")
+                result["actions"].append(f"bcdboot_{mode}:cert_refused")
+                result["ok"] = False
+                return result
             c2, o2 = _run([str(bcdboot), sys_root, "/s", f"{letter}:", "/f", mode], timeout=180)
             result["actions"].append(f"bcdboot_{mode}:{c2}")
             if c2 != 0:
@@ -467,7 +475,14 @@ def emergency_regenerate_bcd(*, prefer_uefi: bool | None = None) -> dict[str, An
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     if bcdboot.exists():
+        from .secureboot_certs import efi_write_block_reason
+
         for mode in (("ALL", "UEFI", "BIOS") if uefi else ("ALL", "BIOS", "UEFI")):
+            cert_reason = efi_write_block_reason(mode)
+            if cert_reason:
+                log(cert_reason, "ERROR")
+                out["actions"].append(f"bcdboot_{mode}:cert_refused")
+                continue
             c, o = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
             out["actions"].append(f"bcdboot_{mode}:{c}")
             if c == 0 or "successfully" in (o or "").lower():

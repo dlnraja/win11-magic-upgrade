@@ -379,10 +379,20 @@ def collect_report() -> Report:
             bootmgr_arch=bootmgr_arch or "",
             firmware_likely_ia32=firmware_ia32,
         )
-        plan = decide_boot_plan(snapshot_from_report(report))
+        from .secureboot_certs import format_cert_state, loader_for_plan, probe_secure_boot_state
+
+        cert_state = probe_secure_boot_state()
+        log(format_cert_state(cert_state), "INFO")
+        plan = decide_boot_plan(
+            snapshot_from_report(report),
+            cert_state=cert_state,
+            target_loader=loader_for_plan(),
+        )
         report.boot_plan_id = plan.path_id
         for note in plan.warnings[:4]:
             log(note, "INFO")
+        for blocker in plan.blockers[:4]:
+            log(blocker, "ERROR")
     except Exception as e:
         log(f"Boot plan skipped: {e}", "WARN")
     return report

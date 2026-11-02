@@ -226,7 +226,12 @@ def mbr2gpt_wanted(report: Any) -> bool:
     return decide_boot_plan(snapshot_from_report(report)).allow_mbr2gpt
 
 
-def decide_boot_plan(snap: FirmwareSnapshot) -> BootPlan:
+def decide_boot_plan(
+    snap: FirmwareSnapshot,
+    *,
+    cert_state: Any = None,
+    target_loader: Any = None,
+) -> BootPlan:
     plan = _decide(snap)
     warnings = list(plan.warnings)
     if snap.force_mbr2gpt and snap.partition_style == "mbr":
@@ -241,7 +246,47 @@ def decide_boot_plan(snap: FirmwareSnapshot) -> BootPlan:
             bcd_mode="BIOS" if snap.firmware_mode == "bios" else plan.bcd_mode,
             warnings=tuple(warnings),
         )
+    if cert_state is not None:
+        plan = _apply_secure_boot_cert_gate(plan, cert_state, target_loader)
     return plan
+
+
+_UEFI_BOOT_ACTIONS = frozenset({"bcdboot_uefi", "stage_bootx64", "repair_bootmgr_x64", "mbr2gpt"})
+
+
+def _apply_secure_boot_cert_gate(plan: BootPlan, cert_state: Any, target_loader: Any) -> BootPlan:
+    """Hold a UEFI boot-file rewrite the firmware's db/dbx would reject.
+
+    Called only when the caller already probed the machine. Plans that do not
+    write a UEFI Microsoft loader (legacy, CSM keep, IA32 hybrid, 32-bit CPU)
+    are unchanged. A missing loader file is not enough to change the plan;
+    the write itself is refused later when the bytes are in hand.
+    """
+    if getattr(cert_state, "secure_boot", "") != "on":
+        return plan
+    if not _UEFI_BOOT_ACTIONS.intersection(plan.actions):
+        return plan
+    if target_loader is None or not getattr(target_loader, "present", False):
+        return plan
+    from .secureboot_certs import rewrite_decision
+
+    decision = rewrite_decision(cert_state, target_loader, kind="uefi_bootmgr")
+    if decision.allow:
+        return plan
+    kept = tuple(action for action in plan.actions if action not in _UEFI_BOOT_ACTIONS)
+    if "keep_current_bootmgr" not in kept:
+        kept = kept + ("keep_current_bootmgr",)
+    reason = decision.reason
+    return replace(
+        plan,
+        path_id=plan.path_id + "_cert_hold",
+        summary=plan.summary + " Secure Boot certificate gate kept the current boot manager.",
+        actions=kept,
+        allow_mbr2gpt=False,
+        win11_inplace=False,
+        warnings=plan.warnings + (reason,),
+        blockers=plan.blockers + (reason,),
+    )
 
 
 def _decide(snap: FirmwareSnapshot) -> BootPlan:

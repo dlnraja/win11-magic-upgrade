@@ -160,7 +160,13 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
 
     modes = ["UEFI", "ALL"] if prefer_uefi else ["ALL", "UEFI", "BIOS"]
     ok = False
+    from .secureboot_certs import efi_write_block_reason
+
     for mode in modes:
+        cert_reason = efi_write_block_reason(mode)
+        if cert_reason:
+            log(cert_reason, "ERROR")
+            continue
         if esp_letter:
             cmd = [str(bcdboot), sys_root, "/s", f"{esp_letter}:", "/f", mode]
         else:

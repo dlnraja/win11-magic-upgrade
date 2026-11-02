@@ -138,6 +138,17 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     root = Path(setup_root)
     setup = root / "setup.exe"
     prep = root / "sources" / "setupprep.exe"
+    try:
+        from .secureboot_certs import setup_media_block_reason
+
+        cert_reason = setup_media_block_reason(root)
+        if cert_reason:
+            log(cert_reason, "ERROR")
+            raise RuntimeError(cert_reason)
+    except RuntimeError:
+        raise
+    except Exception as e:
+        log(f"Secure Boot media check skipped: {e}", "WARN")
 
     # Stage offline DU cabs before launch (air-gap / flaky network)
     du_info: dict = {}

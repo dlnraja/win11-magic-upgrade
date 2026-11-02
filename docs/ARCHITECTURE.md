@@ -61,7 +61,7 @@ Legacy PowerShell under `src/` is reference only — **not** used at runtime.
    After failed Setup: `setup_recovery` parses Panther codes (0xC1900101-*) and remediates.  
 5. If the system disk is MBR **and** the firmware matrix says the PC can boot UEFI afterwards, and `mbr2gpt` exists → convert (no wipe) → reboot resume. Legacy-only BIOS keeps MBR. `MAGIC_KEEP_LEGACY=1` skips conversion; `MAGIC_FORCE_MBR2GPT=1` allows it.  
 6. Boot Manager / hybrid IA32 path when firmware bitness requires it (Secure Boot OFF checklist). 64-bit firmware with a 32-bit OS uses `bootx64.efi` media, not `bootia32.efi`. Optional OpenDuet/OpenCore 1.0.8 stick for legacy-only BIOS (`docs/BOOT_FIRMWARE.md`).  
-7. Strict ISO verify (family/arch/min_build/setupprep) then the detected Win11 feature update → `setupprep` + `/product server`. Target comes from Microsoft release health (version label, not raw build). Floor is 26H2 / 26300 when the page fails. Same build + older cumulative → `UsoClient`, not a second ISO.  
+7. Strict ISO verify (family/arch/min_build/setupprep) then the detected Win11 feature update → `setupprep` + `/product server`. Target comes from Microsoft release health (version label, not raw build). The default cumulative is the latest B/OOB security baseline (floor 26H2 / 26300.9725); D-week previews need `MAGIC_WIN11_PREVIEW=1`. Same build + older cumulative → `UsoClient`, not a second ISO. Before UEFI boot files change, the Secure Boot db/dbx/SVN gate can refuse the write and leave the current boot manager.  
    See `docs/BOOT_FIRMWARE.md` and `docs/RESEARCH_FORUMS.md`.  
 
 ## Why `/product server`

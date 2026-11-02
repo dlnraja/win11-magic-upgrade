@@ -296,6 +296,13 @@ def repair_bootmgr_to_os_arch(prefer_uefi: bool = True) -> bool:
         letter = mount_esp()
         if letter:
             mode = "UEFI" if prefer_uefi else "ALL"
+            from .secureboot_certs import efi_write_block_reason
+
+            cert_reason = efi_write_block_reason(mode)
+            if cert_reason:
+                log(cert_reason, "ERROR")
+                unmount_letter(letter)
+                return False
             code, out = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode])
             log(f"bcdboot /s {letter} /f {mode} -> {code}: {out[:250]}")
             # Verify PE
