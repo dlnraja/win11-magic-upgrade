@@ -321,9 +321,9 @@ def _decide(snap: FirmwareSnapshot) -> BootPlan:
 
     return _plan(
         path_id="unknown_conservative",
-        summary="Firmware type is unknown — no disk conversion.",
-        bcd_mode="ALL",
-        warnings=("Firmware mode was not detected. MBR→GPT is skipped until it is known.",),
+        summary="Firmware type is unknown — no disk conversion and no bcdboot.",
+        bcd_mode="NONE",
+        warnings=("Firmware mode was not detected. MBR→GPT and bcdboot are skipped until it is known.",),
     )
 
 
