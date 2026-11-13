@@ -974,11 +974,43 @@ class App(tk.Tk):
                 elif action == "dryrun":
                     code = run_pipeline(sink, quiet=True, dry_run=True)
                 else:
-                    code = run_pipeline(
-                        sink,
-                        quiet=True,
-                        resume=getattr(self, "_resume_chain", False),
-                    )
+                    code = None
+                    if action == "oneclick":
+                        from engine.pre_reboot import (  # type: ignore
+                            open_repair_issue,
+                            repair_before_reboot,
+                            upgrade_allowed,
+                            verdict_message,
+                        )
+
+                        repair = repair_before_reboot()
+                        verdict = str(repair.get("verdict") or "NO-GO")
+                        summary = str(repair.get("summary_text") or verdict)
+                        bundle = str(repair.get("bundle") or "")
+                        sink(summary + "\n")
+                        sink(verdict_message(verdict, bundle) + "\n")
+                        notice = verdict_message(verdict, bundle)
+
+                        def _show_verdict(text: str = notice, ok: bool = upgrade_allowed(verdict)) -> None:
+                            if ok:
+                                messagebox.showinfo(title, text)
+                            else:
+                                messagebox.showerror(title, text)
+
+                        self.after(0, _show_verdict)
+                        try:
+                            issue = open_repair_issue(repair)
+                            sink(f"GitHub issue form: {issue}\n")
+                        except Exception as issue_error:
+                            sink(f"GitHub issue form: {issue_error}\n")
+                        if not upgrade_allowed(verdict):
+                            code = 2
+                    if code is None:
+                        code = run_pipeline(
+                            sink,
+                            quiet=True,
+                            resume=getattr(self, "_resume_chain", False),
+                        )
                 try:
                     from engine.logutil import load_state  # type: ignore
 
@@ -1691,6 +1723,20 @@ def main() -> None:
                         raise
                     except Exception:
                         pass
+                if "--oneclick" in argv_l or "-oneclick" in argv_l:
+                    from engine.pre_reboot import (  # type: ignore
+                        open_repair_issue,
+                        repair_before_reboot,
+                        upgrade_allowed,
+                        verdict_message,
+                    )
+
+                    repair = repair_before_reboot()
+                    print(repair.get("summary_text") or repair.get("verdict"))
+                    print(verdict_message(str(repair.get("verdict") or ""), str(repair.get("bundle") or "")))
+                    print(open_repair_issue(repair))
+                    if not upgrade_allowed(str(repair.get("verdict") or "")):
+                        raise SystemExit(2)
                 code = run_pipeline(resume="--resume" in argv_l or "--boot-resume" in argv_l)
                 if code in (EXIT_BLOCKED, EXIT_FAILED):
                     kind, detail = _failure_detail(code=code)

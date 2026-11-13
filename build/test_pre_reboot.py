@@ -27,8 +27,12 @@ from engine.pre_reboot import (  # noqa: E402
     attach_export_times,
     inventory_bcd_backups,
     parse_store_enum,
+    redact_issue_text,
     repair_before_reboot,
+    repair_issue_url,
     store_is_known_good,
+    upgrade_allowed,
+    verdict_message,
 )
 from engine.sysreserved import destructive_esp_opt_in, font_cleanup_opt_in  # noqa: E402
 
@@ -204,6 +208,45 @@ def test_repair_uses_183805_backup_and_does_not_delete(tmp: Path) -> None:
     assert parsed["delete_partitions"] is False
 
 
+def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
+    import os
+
+    assert upgrade_allowed("GO") is True
+    assert upgrade_allowed("NO-GO") is False
+    assert upgrade_allowed("REVIEW") is False
+    os.environ["USERNAME"] = "Alice"
+    os.environ["COMPUTERNAME"] = "DESKTOP-SECRET"
+    raw = (
+        "Owner Alice on DESKTOP-SECRET email alice@example.com "
+        "MAC 00-11-22-33-44-55 serial number: ABCD1234 "
+        r"C:\Users\Alice\AppData\Local\Win11MagicUpgrade\repair.zip"
+    )
+    cleaned = redact_issue_text(raw)
+    assert "Alice" not in cleaned
+    assert "DESKTOP-SECRET" not in cleaned
+    assert "alice@example.com" not in cleaned
+    assert "00-11-22-33-44-55" not in cleaned
+    assert "ABCD1234" not in cleaned
+    url = repair_issue_url(
+        {
+            "verdict": "NO-GO",
+            "summary_text": raw,
+            "bundle": r"C:\Users\Alice\AppData\Local\Win11MagicUpgrade\repair.zip",
+        }
+    )
+    assert url.startswith("https://github.com/dlnraja/win11-magic-upgrade/issues/new?")
+    assert "ghp_" not in url and "github_pat_" not in url and "Bearer" not in url
+    assert "Alice" not in url
+    assert "NO-GO" in verdict_message("NO-GO", r"C:\Users\Alice\zip")
+    assert "GO" in verdict_message("GO", "")
+    source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
+    assert "auto_action = \"oneclick\"" in source
+    assert "repair_before_reboot()" in source
+    assert "upgrade_allowed" in source
+    # startup self-update still runs before the GUI
+    assert source.index("startup_update(argv)") < source.index("if not argv and auto_action is None")
+
+
 def main() -> None:
     import tempfile
 
@@ -211,6 +254,7 @@ def main() -> None:
     test_gpt_style_from_guid_and_star()
     test_postflight_ignores_mountvol_when_storage_works()
     test_one_click_does_not_expand_without_opt_in()
+    test_oneclick_stops_unless_go_and_issue_url_is_redacted()
     with tempfile.TemporaryDirectory() as name:
         test_repair_uses_183805_backup_and_does_not_delete(Path(name))
     print("test_pre_reboot ok")

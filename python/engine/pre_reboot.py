@@ -8,6 +8,7 @@ rewritten by a heal. Partitions are never deleted.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import zipfile
@@ -625,3 +626,56 @@ def repair_before_reboot(
     }
     _write_bundle(state, report, log_text)
     return report
+
+
+_SERIAL_FIELD = re.compile(r"(?i)(serial(?:\s*number)?\s*[:=]\s*)([A-Za-z0-9._\-]+)")
+_ISSUE_REPO = "dlnraja/win11-magic-upgrade"
+
+
+def upgrade_allowed(verdict: str) -> bool:
+    """One-Click continues the upgrade only after a GO verdict."""
+    return (verdict or "").strip().upper() == "GO"
+
+
+def redact_issue_text(text: str) -> str:
+    cleaned = sanitize_text(text or "")
+    return _SERIAL_FIELD.sub(r"\1<SERIAL>", cleaned)
+
+
+def verdict_message(verdict: str, zip_path: str) -> str:
+    if upgrade_allowed(verdict):
+        head = "GO — the boot repair checked out. The upgrade can continue."
+    else:
+        head = "NO-GO — the upgrade will not continue. Do not reboot until this is resolved."
+    shown = redact_issue_text(zip_path or "")
+    return head + "\n\nDiagnostic zip (drag this file onto the GitHub issue):\n" + shown
+
+
+def repair_issue_url(report: dict[str, Any], *, repo: str = _ISSUE_REPO) -> str:
+    """Browser issue form. No token is placed in the URL or the exe."""
+    from urllib.parse import urlencode
+
+    verdict = str(report.get("verdict") or "NO-GO")
+    body = redact_issue_text(str(report.get("summary_text") or ""))
+    body += "\n\nDrag this diagnostic zip onto the issue:\n"
+    body += redact_issue_text(str(report.get("bundle") or "")) + "\n"
+    query = urlencode(
+        {
+            "title": f"One-Click repair before reboot: {verdict}"[:140],
+            "body": body[:5000],
+        }
+    )
+    return f"https://github.com/{repo}/issues/new?{query}"
+
+
+def open_repair_issue(report: dict[str, Any]) -> str:
+    url = repair_issue_url(report)
+    if os.environ.get("MAGIC_NO_BROWSER", "").strip().lower() in ("1", "true", "yes"):
+        return url
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception:
+        pass
+    return url
