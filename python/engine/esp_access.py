@@ -1015,7 +1015,13 @@ def open_bcdboot_letter(path: str | None, decision: BootDecision | None = None) 
         letter = str(plan.get("letter") or "")
         if not guid or not letter:
             return False
-        code, _out = _run(["mountvol", letter, str(guid)], timeout=60)
+        from .drive_map import mountvol_assign_args
+
+        try:
+            argv = mountvol_assign_args(letter, str(guid))
+        except ValueError:
+            return False
+        code, _out = _run(argv, timeout=60)
         return code == 0 and Path(f"{letter}\\").exists()
 
     letter, tried = assign_bcdboot_letter(

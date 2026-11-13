@@ -37,32 +37,74 @@ def redact_serial(serial: str | None) -> str:
     return f"{s[:2]}…{s[-2:]}"
 
 
-_VOLUME_GUID = re.compile(
-    r"(?i)^\\\\\?\\volume\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}\\*$"
-)
 BCD_MIN_FREE_BYTES = 32 * 1024 * 1024
 
 
-def normalize_volume_guid_path(value: str | None) -> str | None:
-    """Turn a JSON-escaped ``\\\\?\\Volume{...}`` into ``\\\\?\\Volume{...}\\``.
+def volume_path_from_guid(guid: str) -> str:
+    """Build ``\\\\?\\Volume{guid}\\`` from the raw GUID. One backslash per separator."""
+    raw = str(guid).strip().strip("{}")
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", raw):
+        raise ValueError(f"not a volume GUID: {guid!r}")
+    return "\\\\?\\Volume{" + raw.lower() + "}\\"
 
-    The returned path has the Win32 prefix and exactly one trailing slash.
-    A doubled prefix is what produces WinError 3.
+
+def normalize_volume_guid_path(value: str | None) -> str | None:
+    """Read a GUID out of a real path, a JSON string, or a repr, and rebuild it.
+
+    The result is always ``\\\\?\\Volume{guid}\\`` at runtime. A doubled prefix
+    is WinError 3 and is never returned.
     """
     if value is None:
         return None
-    text = str(value).strip().strip('"').strip("'").replace("/", "\\")
-    if not text:
-        return None
-    for _ in range(4):
-        if re.match(r"(?i)^\\\\{2,}\?\\{2,}volume\{", text):
-            text = text.replace("\\\\", "\\")
-        else:
-            break
-    match = _VOLUME_GUID.match(text)
+    text = str(value).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    match = re.search(
+        r"(?i)volume\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}",
+        text,
+    )
     if not match:
         return None
-    return "\\\\?\\Volume{" + match.group(1).lower() + "}\\"
+    return volume_path_from_guid(match.group(1))
+
+
+def has_doubled_backslash_run(value: str | None) -> bool:
+    """True when a path still contains three or more backslashes in a row."""
+    return "\\\\\\" in str(value or "")
+
+
+def letter_root_for_io(access: str | None, assign: Callable[[str], str | None]) -> str:
+    """A drive root for os/shutil. A volume GUID is assigned a temporary letter first."""
+    text = str(access or "")
+    if has_doubled_backslash_run(text):
+        text = normalize_volume_guid_path(text) or ""
+    letter = bare_bcdboot_letter(text)
+    if letter:
+        root = letter + "\\"
+    else:
+        guid = normalize_volume_guid_path(text)
+        if not guid or has_doubled_backslash_run(guid):
+            raise ValueError("volume path is not \\\\?\\Volume{GUID}\\")
+        assigned = assign(guid)
+        letter = bare_bcdboot_letter(assigned or "")
+        if not letter:
+            raise ValueError("temporary letter was not assigned")
+        root = letter + "\\"
+    if has_doubled_backslash_run(root) or normalize_volume_guid_path(root):
+        raise ValueError("os path must be a drive letter")
+    return root
+
+
+def mountvol_assign_args(letter: str, volume: str) -> list[str]:
+    """mountvol argv. The volume argument is a real ``\\\\?\\Volume{GUID}\\`` path."""
+    guid = normalize_volume_guid_path(volume)
+    bare = bare_bcdboot_letter(letter)
+    if not guid or not bare or has_doubled_backslash_run(guid):
+        raise ValueError("mountvol needs a bare letter and a single-prefix volume path")
+    argv = ["mountvol", bare, guid]
+    if any(has_doubled_backslash_run(part) for part in argv):
+        raise ValueError("doubled backslashes in mountvol args")
+    return argv
 
 
 def access_root(value: str | None) -> str | None:

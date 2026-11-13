@@ -25,8 +25,12 @@ from engine.drive_map import (  # noqa: E402
     bcdboot_disk_full,
     bcdboot_invalid_name,
     bcdboot_remediation,
+    has_doubled_backslash_run,
     is_our_esp_junk,
+    letter_root_for_io,
     locale_dirs_to_drop,
+    mountvol_assign_args,
+    volume_path_from_guid,
     bcdboot_letter_plan,
     bcdboot_source_root,
     plan_bcdboot_letter,
@@ -628,6 +632,27 @@ def test_bcdboot_uses_resolved_target() -> None:
     order_112 = bcdboot_remediation(112)
     assert any("/l" in line for line in order_112)
     assert any("MAGIC_ESP_EXPAND" in line for line in order_112)
+    guid = "b95f9bc1-965f-43ae-81ff-28b0e4909488"
+    canonical = volume_path_from_guid(guid)
+    assert canonical == "\\\\?\\Volume{" + guid + "}\\"
+    assert not has_doubled_backslash_run(canonical)
+    doubled = canonical.replace("\\", "\\\\")
+    assert normalize_volume_guid_path(doubled) == canonical
+    assert normalize_volume_guid_path(repr(canonical)) == canonical
+    seen: list[str] = []
+
+    def _assign(path: str) -> str:
+        seen.append(path)
+        assert path == canonical
+        assert not has_doubled_backslash_run(path)
+        return "Z:"
+
+    root = letter_root_for_io(doubled, _assign)
+    assert root == "Z:\\"
+    assert seen == [canonical]
+    argv = mountvol_assign_args("Z:", repr(canonical))
+    assert argv == ["mountvol", "Z:", canonical]
+    assert all(not has_doubled_backslash_run(part) for part in argv)
 
 
 def test_hybrid_mbr2gpt_and_openduet() -> None:

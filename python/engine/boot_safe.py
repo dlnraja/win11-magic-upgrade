@@ -777,9 +777,17 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
         part_done = True
         if part_fix.get("ok"):
             summary["actions"].append("partition_backup_restore_ok")
+        elif part_fix.get("verdict") == "NO-GO":
+            summary["verdict"] = "NO-GO"
+            summary["bootable"] = False
+            log("NO-GO: partition backup failed. Boot files will not be written.", "ERROR")
+            return summary
     except Exception as e:
         summary["actions"].append(f"partition_repair_skip:{type(e).__name__}")
-        log(f"Partition backup/restore: {e}", "WARN")
+        summary["verdict"] = "NO-GO"
+        summary["bootable"] = False
+        log(f"NO-GO: partition backup/restore failed: {e}", "ERROR")
+        return summary
 
     # 2) BCD import after files are back on the volume
     if restore_bcd_from_last():
