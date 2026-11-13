@@ -1,9 +1,8 @@
-"""One-Click policy when the PC is already Windows 11.
+"""One-Click policy for every source Windows version.
 
-The first attempt is only an official in-place feature update (Windows Update
-or setup.exe /auto upgrade). Bypass, MBR to GPT, ESP/SRP changes, and Boot Fix
-stay off. A failure may add one matching remediation and one retry. Windows 10
-and older keep the full migration path.
+Windows 7, 8, 8.1, 10, and 11 all start with the official in-place path to the
+latest Windows 11 pin. Bypass and EFI or BIOS boot changes stay off until a
+logged failure, then only the matching actions run, once.
 """
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ class FailureAssessment:
 
 @dataclass(frozen=True)
 class OneClickPlan:
-    path: str  # full_migration | health_check_only | cumulative_update | inplace_least
+    path: str  # health_check_only | cumulative_update | inplace_least
     allow_bypass: bool = False
     allow_mbr2gpt: bool = False
     allow_esp: bool = False
@@ -67,12 +66,8 @@ def decide_oneclick(
 ) -> OneClickPlan:
     if not is_windows_11(build):
         return OneClickPlan(
-            path="full_migration",
-            allow_bypass=True,
-            allow_mbr2gpt=True,
-            allow_esp=True,
-            allow_boot_fix=True,
-            reason="Windows 10 or older keeps the full migration path.",
+            path="inplace_least",
+            reason="Windows 7, 8, 8.1, or 10: official setup /auto upgrade to the latest Windows 11 first.",
         )
     host_key = _version_key(display_version)
     target_key = _version_key(target_version)

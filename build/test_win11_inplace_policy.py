@@ -24,10 +24,21 @@ from engine.win11_inplace_policy import (  # noqa: E402
 TARGET = dict(target_version="26H2", target_build=26300, target_ubr=9725)
 
 
-def test_windows_10_keeps_full_migration() -> None:
-    plan = decide_oneclick(build=19045, ubr=3803, display_version="22H2", **TARGET)
-    assert plan.path == "full_migration"
-    assert plan.allow_bypass and plan.allow_mbr2gpt and plan.allow_esp and plan.allow_boot_fix
+def test_older_windows_starts_official_too() -> None:
+    hosts = (
+        (7601, "Windows 7"),
+        (9200, "Windows 8"),
+        (9600, "Windows 8.1"),
+        (19045, "22H2"),
+        (10240, "1507"),
+    )
+    for build, label in hosts:
+        plan = decide_oneclick(build=build, ubr=1, display_version=label, **TARGET)
+        assert plan.path == "inplace_least", label
+        assert not plan.allow_bypass
+        assert not plan.allow_mbr2gpt
+        assert not plan.allow_esp
+        assert not plan.allow_boot_fix
 
 
 def test_already_latest_is_health_check_only() -> None:
@@ -115,7 +126,7 @@ def test_failure_picks_one_matching_retry() -> None:
 
 
 def main() -> None:
-    test_windows_10_keeps_full_migration()
+    test_older_windows_starts_official_too()
     test_already_latest_is_health_check_only()
     test_behind_win11_is_official_inplace_only()
     test_failure_picks_one_matching_retry()

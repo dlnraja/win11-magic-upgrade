@@ -1108,8 +1108,6 @@ def _maybe_win11_least(report, target, *, dry_run: bool, quiet: bool) -> int | N
         target_ubr=int(getattr(target, "ubr", 0) or 0),
     )
     log(f"One-Click path: {plan.path}. {plan.reason}", "STEP")
-    if plan.path == "full_migration":
-        return None
     if plan.path == "health_check_only":
         log(
             "Already on the latest Windows 11. No bypass, disk, or boot changes. "
