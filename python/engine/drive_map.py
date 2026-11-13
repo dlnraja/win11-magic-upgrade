@@ -776,9 +776,18 @@ def access_chain(
         steps.append(MountPlan("assign_letter", f"{free}:", free, True, folder_fallback))
         steps.append(MountPlan("diskpart_assign", f"{free}:", free, True, folder_fallback))
     steps.append(MountPlan("folder", folder_fallback, None, True, folder_fallback))
+    if free and _real_volume_guid(volume.volume_guid):
+        steps.append(MountPlan("mountvol_guid", f"{free}:", free, True, folder_fallback))
     if free and (firmware or "").upper() == "UEFI":
         steps.append(MountPlan("mountvol", f"{free}:", free, True, folder_fallback))
     return tuple(steps)
+
+
+def _real_volume_guid(value: str | None) -> str:
+    text = normalize_guid(value)
+    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text):
+        return text
+    return ""
 
 
 def _windows_disk(drive_map: DriveMap) -> int | None:

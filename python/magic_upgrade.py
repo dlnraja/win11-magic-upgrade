@@ -1510,6 +1510,12 @@ def main() -> None:
         install_exception_hooks()
     except Exception:
         pass
+    try:
+        from engine.stale_letters import sweep_stale_letters  # type: ignore
+
+        sweep_stale_letters(when="startup")
+    except Exception:
+        pass
     auto_action = _parse_auto_action(argv)
     strings = load_strings(root)
     try:

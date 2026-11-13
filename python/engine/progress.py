@@ -108,6 +108,12 @@ def end_session(*, success: bool = True) -> None:
         step = str(_session.get("phase_label") or "")
     _emit()
     try:
+        from .stale_letters import sweep_stale_letters
+
+        sweep_stale_letters(when="end")
+    except Exception:
+        pass
+    try:
         from .run_diag import finish_run
 
         finish_run(mode="session", step=step)
