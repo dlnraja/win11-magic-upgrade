@@ -92,7 +92,7 @@ def test_token_posts_secret_gist_and_capped_issue() -> None:
     def post(url: str, payload: dict, token: str, timeout: int = 20) -> tuple[int, str]:
         calls.append((url, payload))
         assert token == "sek"
-        assert timeout == 20
+        assert timeout == 5
         if url.endswith("/gists"):
             assert payload["public"] is False
             return 201, '{"html_url":"https://gist.github.com/example/abc"}'

@@ -1572,9 +1572,9 @@ def _no_args_guard() -> None:
 
 def _no_args_update() -> None:
     try:
-        from engine.self_update import startup_update  # type: ignore
+        from engine.self_update import startup_update_async  # type: ignore
 
-        startup_update([])
+        startup_update_async([])
     except Exception:
         pass
 
@@ -1618,9 +1618,9 @@ def _main_after_no_args() -> None:
     auto_action = _parse_auto_action(argv)
     strings = load_strings(root)
     try:
-        from engine.self_update import startup_update  # type: ignore
+        from engine.self_update import startup_update_async  # type: ignore
 
-        startup_update(argv)
+        startup_update_async(argv)
     except Exception:
         pass
 

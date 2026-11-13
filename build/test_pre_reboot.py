@@ -295,7 +295,7 @@ def test_startup_guard_skips_only_when_asked_and_blocks_upgrade(tmp: Path) -> No
     assert report["verdict"] == "NO-GO"
     assert "startup_budget_exceeded" in (report.get("plan") or {}).get("go_blockers", [])
     source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
-    assert source.index("startup_update(argv)") < source.index("startup_boot_guard(argv)")
+    assert source.index("startup_update_async(argv)") < source.index("startup_boot_guard(argv)")
 
 
 def _path(present: bool, healthy: bool) -> dict:
@@ -416,8 +416,8 @@ def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
     assert "upgrade_allowed" in source
     body = source.split("def _main_after_no_args", 1)[1]
     assert "console_countdown(" in body
-    # Self-update still runs before the no-args countdown and the official update.
-    assert body.index("startup_update(argv)") < body.index("console_countdown(")
+    # The update check is scheduled before the countdown and does not wait on the network.
+    assert body.index("startup_update_async(argv)") < body.index("console_countdown(")
 
 
 def main() -> None:

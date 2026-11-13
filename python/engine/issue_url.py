@@ -71,7 +71,7 @@ def _gh_skip() -> bool:
     return os.environ.get("MAGIC_SKIP_GH_ISSUE", "").strip().lower() in ("1", "true", "yes")
 
 
-def _default_http(url: str, payload: dict, token: str, timeout: int = 20) -> tuple[int, str]:
+def _default_http(url: str, payload: dict, token: str, timeout: int = 5) -> tuple[int, str]:
     request = Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -87,7 +87,7 @@ def _default_http(url: str, payload: dict, token: str, timeout: int = 20) -> tup
         return int(response.status), response.read().decode("utf-8", errors="replace")
 
 
-def _default_gh(args: list[str], timeout: int = 20) -> tuple[int, str]:
+def _default_gh(args: list[str], timeout: int = 5) -> tuple[int, str]:
     try:
         proc = subprocess.run(
             ["gh", *args],
@@ -128,14 +128,20 @@ def file_report(
     token: str | None = None,
     http_post=None,
     gh_run=None,
+    queue_on_failure: bool = True,
 ) -> dict[str, str] | None:
     """Create an issue when gh is logged in or a token is set. Otherwise return None."""
+    from .offline import CONNECT_TIMEOUT
+
     if _gh_skip():
         return None
     secret = github_token() if token is None else token
     run = gh_run or _default_gh
     post = http_post or _default_http
-    authed = bool(secret) or run(["auth", "status"], 15)[0] == 0
+    try:
+        authed = bool(secret) or run(["auth", "status"], CONNECT_TIMEOUT)[0] == 0
+    except Exception:
+        authed = bool(secret)
     if not authed:
         return None
     gist_url = ""
@@ -150,7 +156,7 @@ def file_report(
                     "files": {name: {"content": text or " "} for name, text in payload_files.items()},
                 },
                 secret,
-                20,
+                CONNECT_TIMEOUT,
             )
             if status in (200, 201):
                 gist_url = str(json.loads(raw).get("html_url") or "")
@@ -166,7 +172,7 @@ def file_report(
                     dest = Path(tmp) / name
                     dest.write_text(text or " ", encoding="utf-8")
                     paths.append(str(dest))
-                code, out = run(["gist", "create", "--secret", *paths], 25)
+                code, out = run(["gist", "create", "--secret", *paths], CONNECT_TIMEOUT)
             if code == 0:
                 match = re.search(r"https://gist\.github\.com/\S+", out)
                 gist_url = match.group(0) if match else ""
@@ -183,21 +189,28 @@ def file_report(
                 "https://api.github.com/repos/dlnraja/win11-magic-upgrade/issues",
                 {"title": title[:180], "body": issue_body, "labels": [label]},
                 secret,
-                20,
+                CONNECT_TIMEOUT,
             )
             if status in (200, 201):
                 issue_url = str(json.loads(raw).get("html_url") or "")
         except Exception:
             issue_url = ""
     if not issue_url:
-        code, out = run(
-            ["issue", "create", "--title", title[:180], "--body", issue_body, "--label", label],
-            25,
-        )
+        try:
+            code, out = run(
+                ["issue", "create", "--title", title[:180], "--body", issue_body, "--label", label],
+                CONNECT_TIMEOUT,
+            )
+        except Exception:
+            code, out = 1, ""
         if code == 0:
             match = re.search(r"https://github.com/\S+/issues/\d+", out)
             issue_url = match.group(0) if match else ""
     if not issue_url:
+        if queue_on_failure:
+            from .offline import queue_redacted_report
+
+            queue_redacted_report(title=title, body=issue_body, reason="GitHub did not accept the report")
         return None
     return {"url": issue_url, "gist": gist_url}
 

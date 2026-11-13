@@ -60,7 +60,7 @@ def _repo() -> str:
 
 
 def _gh_available() -> bool:
-    code, out = _run(["gh", "auth", "status"], timeout=30)
+    code, out = _run(["gh", "auth", "status"], timeout=5)
     return code == 0 or "Logged in" in out
 
 
@@ -285,7 +285,7 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
             "--limit",
             "3",
         ],
-        timeout=60,
+        timeout=5,
     )
     if code == 0 and search.strip().startswith("["):
         try:
@@ -313,7 +313,7 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
         ]
         for lab in LABELS:
             cmd.extend(["--label", lab])
-        code, out = _run(cmd, timeout=90)
+        code, out = _run(cmd, timeout=5)
         if code == 0 and "http" in out:
             url = out.strip().splitlines()[-1].strip()
             log(f"GitHub autodiag issue created: {url}", "OK")
@@ -336,7 +336,7 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
             },
         )
         try:
-            with urlopen(req, timeout=60) as resp:
+            with urlopen(req, timeout=5) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 parsed = json.loads(raw)
                 url = parsed.get("html_url")
@@ -347,6 +347,9 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
             log(f"GitHub API issue create failed: {sanitize_text(str(e))}", "WARN")
 
     from .issue_url import prefilled_issue_url, short_issue_body
+    from .offline import queue_redacted_report
+
+    queue_redacted_report(title=title, body=body, reason="GitHub did not accept the report")
 
     first = ""
     for line in (body or "").splitlines():

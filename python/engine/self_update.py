@@ -234,7 +234,7 @@ def _read_json(url: str, timeout: int, opener: Callable | None) -> dict[str, Any
 def fetch_latest_release(
     *,
     repo: str = DEFAULT_REPO,
-    timeout: int = 20,
+    timeout: int = 5,
     opener: Callable | None = None,
 ) -> dict[str, Any] | None:
     return _read_json(_API.format(repo=repo), timeout, opener)
@@ -268,7 +268,7 @@ def load_pins() -> dict[str, Any]:
 def refresh_pins(
     *,
     repo: str = DEFAULT_REPO,
-    timeout: int = 20,
+    timeout: int = 5,
     opener: Callable | None = None,
 ) -> dict[str, Any]:
     """Refresh Win11 floor and OpenCore pin when the network works. Offline keeps the last good copy."""
@@ -277,7 +277,7 @@ def refresh_pins(
         return load_pins()
     data = _read_json(_PINS_URL.format(repo=repo), timeout, opener)
     if not isinstance(data, dict):
-        log("Pin refresh offline; using the saved pins", "INFO")
+        log("Pin refresh skipped: no network. Using the saved pins.", "WARN")
         return load_pins()
     oc = data.get("opencore") or {}
     floor = data.get("win11_floor") or {}
@@ -485,7 +485,7 @@ def check_for_update(
     *,
     argv: list[str] | None = None,
     opener: Callable | None = None,
-    timeout: int = 20,
+    timeout: int = 5,
 ) -> dict[str, Any]:
     """Query the latest release. Stage a verified download only when it is safe to do so."""
     current = current_version()
@@ -511,7 +511,7 @@ def check_for_update(
         decision = decide_update(current=current, latest=None, offline=True)
         result["status"] = decision.status
         result["notes"] = decision.reason
-        log(decision.reason, "INFO")
+        log(decision.reason, "WARN")
         return result
     tag = str(payload.get("tag_name") or "")
     latest = tag.lstrip("vV")
@@ -540,6 +540,35 @@ def check_for_update(
     except Exception:
         pass
     return result
+
+
+def startup_update_async(argv: list[str] | None = None) -> dict[str, Any]:
+    """Apply a local staged build, then look for a newer one without blocking startup."""
+    from .issue_url import run_in_background
+    from .offline import CONNECT_TIMEOUT, retry_pending_reports
+
+    if boot_flags_present(argv):
+        log("Self-update skipped: a boot-critical action is starting", "INFO")
+        return {"status": "deferred"}
+    if "--no-update" in {a.lower() for a in (argv or [])} or (
+        update_disabled(argv) and "--update" not in {a.lower() for a in (argv or [])}
+    ):
+        log("Self-update disabled", "INFO")
+        return {"status": "skipped"}
+    root = updates_root()
+    try:
+        if apply_staged(root):
+            log("Staged update is now the current build. The previous build was kept for rollback.", "OK")
+    except Exception as exc:
+        log(f"Staged update was not applied: {exc}", "WARN")
+
+    def _network() -> None:
+        refresh_pins(timeout=CONNECT_TIMEOUT)
+        check_for_update(argv=argv, timeout=CONNECT_TIMEOUT)
+        retry_pending_reports()
+
+    run_in_background(_network, name="startup-network")
+    return {"status": "scheduled"}
 
 
 def startup_update(argv: list[str] | None = None) -> dict[str, Any]:
