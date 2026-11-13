@@ -26,21 +26,39 @@ def ensure_stdio() -> None:
         sys.stderr = _open_sink()
 
 
-def _open_sink():
+def _open_sink() -> "_Quiet":
+    """A sink that is never a console. Windows treats NUL as a character device."""
+    raw = None
     try:
-        return open(os.devnull, "w", encoding="utf-8", errors="replace")
+        raw = open(os.devnull, "w", encoding="utf-8", errors="replace")
     except OSError:
-        return _Silent()
+        raw = None
+    return _Quiet(raw)
 
 
-class _Silent:
+class _Quiet:
     encoding = "utf-8"
 
+    def __init__(self, raw: object | None = None) -> None:
+        self._raw = raw
+
     def write(self, text: str = "") -> int:
+        if self._raw is not None:
+            try:
+                written = self._raw.write(text)
+                if isinstance(written, int):
+                    return written
+            except Exception:
+                pass
         return len(text or "")
 
     def flush(self) -> None:
-        return None
+        if self._raw is None:
+            return
+        try:
+            self._raw.flush()
+        except Exception:
+            pass
 
     def isatty(self) -> bool:
         return False

@@ -28,7 +28,7 @@ def short_issue_body(
         f"Version: {version}",
         f"Error: {(error or '').strip()[:500]}",
         f"Context: {(context or '').strip()[:400]}",
-        f"Attach the saved redacted report: {report_path}",
+        f"Attach the saved redacted report. Full diagnostic zip: {report_path}",
     ]
     return "\n".join(lines)
 
