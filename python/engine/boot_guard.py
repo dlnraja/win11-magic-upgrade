@@ -202,6 +202,10 @@ def write_autoheal_scripts() -> dict[str, str]:
     paths: dict[str, str] = {}
     rem = STATE_DIR / "remediation"
     rem.mkdir(parents=True, exist_ok=True)
+    from .boot_safe import resolve_loader_guid
+
+    _loader_code, loader_text = _run(["bcdedit", "/enum", "all"], timeout=30)
+    loader = resolve_loader_guid(loader_text or "")
     auto = rem / "AutoHeal-Boot.cmd"
     auto.write_text(
         "\r\n".join(
@@ -212,8 +216,8 @@ def write_autoheal_scripts() -> dict[str, str]:
                 "if not defined SYS set SYS=C:\\Windows",
                 "echo === AutoHeal Boot ===",
                 "reagentc /enable >nul 2>&1",
-                "bcdedit /set {current} recoveryenabled Yes >nul 2>&1",
-                "bcdedit /set {current} bootstatuspolicy IgnoreAllFailures >nul 2>&1",
+                f"bcdedit /set {loader} recoveryenabled Yes >nul 2>&1",
+                f"bcdedit /set {loader} bootstatuspolicy IgnoreAllFailures >nul 2>&1",
                 "bcdboot %SYS% /f UEFI",
                 "if errorlevel 1 bcdboot %SYS% /f ALL",
                 "bootrec /fixboot",
@@ -340,8 +344,12 @@ def arm_boot_safety_net(*, before_setup: bool = False) -> dict[str, Any]:
     except Exception as e:
         result["actions"].append(f"winre_warn:{e}")
 
-    _run(["bcdedit", "/set", "{current}", "recoveryenabled", "Yes"])
-    _run(["bcdedit", "/set", "{current}", "bootstatuspolicy", "IgnoreAllFailures"])
+    from .boot_safe import resolve_loader_guid
+
+    _loader_code, loader_text = _run(["bcdedit", "/enum", "all"], timeout=30)
+    loader = resolve_loader_guid(loader_text or "")
+    _run(["bcdedit", "/set", loader, "recoveryenabled", "Yes"])
+    _run(["bcdedit", "/set", loader, "bootstatuspolicy", "IgnoreAllFailures"])
     result["actions"].append("recovery_policy")
 
     if install_boot_watchdog():

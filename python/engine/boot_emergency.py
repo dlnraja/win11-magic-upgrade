@@ -64,7 +64,7 @@ def _bcdedit(*args: str, timeout: int = 90) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 
 
-def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]:
+def deep_boot_verification(*, prefer_uefi: bool | None = None, mounted: str | None = None) -> dict[str, Any]:
     """
     Maximum practical boot-path checks (no reboot test):
       winload on disk, BCD device/osdevice, EFI/BIOS files, Secure Boot, firmware enum,
@@ -110,7 +110,9 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]
         from .sysreserved import mount_esp, unmount_letter
         from .boot_safe import inspect_boot_files_on_letter
 
-        mounted = mount_esp()
+        owns_mount = mounted is None
+        if owns_mount:
+            mounted = mount_esp()
         try:
             if mounted:
                 files = inspect_boot_files_on_letter(mounted)
@@ -143,7 +145,7 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]
                 # A BIOS machine with no ESP is not a failure.
                 _check("esp_mountable", not uefi, warn=not uefi)
         finally:
-            if mounted:
+            if owns_mount and mounted:
                 try:
                     unmount_letter(mounted)
                 except Exception:
@@ -155,8 +157,12 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]
     c_bm, o_bm = _bcdedit("/enum", "{bootmgr}")
     _check("bcd_bootmgr", c_bm == 0 and bool(o_bm) and "cannot" not in (o_bm or "").lower())
 
-    c_cur, o_cur = _bcdedit("/enum", "{current}")
-    if c_cur != 0:
+    from .boot_safe import resolve_loader_guid
+
+    _all_code, all_text = _bcdedit("/enum", "all")
+    loader = resolve_loader_guid(all_text or "")
+    c_cur, o_cur = _bcdedit("/enum", loader)
+    if c_cur != 0 and loader != "{default}":
         c_cur, o_cur = _bcdedit("/enum", "{default}")
     _check("bcd_osloader", c_cur == 0 and bool(o_cur), warn=True)
 
@@ -457,7 +463,10 @@ def emergency_regenerate_bcd(*, prefer_uefi: bool | None = None) -> dict[str, An
     out["actions"].extend(heal_bcd_store(prefer_uefi=uefi))
 
     # Rebuild boot menu order: Windows first
-    _bcdedit("/displayorder", "{current}", "/addfirst")
+    from .boot_safe import resolve_loader_guid
+
+    _order_code, order_text = _bcdedit("/enum", "all")
+    _bcdedit("/displayorder", resolve_loader_guid(order_text or ""), "/addfirst")
     out["actions"].append("displayorder_current_first")
 
     verify = deep_boot_verification(prefer_uefi=uefi)
