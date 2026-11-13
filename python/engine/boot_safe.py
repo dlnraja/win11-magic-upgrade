@@ -149,8 +149,12 @@ def style_from_list_disk(text: str, disk_n: int) -> str:
 
 
 def bcdboot_succeeded(code: int, output: str) -> bool:
-    """Exit 32 and BcdOpenStore / BFSVC Error are failures even if other words look successful."""
+    """Exit 32, exit 123, and BcdOpenStore / BFSVC Error are failures."""
+    from .drive_map import bcdboot_disk_full, bcdboot_invalid_name
+
     text = output or ""
+    if bcdboot_invalid_name(code, text) or bcdboot_disk_full(code, text):
+        return False
     if re.search(
         r"BcdOpenStore|BFSVC Error|unexpected error|erreur inattendue|failed with",
         text,
@@ -773,9 +777,17 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
         part_done = True
         if part_fix.get("ok"):
             summary["actions"].append("partition_backup_restore_ok")
+        elif part_fix.get("verdict") == "NO-GO":
+            summary["verdict"] = "NO-GO"
+            summary["bootable"] = False
+            log("NO-GO: partition backup failed. Boot files will not be written.", "ERROR")
+            return summary
     except Exception as e:
         summary["actions"].append(f"partition_repair_skip:{type(e).__name__}")
-        log(f"Partition backup/restore: {e}", "WARN")
+        summary["verdict"] = "NO-GO"
+        summary["bootable"] = False
+        log(f"NO-GO: partition backup/restore failed: {e}", "ERROR")
+        return summary
 
     # 2) BCD import after files are back on the volume
     if restore_bcd_from_last():

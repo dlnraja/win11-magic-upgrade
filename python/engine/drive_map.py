@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 GPT_ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 MBR_EFI = 0xEF
@@ -37,32 +37,318 @@ def redact_serial(serial: str | None) -> str:
     return f"{s[:2]}…{s[-2:]}"
 
 
-_VOLUME_GUID = re.compile(
-    r"(?i)^\\\\\?\\volume\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}\\*$"
-)
 BCD_MIN_FREE_BYTES = 32 * 1024 * 1024
 
 
-def normalize_volume_guid_path(value: str | None) -> str | None:
-    """Turn a JSON-escaped ``\\\\?\\Volume{...}`` into ``\\\\?\\Volume{...}\\``.
+def volume_path_from_guid(guid: str) -> str:
+    """Build ``\\\\?\\Volume{guid}\\`` from the raw GUID. One backslash per separator."""
+    raw = str(guid).strip().strip("{}")
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", raw):
+        raise ValueError(f"not a volume GUID: {guid!r}")
+    return "\\\\?\\Volume{" + raw.lower() + "}\\"
 
-    The returned path has the Win32 prefix and exactly one trailing slash.
-    A doubled prefix is what produces WinError 3.
+
+def normalize_volume_guid_path(value: str | None) -> str | None:
+    """Read a GUID out of a real path, a JSON string, or a repr, and rebuild it.
+
+    The result is always ``\\\\?\\Volume{guid}\\`` at runtime. A doubled prefix
+    is WinError 3 and is never returned.
     """
     if value is None:
         return None
-    text = str(value).strip().strip('"').strip("'").replace("/", "\\")
-    if not text:
-        return None
-    for _ in range(4):
-        if re.match(r"(?i)^\\\\{2,}\?\\{2,}volume\{", text):
-            text = text.replace("\\\\", "\\")
-        else:
-            break
-    match = _VOLUME_GUID.match(text)
+    text = str(value).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    match = re.search(
+        r"(?i)volume\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}",
+        text,
+    )
     if not match:
         return None
-    return "\\\\?\\Volume{" + match.group(1).lower() + "}\\"
+    return volume_path_from_guid(match.group(1))
+
+
+def has_doubled_backslash_run(value: str | None) -> bool:
+    """True when a path still contains three or more backslashes in a row."""
+    return "\\\\\\" in str(value or "")
+
+
+def letter_root_for_io(access: str | None, assign: Callable[[str], str | None]) -> str:
+    """A drive root for os/shutil. A volume GUID is assigned a temporary letter first."""
+    text = str(access or "")
+    if has_doubled_backslash_run(text):
+        text = normalize_volume_guid_path(text) or ""
+    letter = bare_bcdboot_letter(text)
+    if letter:
+        root = letter + "\\"
+    else:
+        guid = normalize_volume_guid_path(text)
+        if not guid or has_doubled_backslash_run(guid):
+            raise ValueError("volume path is not \\\\?\\Volume{GUID}\\")
+        assigned = assign(guid)
+        letter = bare_bcdboot_letter(assigned or "")
+        if not letter:
+            raise ValueError("temporary letter was not assigned")
+        root = letter + "\\"
+    if has_doubled_backslash_run(root) or normalize_volume_guid_path(root):
+        raise ValueError("os path must be a drive letter")
+    return root
+
+
+def path_format_problem(value: str | None, *, trailing_slash: bool = False) -> str:
+    """Reject quotes and doubled backslashes. Volume paths keep one trailing slash."""
+    text = str(value or "")
+    if not text:
+        return "empty path"
+    if '"' in text or text[0] in "\"'" or text[-1] in "\"'":
+        return "stray quotes"
+    if has_doubled_backslash_run(text):
+        return "doubled backslashes"
+    guid = normalize_volume_guid_path(text)
+    if guid is not None:
+        if text != guid:
+            return "volume path is not canonical"
+        if trailing_slash and not text.endswith("\\"):
+            return "trailing backslash required"
+    elif trailing_slash and len(text) >= 2 and text[1] == ":" and not text.endswith("\\"):
+        return "trailing backslash required"
+    return ""
+
+
+def checked_directory(path: str, *, exists: Callable[[str], bool]) -> str:
+    """A directory path that is well formed and present."""
+    problem = path_format_problem(path, trailing_slash=True)
+    if problem:
+        raise ValueError(problem)
+    if not exists(path):
+        raise ValueError(f"path does not exist: {path}")
+    return path
+
+
+def tool_arg_problem(argv: list[str], input_text: str | None = None) -> str:
+    """Format check for diskpart, bcdboot, bcdedit, and mountvol before they start."""
+    if not argv:
+        return "empty command"
+    name = str(argv[0]).replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    if name not in {"diskpart", "diskpart.exe", "bcdboot", "bcdboot.exe", "bcdedit", "bcdedit.exe", "mountvol", "mountvol.exe"}:
+        return ""
+    parts = [str(part) for part in argv]
+    if input_text:
+        parts.append(str(input_text))
+    for part in parts:
+        if has_doubled_backslash_run(part):
+            return "doubled backslashes"
+        if '"' in part:
+            return "stray quotes"
+    if name.startswith("mountvol") and len(argv) >= 3 and normalize_volume_guid_path(str(argv[-1])):
+        problem = path_format_problem(str(argv[-1]), trailing_slash=True)
+        if problem:
+            return problem
+    if name.startswith("bcdboot") and "/s" in argv:
+        index = argv.index("/s")
+        target = argv[index + 1] if index + 1 < len(argv) else ""
+        if bare_bcdboot_letter(str(target)) != str(target).upper():
+            return "bcdboot /s must be a bare drive letter"
+    return ""
+
+
+def judge_mount(observed: Mapping[str, object], expected: Mapping[str, object]) -> str:
+    """Empty string means the letter is the expected readable partition."""
+    if not observed.get("exists"):
+        return "missing"
+    if not observed.get("readable"):
+        return "unreadable"
+    seen_guid = normalize_volume_guid_path(str(observed.get("guid") or "")) if observed.get("guid") else None
+    want_guid = normalize_volume_guid_path(str(expected.get("guid") or "")) if expected.get("guid") else None
+    if want_guid and seen_guid and seen_guid != want_guid:
+        return "wrong-guid"
+    if expected.get("disk") is not None and observed.get("disk") is not None and int(observed["disk"]) != int(expected["disk"]):
+        return "wrong-disk"
+    if (
+        expected.get("partition") is not None
+        and observed.get("partition") is not None
+        and int(observed["partition"]) != int(expected["partition"])
+    ):
+        return "wrong-partition"
+    if expected.get("esp") and observed.get("filesystem") not in (None, "", "FAT32"):
+        return "not-fat32"
+    return ""
+
+
+_MOUNT_CHAIN = ("mountvol", "Add-PartitionAccessPath", "diskpart assign")
+
+
+def open_checked_mount(
+    plan: Mapping[str, object],
+    steps: Mapping[str, Callable[[Mapping[str, object]], bool]],
+    *,
+    letter_free: Callable[[str], bool],
+    verify: Callable[[Mapping[str, object]], str],
+    release: Callable[[Mapping[str, object]], None],
+) -> dict[str, object]:
+    """Try mountvol, then Storage, then diskpart. A failed check is unmounted before the next try."""
+    letter = str(plan.get("letter") or "")
+    if bare_bcdboot_letter(letter) is None:
+        return {"ok": False, "letter": None, "method": "", "verdict": "NO-GO", "tried": (), "reason": "bad-letter"}
+    tried: list[str] = []
+    for name in _MOUNT_CHAIN:
+        step = steps.get(name)
+        if step is None:
+            continue
+        if not letter_free(letter):
+            tried.append(f"{name}:letter-busy")
+            continue
+        assigned = False
+        keep = False
+        try:
+            assigned = bool(step(plan))
+            if not assigned:
+                tried.append(f"{name}:assign-failed")
+                continue
+            problem = verify(plan) or ""
+            if problem:
+                tried.append(f"{name}:{problem}")
+                continue
+            keep = True
+            return {"ok": True, "letter": letter, "method": name, "verdict": "GO", "tried": tuple(tried), "reason": ""}
+        finally:
+            if assigned and not keep:
+                release(plan)
+    return {
+        "ok": False,
+        "letter": None,
+        "method": "",
+        "verdict": "NO-GO",
+        "tried": tuple(tried),
+        "reason": "mount-checks-failed",
+    }
+
+
+_PATH_STYLES = ("letter", "volume-guid", "device", "folder", "temp-letter")
+
+
+def device_path(volume_number: int) -> str:
+    """``\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeN\\`` from the volume number."""
+    if isinstance(volume_number, bool) or not isinstance(volume_number, int) or volume_number < 1:
+        raise ValueError(f"not a hard disk volume number: {volume_number!r}")
+    return f"\\\\?\\GLOBALROOT\\Device\\HarddiskVolume{volume_number}\\"
+
+
+def access_style_candidates(spec: Mapping[str, object]) -> list[tuple[str, str]]:
+    """Each path style at most once, in the fallback order. No retries."""
+    found: list[tuple[str, str]] = []
+    letter = bare_bcdboot_letter(str(spec.get("letter") or ""))
+    if letter:
+        found.append(("letter", letter + "\\"))
+    guid_text = spec.get("guid")
+    if guid_text:
+        guid = normalize_volume_guid_path(str(guid_text))
+        if guid is None:
+            try:
+                guid = volume_path_from_guid(str(guid_text))
+            except ValueError:
+                guid = None
+        if guid:
+            found.append(("volume-guid", guid))
+    number = spec.get("harddisk_volume")
+    if isinstance(number, int) and not isinstance(number, bool) and number >= 1:
+        found.append(("device", device_path(number)))
+    folder = str(spec.get("folder") or "")
+    if folder and path_format_problem(folder) == "":
+        if not folder.endswith("\\"):
+            folder += "\\"
+        if path_format_problem(folder, trailing_slash=True) == "":
+            found.append(("folder", folder))
+    found.append(("temp-letter", ""))
+    ordered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for style, path in found:
+        if style in seen or style not in _PATH_STYLES:
+            continue
+        seen.add(style)
+        ordered.append((style, path))
+        if len(ordered) == len(_PATH_STYLES):
+            break
+    return ordered
+
+
+def resolve_access_path(
+    spec: Mapping[str, object],
+    *,
+    probe: Callable[[str], Mapping[str, object]],
+    assign: Callable[[], str | None] | None = None,
+    need_letter: bool = False,
+    logger: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    """Try letter, GUID, device, folder, then a temp letter. First verified style wins."""
+    expected = {
+        "guid": spec.get("guid"),
+        "disk": spec.get("disk"),
+        "partition": spec.get("partition"),
+        "esp": spec.get("esp"),
+    }
+    tried: list[str] = []
+    for style, path in access_style_candidates(spec):
+        if style == "temp-letter":
+            if assign is None:
+                tried.append("temp-letter:no-assign")
+                break
+            given = assign()
+            letter = bare_bcdboot_letter(given or "")
+            if letter is None:
+                tried.append("temp-letter:assign-failed")
+                break
+            path = letter + "\\"
+        problem = path_format_problem(path, trailing_slash=True)
+        if problem:
+            tried.append(f"{style}:{problem}")
+            continue
+        try:
+            observed = probe(path)
+        except Exception as exc:
+            tried.append(f"{style}:{type(exc).__name__}")
+            continue
+        mismatch = judge_mount(observed, expected)
+        if mismatch:
+            tried.append(f"{style}:{mismatch}")
+            continue
+        drive = drive_letter_of(path)
+        letter = f"{drive}:" if drive else None
+        if need_letter and letter is None:
+            tried.append(f"{style}:not-a-letter")
+            continue
+        if logger is not None:
+            logger(f"path style {style} used")
+        return {
+            "ok": True,
+            "style": style,
+            "path": path,
+            "letter": letter,
+            "verdict": "GO",
+            "tried": tuple(tried),
+        }
+    if logger is not None:
+        logger("NO-GO: no path style resolved the partition")
+    return {
+        "ok": False,
+        "style": "",
+        "path": "",
+        "letter": None,
+        "verdict": "NO-GO",
+        "tried": tuple(tried),
+    }
+
+
+def mountvol_assign_args(letter: str, volume: str) -> list[str]:
+    """mountvol argv. The volume argument is a real ``\\\\?\\Volume{GUID}\\`` path."""
+    guid = normalize_volume_guid_path(volume)
+    bare = bare_bcdboot_letter(letter)
+    if not guid or not bare or has_doubled_backslash_run(guid):
+        raise ValueError("mountvol needs a bare letter and a single-prefix volume path")
+    argv = ["mountvol", bare, guid]
+    if any(has_doubled_backslash_run(part) for part in argv):
+        raise ValueError("doubled backslashes in mountvol args")
+    return argv
 
 
 def access_root(value: str | None) -> str | None:
@@ -96,35 +382,179 @@ def drive_letter_of(value: str | None) -> str | None:
     return None
 
 
-def bcdboot_target(value: str | None) -> str | None:
-    """bcdboot /s wants 'E:' or a mounted folder. A volume GUID is error 123."""
-    if normalize_volume_guid_path(value):
+def bare_bcdboot_letter(value: str | None) -> str | None:
+    """'S:' only. A trailing slash, quotes, a folder, or a volume GUID is error 123."""
+    if value is None:
         return None
-    root = access_root(value)
-    if not root:
+    text = str(value).strip()
+    if not text or text[0] in "\"'" or text[-1] in "\"'":
         return None
-    if len(root) == 3 and root[1] == ":" and root[2] == "\\":
+    if re.fullmatch(r"[A-Za-z]:", text):
+        return text.upper()
+    if normalize_volume_guid_path(text):
+        return None
+    root = access_root(text)
+    if root and len(root) == 3 and root[1] == ":" and root[2] == "\\":
         return root[:2]
-    return root.rstrip("\\")
+    return None
+
+
+def bcdboot_target(value: str | None) -> str | None:
+    """The only legal bcdboot /s value: a bare drive letter."""
+    return bare_bcdboot_letter(value)
+
+
+_BCD_ASSIGN_CHAIN = _MOUNT_CHAIN
+
+
+def plan_bcdboot_letter(path: str | None, used: Iterable[str]) -> dict[str, object]:
+    """Use the live letter. A folder or volume GUID needs a temporary letter first."""
+    bare = bare_bcdboot_letter(path)
+    if bare:
+        return {
+            "letter": bare,
+            "temporary": False,
+            "needs_assign": False,
+            "volume": None,
+            "folder": None,
+            "chain": (),
+        }
+    volume = normalize_volume_guid_path(path)
+    root = None if volume else access_root(path)
+    folder = root if root and bare_bcdboot_letter(root) is None else None
+    free = pick_free_letter(used) if (volume or folder) else None
+    return {
+        "letter": f"{free}:" if free else None,
+        "temporary": bool(volume or folder),
+        "needs_assign": bool(volume or folder),
+        "volume": volume,
+        "folder": folder,
+        "chain": _BCD_ASSIGN_CHAIN if (volume or folder) else (),
+    }
+
+
+def assign_bcdboot_letter(
+    path: str | None,
+    used: Iterable[str],
+    steps: Mapping[str, Callable[[dict[str, object]], bool]],
+) -> tuple[str | None, tuple[str, ...]]:
+    """Try Storage, then diskpart, then mountvol. Stop at the first letter that opens."""
+    plan = plan_bcdboot_letter(path, used)
+    letter = plan.get("letter")
+    if isinstance(letter, str) and letter and not plan.get("needs_assign"):
+        return letter, ("existing",)
+    if not isinstance(letter, str) or not letter:
+        return None, ("no-free-letter",)
+    tried: list[str] = []
+    for name in plan.get("chain") or ():
+        step = steps.get(str(name))
+        tried.append(str(name))
+        if step is not None and step(plan):
+            return letter, tuple(tried)
+    return None, tuple(tried)
+
+
+def bcdboot_source_root(path: str | None, *, exists: Callable[[str], bool] | None = None) -> str | None:
+    """%SystemRoot% with the quotes removed. Missing directories are refused."""
+    text = (path or "").strip()
+    if not text or text[0] in "\"'" or text[-1] in "\"'" or "\"" in text:
+        return None
+    from pathlib import Path
+
+    checker = exists if exists is not None else (lambda candidate: Path(candidate).is_dir())
+    if not checker(text):
+        return None
+    return text
 
 
 def bcdboot_args(exe: str, windows_root: str, target: str, mode: str) -> list[str]:
     mode_u = (mode or "").upper()
     if mode_u not in ("UEFI", "BIOS", "ALL"):
         raise ValueError(f"bcdboot mode must be UEFI, BIOS, or ALL (got {mode!r})")
-    if normalize_volume_guid_path(target):
-        raise ValueError("bcdboot /s needs a drive letter; a volume GUID returns error 123")
-    tgt = bcdboot_target(target)
-    if not tgt:
-        raise ValueError("bcdboot target is empty")
-    return [str(exe), str(windows_root), "/s", tgt, "/f", mode_u]
+    source = str(windows_root).strip()
+    letter = bare_bcdboot_letter(target)
+    if source[:1] in "\"'" or "\"" in source or not letter:
+        raise ValueError("bcdboot /s needs a bare drive letter like S:; this target is error 123")
+    argv = [str(exe).strip().strip('"'), source, "/s", letter, "/f", mode_u]
+    if any("\"" in part or part.startswith("'") for part in argv):
+        raise ValueError("bcdboot arguments are a list of unquoted tokens")
+    return argv
+
+
+def bcdboot_invalid_name(code: int, output: str) -> bool:
+    """Exit 123 is ERROR_INVALID_NAME. It is never a successful bcdboot."""
+    if int(code) == 123:
+        return True
+    return bool(re.search(r"ERROR_INVALID_NAME|invalid name|nom de (fichier|r[eé]pertoire)", output or "", re.I))
+
+
+def bcdboot_disk_full(code: int, output: str) -> bool:
+    """Exit 112 is ERROR_DISK_FULL. A 96 MB ESP hits this when fonts and locales fill it."""
+    if int(code) == 112:
+        return True
+    return bool(
+        re.search(r"ERROR_DISK_FULL|not enough space|espace insuffisant|disk full|espace disque", output or "", re.I)
+    )
+
+
+def bcdboot_remediation(code: int) -> list[str]:
+    """Repair order for a bcdboot exit code, from the sourced error catalog."""
+    from pathlib import Path
+    import json
+
+    path = Path(__file__).resolve().parents[2] / "data" / "error_catalog.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    wanted = int(code)
+    for entry in payload.get("entries") or []:
+        if int(entry.get("code") or 0) == wanted or entry.get("id") == f"bcdboot-{wanted}":
+            return [str(item) for item in (entry.get("repair_order") or [])]
+    return []
+
+
+def bcdboot_123_remediation() -> list[str]:
+    return bcdboot_remediation(123)
 
 
 def bcdboot_locale(preferred: str | None = None) -> str:
     text = (preferred or "").strip().replace("_", "-")
+    text = text.split(".")[0].split("@")[0]
     if re.fullmatch(r"[A-Za-z]{2}(-[A-Za-z]{2})?", text):
         return text
     return "en-us"
+
+
+_LOCALE_DIR = re.compile(r"^[A-Za-z]{2}-[A-Za-z]{2}$")
+
+
+def kept_bcd_locales(ui: str | None) -> set[str]:
+    """en-US stays, and so does the current UI locale."""
+    return {"en-us", bcdboot_locale(ui).lower()}
+
+
+def locale_dirs_to_drop(names: Iterable[str], ui: str | None) -> list[str]:
+    keep = kept_bcd_locales(ui)
+    drop: list[str] = []
+    for name in names:
+        if not _LOCALE_DIR.fullmatch(name or ""):
+            continue
+        if name.lower() in keep:
+            continue
+        drop.append(name)
+    return drop
+
+
+def is_our_esp_junk(relative: str) -> bool:
+    """Temp and backup files this tool wrote under EFI\\MagicUpgrade. Boot files are kept."""
+    text = (relative or "").replace("\\", "/").strip("/").lower()
+    if not text.startswith("efi/magicupgrade/"):
+        return False
+    base = text.rsplit("/", 1)[-1]
+    if base in {"bcd", "bootmgfw.efi", "bootmgr", "bootmgr.efi", "bootx64.efi", "bootia32.efi"}:
+        return False
+    return base.endswith((".tmp", ".bak", ".old", ".backup"))
 
 
 def minimal_bcdboot_args(exe: str, windows_root: str, letter: str, mode: str, locale: str | None = None) -> list[str]:
@@ -144,17 +574,37 @@ def bcdboot_letter_plan(target: str | None, used: Iterable[str]) -> dict[str, st
     return {"letter": f"{free}:" if free else None, "temporary": True, "volume": volume}
 
 
-def esp_bcdboot_space_plan(free_bytes: int, font_bytes: int, *, need_bytes: int = BCD_MIN_FREE_BYTES) -> dict[str, bool]:
-    """Trim fonts only when the ESP cannot hold bcdboot, and only after a backup."""
+def esp_bcdboot_space_plan(
+    free_bytes: int,
+    font_bytes: int,
+    *,
+    need_bytes: int = BCD_MIN_FREE_BYTES,
+    locale_bytes: int = 0,
+    junk_bytes: int = 0,
+) -> dict[str, bool]:
+    """Decide how to make room. This plan never resizes a partition."""
     free = max(0, int(free_bytes))
     fonts = max(0, int(font_bytes))
+    locales = max(0, int(locale_bytes))
+    junk = max(0, int(junk_bytes))
     if free >= need_bytes:
-        return {"trim_fonts": False, "minimal": False, "enough": True, "backup_required": False}
+        return {
+            "trim_fonts": False,
+            "minimal": False,
+            "enough": True,
+            "backup_required": False,
+            "drop_locales": False,
+            "clear_junk": False,
+            "resize": False,
+        }
     return {
         "trim_fonts": fonts > 0,
         "minimal": True,
-        "enough": free + fonts >= need_bytes,
-        "backup_required": True,
+        "enough": free + fonts + locales + junk >= need_bytes,
+        "backup_required": fonts > 0 or locales > 0 or junk > 0,
+        "drop_locales": locales > 0,
+        "clear_junk": junk > 0,
+        "resize": False,
     }
 
 

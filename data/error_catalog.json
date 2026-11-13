@@ -20,6 +20,62 @@
       "sources": [
         "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdedit"
       ]
+    },
+    {
+      "id": "bcdboot-123",
+      "code": 123,
+      "name": "ERROR_INVALID_NAME",
+      "patterns": [
+        "ERROR_INVALID_NAME",
+        "error 123",
+        "BCD ALL failed, error 123",
+        "BCD failed, error 123"
+      ],
+      "cause": "bcdboot received a /s target that is not a bare drive letter, a missing or quoted Windows directory, or /f ALL while the firmware mode is unknown.",
+      "detection": "bcdboot exits 123. The log says the filename, directory name, or volume label syntax is incorrect.",
+      "syntax": "bcdboot %SystemRoot% /s S: /f UEFI",
+      "repair_order": [
+        "Confirm %SystemRoot% exists and pass it as its own list item, with no extra quotes.",
+        "Read the live drive map and take the ESP or system volume letter.",
+        "If the volume is only a folder mount or a \\\\?\\Volume{GUID}\\ path, assign a temporary letter with mountvol, then Add-PartitionAccessPath, then diskpart assign letter=.",
+        "Pass /s as S: with no trailing slash and no quotes.",
+        "Do not pass /f ALL when the firmware mode is unknown.",
+        "Treat exit 123 as failure. Re-read bcdedit /enum {bootmgr} and the ESP files before any GO."
+      ],
+      "rollback": "Remove only the temporary letter this attempt assigned. Leave the previous boot files in place.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdboot",
+        "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-"
+      ]
+    },
+    {
+      "id": "bcdboot-112",
+      "code": 112,
+      "name": "ERROR_DISK_FULL",
+      "patterns": [
+        "ERROR_DISK_FULL",
+        "error 112",
+        "not enough space",
+        "espace insuffisant",
+        "BCD failed, error 112"
+      ],
+      "cause": "The ESP does not have enough free space for bcdboot. A 96 MB ASUS ESP is full when boot fonts and extra locale folders are present.",
+      "detection": "bcdboot exits 112, or the ESP free space measured before the call is below 32 MB.",
+      "syntax": "bcdboot %SystemRoot% /s S: /f UEFI /l en-US",
+      "repair_order": [
+        "Measure free space on the mounted ESP before bcdboot.",
+        "Back up EFI\\Microsoft\\Boot\\Fonts, then remove the font files.",
+        "Back up unused locale folders and remove them. Keep en-US and the current UI locale.",
+        "Remove leftover temp and backup files this tool created under EFI\\MagicUpgrade.",
+        "Retry bcdboot with /l and that one locale.",
+        "Do not shrink or create a partition unless MAGIC_ESP_EXPAND=1. This repair never resizes.",
+        "Treat exit 112 as failure. Re-read bcdedit /enum {bootmgr} and the ESP files before any GO."
+      ],
+      "rollback": "Restore the backed-up fonts and locale folders from esp-space-backups. Do not delete the BCD or bootmgfw.efi.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdboot",
+        "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-"
+      ]
     }
   ]
 }

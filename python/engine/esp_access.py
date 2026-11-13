@@ -936,20 +936,193 @@ def guard_write_letter(letter: str, *, expect_disk: int, step: str) -> None:
 
 
 def resolved_bcd_mode(prefer_uefi: bool, decision: BootDecision | None) -> list[str]:
-    """Modes to try, taken from the fresh plan when one exists."""
+    """Modes to try, taken from the fresh plan when one exists.
+
+    Unknown firmware does not get /f ALL. That flag with a bad /s is error 123.
+    """
     if decision is None:
-        return ["UEFI", "ALL"] if prefer_uefi else ["BIOS", "ALL"]
+        return ["UEFI"] if prefer_uefi else ["BIOS"]
     if decision.skip_loader_overwrite:
         return []
     mode = (decision.bcd_mode or "").upper()
+    if mode in ("", "NONE", "UNKNOWN"):
+        return []
     if mode == "BIOS":
         return ["BIOS", "ALL"]
     if mode == "UEFI":
         return ["UEFI", "ALL"] if prefer_uefi else ["ALL", "UEFI"]
     if mode == "ALL":
         return ["ALL", "UEFI" if prefer_uefi else "BIOS"]
-    return ["UEFI", "ALL"] if prefer_uefi else ["BIOS", "ALL"]
+    return []
 
 
 def bcdboot_command(exe: str, windows_root: str, target: str, mode: str) -> list[str]:
     return bcdboot_args(exe, windows_root, target, mode)
+
+
+def open_bcdboot_letter(path: str | None, decision: BootDecision | None = None) -> tuple[str | None, bool]:
+    """Return a bare 'S:' for bcdboot /s.
+
+    An existing letter is reused. A folder mount or volume GUID is given a
+    temporary letter: Storage, then diskpart, then mountvol.
+    """
+    from .drive_map import assign_bcdboot_letter, letters_in_use, normalize_volume_guid_path
+
+    used: set[str] = set()
+    current = None
+    try:
+        current = _poller().map
+    except Exception:
+        current = None
+    if current is not None:
+        used = letters_in_use(current)
+    volume = None
+    if decision is not None:
+        volume = decision.esp or decision.srp
+    wanted = normalize_volume_guid_path(path)
+    if volume is None and current is not None:
+        folded = (path or "").rstrip("\\").lower()
+        for item in current.volumes:
+            guid = normalize_volume_guid_path(item.volume_guid) or ""
+            if wanted and guid and wanted.lower() == guid.lower():
+                volume = item
+                break
+            if folded and any(folded == str(one).rstrip("\\").lower() for one in item.access_paths):
+                volume = item
+                break
+
+    def _storage(plan: dict[str, object]) -> bool:
+        letter = str(plan.get("letter") or "")
+        if volume is None or not letter:
+            return False
+        return bool(WindowsVolumeIO().assign(volume, letter[:1]))
+
+    def _diskpart(plan: dict[str, object]) -> bool:
+        from .diskpart_safe import assign_letter_to_volume, find_esp_candidates
+
+        letter = str(plan.get("letter") or "")[:1]
+        if not letter:
+            return False
+        for row in find_esp_candidates():
+            if row.letter:
+                continue
+            if assign_letter_to_volume(row.index, letter):
+                return True
+        return False
+
+    def _mountvol(plan: dict[str, object]) -> bool:
+        guid = plan.get("volume")
+        letter = str(plan.get("letter") or "")
+        if not guid or not letter:
+            return False
+        from .drive_map import mountvol_assign_args
+
+        try:
+            argv = mountvol_assign_args(letter, str(guid))
+        except ValueError:
+            return False
+        code, _out = _run(argv, timeout=60)
+        return code == 0 and Path(f"{letter}\\").exists()
+
+    from .drive_map import judge_mount, open_checked_mount, plan_bcdboot_letter, resolve_access_path
+
+    plan = plan_bcdboot_letter(path, used)
+
+    def _free(letter: str) -> bool:
+        return not Path(f"{str(letter)[:1]}:\\").exists()
+
+    def _verify(item: dict) -> str:
+        letter = str(item.get("letter") or "")
+        root = f"{letter[:1]}:\\"
+        observed: dict[str, object] = {
+            "exists": Path(root).exists(),
+            "readable": False,
+            "guid": None,
+            "disk": None,
+            "partition": None,
+            "filesystem": None,
+        }
+        if observed["exists"]:
+            try:
+                os.listdir(root)
+                observed["readable"] = True
+            except OSError:
+                observed["readable"] = False
+        expected: dict[str, object] = {"guid": item.get("volume"), "esp": bool(item.get("volume"))}
+        if volume is not None:
+            expected["disk"] = volume.disk
+            expected["partition"] = volume.partition
+        return judge_mount(observed, expected)
+
+    def _release(item: dict) -> None:
+        letter = str(item.get("letter") or "")[:1]
+        if letter:
+            _run(["mountvol", f"{letter}:", "/d"], timeout=30)
+
+    def _assign() -> str | None:
+        mounted = open_checked_mount(
+            plan,
+            {
+                "mountvol": _mountvol,
+                "Add-PartitionAccessPath": _storage,
+                "diskpart assign": _diskpart,
+            },
+            letter_free=_free,
+            verify=_verify,
+            release=_release,
+        )
+        if not mounted.get("ok"):
+            return None
+        return str(mounted.get("letter") or "")
+
+    folder = ""
+    if volume is not None:
+        for one in volume.access_paths:
+            if bare_bcdboot_letter(str(one)) is None and not normalize_volume_guid_path(str(one)):
+                folder = str(one)
+                break
+    elif path and bare_bcdboot_letter(path) is None and not wanted:
+        folder = path
+    spec = {
+        "letter": volume.letter if volume is not None and volume.letter else (None if plan.get("needs_assign") else plan.get("letter")),
+        "guid": (volume.volume_guid if volume is not None and volume.volume_guid else wanted),
+        "harddisk_volume": None,
+        "folder": folder,
+        "disk": volume.disk if volume is not None else None,
+        "partition": volume.partition if volume is not None else None,
+        "esp": bool(wanted) or (volume is not None and bool(wanted or volume.volume_guid)),
+    }
+
+    def _probe(candidate: str) -> dict[str, object]:
+        observed: dict[str, object] = {
+            "exists": Path(candidate).exists(),
+            "readable": False,
+            "guid": None,
+            "disk": None,
+            "partition": None,
+            "filesystem": None,
+        }
+        if observed["exists"]:
+            try:
+                os.listdir(candidate)
+                observed["readable"] = True
+            except OSError:
+                observed["readable"] = False
+        same_letter = False
+        if volume is not None and volume.letter and candidate.upper().startswith(f"{volume.letter.upper()[:1]}:\\"):
+            same_letter = True
+        same_guid = bool(wanted) and candidate.rstrip("\\").lower() == str(wanted).rstrip("\\").lower()
+        same_folder = bool(folder) and candidate.rstrip("\\").lower() == folder.rstrip("\\").lower()
+        if observed["readable"] and volume is not None and (same_letter or same_guid or same_folder):
+            observed["disk"] = volume.disk
+            observed["partition"] = volume.partition
+            observed["guid"] = wanted or volume.volume_guid
+            observed["filesystem"] = "FAT32" if spec["esp"] else None
+        return observed
+
+    resolved = resolve_access_path(spec, probe=_probe, assign=_assign, need_letter=True, logger=log)
+    if not resolved.get("ok"):
+        log("NO-GO: no path style produced a verified bcdboot letter", "ERROR")
+        return None, False
+    log(f"bcdboot path style {resolved.get('style')}", "OK")
+    return str(resolved.get("letter") or ""), resolved.get("style") == "temp-letter"

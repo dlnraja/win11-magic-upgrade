@@ -19,7 +19,29 @@ from engine.drive_map import (  # noqa: E402
     access_chain,
     access_root,
     bcdboot_args,
+    assign_bcdboot_letter,
+    bare_bcdboot_letter,
+    bcdboot_123_remediation,
+    bcdboot_disk_full,
+    bcdboot_invalid_name,
+    bcdboot_remediation,
+    has_doubled_backslash_run,
+    is_our_esp_junk,
+    letter_root_for_io,
+    locale_dirs_to_drop,
+    checked_directory,
+    judge_mount,
+    mountvol_assign_args,
+    access_style_candidates,
+    device_path,
+    open_checked_mount,
+    resolve_access_path,
+    path_format_problem,
+    tool_arg_problem,
+    volume_path_from_guid,
     bcdboot_letter_plan,
+    bcdboot_source_root,
+    plan_bcdboot_letter,
     esp_bcdboot_space_plan,
     minimal_bcdboot_args,
     normalize_volume_guid_path,
@@ -547,14 +569,98 @@ def test_volume_guid_is_unescaped_and_bcdboot_uses_a_letter() -> None:
 
 def test_bcdboot_uses_resolved_target() -> None:
     command = bcdboot_args(r"C:\Windows\System32\bcdboot.exe", r"C:\Windows", "E:", "ALL")
-    assert command[1:] == [r"C:\Windows", "/s", "E:", "/f", "ALL"]
-    bios = bcdboot_args("bcdboot.exe", r"D:\Windows", r"E:\esp-mount", "BIOS")
-    assert "/s" in bios and r"E:\esp-mount" in bios and "/f" in bios and "BIOS" in bios
+    assert command == [r"C:\Windows\System32\bcdboot.exe", r"C:\Windows", "/s", "E:", "/f", "ALL"]
+    assert bare_bcdboot_letter("E:\\") == "E:"
+    assert bare_bcdboot_letter('"E:"') is None
+    for bad in (r"E:\esp-mount", "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\", "", "E:\\"):
+        try:
+            bcdboot_args("bcdboot.exe", r"D:\Windows", bad if bad != "E:\\" else bad, "BIOS")
+        except ValueError:
+            if bad == "E:\\":
+                raise AssertionError("E:\\ should normalize to E:")
+            continue
+        if bad != "E:\\":
+            raise AssertionError(f"bad /s target was accepted: {bad}")
+    assert bcdboot_args("bcdboot.exe", r"D:\Windows", "E:\\", "BIOS")[3] == "E:"
     try:
         bcdboot_args("bcdboot.exe", r"C:\Windows", "E:", "MAYBE")
         raise AssertionError("bad mode accepted")
     except ValueError:
         pass
+    assert bcdboot_invalid_name(123, "ERROR_INVALID_NAME") is True
+    assert bcdboot_invalid_name(0, "Boot files successfully created") is False
+    order = bcdboot_123_remediation()
+    assert order and "Add-PartitionAccessPath" in order[2]
+    assert bcdboot_source_root(r"C:\Windows", exists=lambda _path: False) is None
+    assert bcdboot_source_root(r'"C:\Windows"', exists=lambda _path: True) is None
+    assert bcdboot_source_root(r"C:\Windows", exists=lambda _path: True) == r"C:\Windows"
+    guid = "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\"
+    plan = plan_bcdboot_letter(guid, {"C"})
+    assert plan["needs_assign"] is True
+    assert plan["chain"] == ("mountvol", "Add-PartitionAccessPath", "diskpart assign")
+    calls: list[str] = []
+
+    def _fail(name: str):
+        def step(_plan: dict) -> bool:
+            calls.append(name)
+            return False
+
+        return step
+
+    def _diskpart(plan: dict) -> bool:
+        calls.append("diskpart assign")
+        return plan.get("letter") == "Z:"
+
+    letter, tried = assign_bcdboot_letter(
+        guid,
+        {"C"},
+        {
+            "Add-PartitionAccessPath": _fail("Add-PartitionAccessPath"),
+            "diskpart assign": _diskpart,
+            "mountvol": _fail("mountvol"),
+        },
+    )
+    assert letter == "Z:"
+    assert tried == ("mountvol", "Add-PartitionAccessPath", "diskpart assign")
+    assert calls == ["mountvol", "Add-PartitionAccessPath", "diskpart assign"]
+    assert bcdboot_disk_full(112, "") is True
+    assert bcdboot_disk_full(0, "Boot files successfully created") is False
+    full = esp_bcdboot_space_plan(
+        4 * 1024 * 1024,
+        12 * 1024 * 1024,
+        locale_bytes=8 * 1024 * 1024,
+        junk_bytes=1024 * 1024,
+    )
+    assert full["minimal"] is True and full["trim_fonts"] is True
+    assert full["drop_locales"] is True and full["clear_junk"] is True
+    assert full["resize"] is False and full["backup_required"] is True
+    assert locale_dirs_to_drop(["en-US", "fr-FR", "de-DE", "Fonts"], "fr-FR") == ["de-DE"]
+    assert is_our_esp_junk(r"EFI\MagicUpgrade\stage.tmp") is True
+    assert is_our_esp_junk(r"EFI\Microsoft\Boot\bootmgfw.efi") is False
+    order_112 = bcdboot_remediation(112)
+    assert any("/l" in line for line in order_112)
+    assert any("MAGIC_ESP_EXPAND" in line for line in order_112)
+    guid = "b95f9bc1-965f-43ae-81ff-28b0e4909488"
+    canonical = volume_path_from_guid(guid)
+    assert canonical == "\\\\?\\Volume{" + guid + "}\\"
+    assert not has_doubled_backslash_run(canonical)
+    doubled = canonical.replace("\\", "\\\\")
+    assert normalize_volume_guid_path(doubled) == canonical
+    assert normalize_volume_guid_path(repr(canonical)) == canonical
+    seen: list[str] = []
+
+    def _assign(path: str) -> str:
+        seen.append(path)
+        assert path == canonical
+        assert not has_doubled_backslash_run(path)
+        return "Z:"
+
+    root = letter_root_for_io(doubled, _assign)
+    assert root == "Z:\\"
+    assert seen == [canonical]
+    argv = mountvol_assign_args("Z:", repr(canonical))
+    assert argv == ["mountvol", "Z:", canonical]
+    assert all(not has_doubled_backslash_run(part) for part in argv)
 
 
 def test_hybrid_mbr2gpt_and_openduet() -> None:
@@ -795,6 +901,122 @@ def test_decision_type_exports() -> None:
     assert BootDecision is not None
 
 
+def test_path_and_mount_checks() -> None:
+    guid = "b95f9bc1-965f-43ae-81ff-28b0e4909488"
+    canonical = volume_path_from_guid(guid)
+    doubled = canonical.replace("\\", "\\\\")
+    assert path_format_problem(canonical, trailing_slash=True) == ""
+    assert path_format_problem(doubled) == "doubled backslashes"
+    assert path_format_problem('"Z:\\"') == "stray quotes"
+    assert path_format_problem("Z:", trailing_slash=True) == "trailing backslash required"
+    assert checked_directory("Z:\\", exists=lambda path: path == "Z:\\") == "Z:\\"
+    assert tool_arg_problem(["bcdboot.exe", r"C:\Windows", "/s", "E:", "/f", "UEFI"]) == ""
+    assert tool_arg_problem(["mountvol", "Z:", doubled]) == "doubled backslashes"
+    assert tool_arg_problem(["bcdboot.exe", r"C:\Windows", "/s", r"E:\esp", "/f", "UEFI"]) != ""
+    assert judge_mount(
+        {"exists": True, "readable": True, "guid": canonical, "disk": 0, "partition": 1, "filesystem": "FAT32"},
+        {"guid": canonical, "disk": 0, "partition": 1, "esp": True},
+    ) == ""
+    assert judge_mount(
+        {"exists": True, "readable": True, "filesystem": "NTFS", "disk": 0, "partition": 1},
+        {"esp": True, "disk": 0, "partition": 1},
+    ) == "not-fat32"
+
+    released: list[str] = []
+    assigned: list[str] = []
+
+    def _step(name: str, ok: bool):
+        def run(plan: dict) -> bool:
+            assigned.append(name)
+            return ok
+
+        return run
+
+    plan = {"letter": "Z:", "volume": canonical}
+    first = open_checked_mount(
+        plan,
+        {
+            "mountvol": _step("mountvol", True),
+            "Add-PartitionAccessPath": _step("storage", True),
+            "diskpart assign": _step("diskpart", True),
+        },
+        letter_free=lambda _letter: True,
+        verify=lambda _plan: "not-fat32" if assigned[-1] == "mountvol" else "",
+        release=lambda _plan: released.append(assigned[-1]),
+    )
+    assert first["verdict"] == "GO" and first["method"] == "Add-PartitionAccessPath"
+    assert released == ["mountvol"]
+
+    blocked = open_checked_mount(
+        plan,
+        {
+            "mountvol": _step("mountvol", True),
+            "Add-PartitionAccessPath": _step("storage", True),
+            "diskpart assign": _step("diskpart", True),
+        },
+        letter_free=lambda _letter: False,
+        verify=lambda _plan: "",
+        release=lambda _plan: released.append("bad"),
+    )
+    assert blocked["verdict"] == "NO-GO"
+    assert blocked["ok"] is False
+    assert all(item.endswith("letter-busy") for item in blocked["tried"])
+
+
+def test_path_style_fallback() -> None:
+    guid = "b95f9bc1-965f-43ae-81ff-28b0e4909488"
+    spec = {
+        "letter": "S",
+        "guid": guid,
+        "harddisk_volume": 3,
+        "folder": r"C:\MagicUpgrade\mnt\esp",
+        "disk": 0,
+        "partition": 2,
+        "esp": True,
+    }
+    styles = [name for name, _path in access_style_candidates(spec)]
+    assert styles == ["letter", "volume-guid", "device", "folder", "temp-letter"]
+    assert device_path(3) == "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\"
+    assert not has_doubled_backslash_run(device_path(3))
+    seen: list[str] = []
+
+    def probe(path: str) -> dict:
+        seen.append(path)
+        good = {"exists": True, "readable": True, "guid": guid, "disk": 0, "partition": 2, "filesystem": "FAT32"}
+        if path.startswith("\\\\?\\Volume") or path.startswith("Z:"):
+            return good
+        return {"exists": False, "readable": False}
+
+    logs: list[str] = []
+    found = resolve_access_path(spec, probe=probe, assign=lambda: "Z:", need_letter=False, logger=logs.append)
+    assert found["verdict"] == "GO" and found["style"] == "volume-guid"
+    assert found["path"].startswith("\\\\?\\Volume{")
+    assert len(seen) == 2
+    assert logs == ["path style volume-guid used"]
+
+    seen.clear()
+    logs.clear()
+    calls = {"n": 0}
+
+    def assign() -> str:
+        calls["n"] += 1
+        return "Z:"
+
+    boot = resolve_access_path(spec, probe=probe, assign=assign, need_letter=True, logger=logs.append)
+    assert boot["style"] == "temp-letter" and boot["letter"] == "Z:"
+    assert boot["verdict"] == "GO"
+    assert calls["n"] == 1
+    assert len(seen) <= 5
+    assert logs == ["path style temp-letter used"]
+
+    def dead(_path: str) -> dict:
+        return {"exists": False, "readable": False}
+
+    blocked = resolve_access_path(spec, probe=dead, assign=lambda: None, need_letter=True, logger=logs.append)
+    assert blocked["verdict"] == "NO-GO" and blocked["ok"] is False
+    assert len(blocked["tried"]) <= 5
+
+
 if __name__ == "__main__":
     test_esp_on_letter_other_than_y()
     test_esp_without_letter_picks_free_letter()
@@ -825,4 +1047,6 @@ if __name__ == "__main__":
     test_gpt_on_bios_dynamic_and_secondary_disk()
     test_decision_type_exports()
     test_no_hardcoded_esp_letter_in_sources()
+    test_path_and_mount_checks()
+    test_path_style_fallback()
     print("drive map logic OK")

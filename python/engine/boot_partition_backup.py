@@ -372,27 +372,36 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
     if not metas:
         # Fallback: mount ESP via existing helper and treat as single unknown partition
         try:
-            from .drive_map import access_root
-            from .sysreserved import mount_esp, unmount_letter
+            from .sysreserved import mount_esp
 
             mounted = mount_esp()
             if mounted:
+                from .drive_map import letter_root_for_io
+                from .esp_access import open_bcdboot_letter
+
+                def _assign(path: str) -> str | None:
+                    letter, _temp = open_bcdboot_letter(path)
+                    return letter
+
+                root = letter_root_for_io(mounted, _assign)
                 metas = [
                     {
                         "DiskNumber": system_disk,
                         "PartitionNumber": None,
-                        "DriveLetter": "",
-                        "AccessPath": mounted,
+                        "DriveLetter": root[:1],
+                        "AccessPath": root,
                         "Role": "ESP" if _firmware() == "UEFI" else "SRP",
-                        "Size": shutil.disk_usage(str(Path(access_root(mounted) or mounted))).total,
+                        "Size": shutil.disk_usage(root).total,
                         "PartitionStyle": "Unknown",
                         "GptType": GPT_ESP_TYPE if _firmware() == "UEFI" else "",
                         "_mounted_via_helper": True,
                     }
                 ]
                 result["actions"].append("meta_via_mount_esp")
-        except Exception:
-            pass
+        except Exception as exc:
+            result["blocked"] = True
+            result["actions"].append("meta_path_fail")
+            log(f"NO-GO: partition backup path failed: {exc}", "ERROR")
 
     (gen / "metadata.json").write_text(
         json.dumps({"utc": stamp, "firmware": result["firmware"], "partitions": metas}, indent=2),
@@ -417,7 +426,9 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
                 result["actions"].append(f"{role}_mount_fail")
                 continue
 
-            src = Path(f"{letter.rstrip(':')}:\\")
+            from .drive_map import letter_root_for_io
+
+            src = Path(letter_root_for_io(letter, lambda _path: None))
             files_dir = part_dir / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
             nfiles, nbytes = _copy_tree_filtered(
@@ -444,7 +455,8 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
             log(f"Backed up {role}: {nfiles} files ({nbytes // 1024} KB)", "OK")
         except Exception as e:
             result["actions"].append(f"{role}_error:{type(e).__name__}")
-            log(f"Backup {role} failed: {e}", "WARN")
+            result["blocked"] = True
+            log(f"Backup {role} failed: {e}", "ERROR")
         finally:
             if assigned and letter:
                 _unmount_letter_safe(letter, {**meta, "DriveLetter": ""})
@@ -456,7 +468,14 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
                 except Exception:
                     pass
 
-    result["ok"] = any(p.get("files", 0) > 0 for p in result["partitions"]) or bool(result.get("bcd"))
+    failed = result.get("blocked") or any(
+        str(action).endswith("_mount_fail") or "_error:" in str(action) for action in result["actions"]
+    )
+    if failed:
+        result["ok"] = False
+        result["blocked"] = True
+    else:
+        result["ok"] = any(p.get("files", 0) > 0 for p in result["partitions"]) or bool(result.get("bcd"))
     (gen / "manifest.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     try:
         (BACKUP_ROOT / "LAST.txt").write_text(str(gen), encoding="utf-8")
@@ -504,8 +523,10 @@ def restore_boot_partition_files(*, generation: Path | None = None) -> dict[str,
     from .sysreserved import mount_esp, unmount_letter
 
     mounted = None
+    original = None
     try:
         mounted = mount_esp()
+        original = mounted
         if not mounted:
             # Try PS mount
             try:
@@ -519,7 +540,22 @@ def restore_boot_partition_files(*, generation: Path | None = None) -> dict[str,
             log("Cannot mount ESP for restore", "ERROR")
             return out
 
-        dst = Path(f"{mounted.rstrip(':')}:\\")
+        from .drive_map import letter_root_for_io
+        from .esp_access import open_bcdboot_letter
+
+        def _assign(path: str) -> str | None:
+            letter, _temp = open_bcdboot_letter(path)
+            return letter
+
+        try:
+            dst_root = letter_root_for_io(mounted, _assign)
+        except ValueError as exc:
+            out["actions"].append("esp_path_fail")
+            out["verdict"] = "NO-GO"
+            log(f"NO-GO: restore path refused: {exc}", "ERROR")
+            return out
+        dst = Path(dst_root)
+        mounted = dst_root[:2]
         # Prefer matching role: ESP on UEFI, SRP on BIOS — never apply wrong-role WIM onto ESP
         want_role = "ESP" if _firmware() == "UEFI" else "SRP"
         candidates: list[tuple[int, Path, str]] = []
@@ -573,9 +609,11 @@ def restore_boot_partition_files(*, generation: Path | None = None) -> dict[str,
         out["ok"] = applied
         log(f"Partition restore ok={out['ok']} actions={out['actions'][-4:]}", "OK" if out["ok"] else "WARN")
     finally:
-        if mounted:
+        for path in (mounted, original):
+            if not path:
+                continue
             try:
-                unmount_letter(mounted)
+                unmount_letter(path)
             except Exception:
                 pass
     return out
@@ -754,11 +792,25 @@ def dynamic_regenerate_boot_partition(
                 out["actions"].append(f"bcdboot_s_{mode}:cert_refused")
                 out["ok"] = False
             else:
-                c, o = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode], timeout=180)
-                out["actions"].append(f"bcdboot_s_{mode}:{c}")
-                from .boot_safe import bcdboot_succeeded
+                from .drive_map import bcdboot_args, bcdboot_invalid_name, bcdboot_source_root
+                from .esp_access import open_bcdboot_letter
 
-                out["ok"] = bcdboot_succeeded(c, o or "")
+                source = bcdboot_source_root(sys_root)
+                bare, _temp = open_bcdboot_letter(letter)
+                try:
+                    argv = bcdboot_args(str(bcdboot), source or "", bare or "", mode) if source and bare else None
+                except ValueError:
+                    argv = None
+                if argv is None:
+                    out["actions"].append("bcdboot_123")
+                    out["ok"] = False
+                    log("BCD failed, error 123: bcdboot /s needs a bare drive letter.", "ERROR")
+                else:
+                    c, o = _run(argv, timeout=180)
+                    out["actions"].append(f"bcdboot_s_{mode}:{c}")
+                    from .boot_safe import bcdboot_succeeded
+
+                    out["ok"] = bcdboot_succeeded(c, o or "") and not bcdboot_invalid_name(c, o or "")
 
     # Persist regenerate status
     try:
@@ -792,13 +844,29 @@ def ensure_partition_backup_then_repair(
     if need_backup:
         summary["backup"] = backup_boot_partitions(system_disk=system_disk)
         summary["actions"].extend(summary["backup"].get("actions") or [])
-        summary["actions"].append("backup_done" if summary["backup"].get("ok") else "backup_weak")
+        backup_actions = summary["backup"].get("actions") or []
+        if "partition_backup_disabled" in backup_actions:
+            summary["actions"].append("partition_backup_disabled")
+        elif summary["backup"].get("blocked") or not summary["backup"].get("ok"):
+            summary["ok"] = False
+            summary["verdict"] = "NO-GO"
+            summary["actions"].append("backup_failed")
+            log("NO-GO: partition backup failed. Boot files will not be written.", "ERROR")
+            return summary
+        else:
+            summary["actions"].append("backup_done")
     else:
         summary["actions"].append("backup_reuse_last")
 
     # Restore first
     summary["restore"] = restore_boot_partition_files()
     summary["actions"].extend(summary["restore"].get("actions") or [])
+
+    if summary["restore"].get("verdict") == "NO-GO":
+        summary["ok"] = False
+        summary["verdict"] = "NO-GO"
+        log("NO-GO: partition restore failed. Boot files will not be written.", "ERROR")
+        return summary
 
     if not summary["restore"].get("ok"):
         summary["regenerate"] = dynamic_regenerate_boot_partition(
