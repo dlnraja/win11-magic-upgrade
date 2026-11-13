@@ -38,7 +38,8 @@ def rescue_script_text() -> str:
         "echo post-op-verify-and-rollback>>%LOG%",
         "echo bounds=one-strategy-once,max-4,budget-180s,fingerprint,persisted-counter>>%LOG%",
         "if exist C:\\Windows\\System32\\bcdboot.exe (",
-        "  C:\\Windows\\System32\\bcdboot.exe C:\\Windows /s S: /f UEFI /l en-us>>%LOG% 2>&1",
+        "  REM The firmware system partition is the target. No drive letter is hardcoded.",
+        "  C:\\Windows\\System32\\bcdboot.exe C:\\Windows /f UEFI /l en-us>>%LOG% 2>&1",
         ")",
         "echo rescue-end>>%LOG%",
     ]
