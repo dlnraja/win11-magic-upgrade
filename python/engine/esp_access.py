@@ -148,16 +148,8 @@ def _firmware_env_present() -> bool | None:
 
 
 def _bcd_loader_kind() -> str:
-    """'efi' or 'exe' from the real Windows loader, else ''."""
-    code, out = _run(["bcdedit", "/enum", "all"], timeout=30)
-    try:
-        from .boot_safe import resolve_loader_guid
-
-        guid = resolve_loader_guid(out or "")
-    except Exception:
-        guid = "{default}"
-    if guid.lower() != "{current}":
-        code, out = _run(["bcdedit", "/enum", guid], timeout=30)
+    """'efi' or 'exe' from the running Windows loader, else ''."""
+    code, out = _run(["bcdedit", "/enum", "osloader", "/v"], timeout=30)
     text = (out or "").lower()
     if code not in (0, 1) and "winload" not in text:
         return ""

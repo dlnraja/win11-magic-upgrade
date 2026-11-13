@@ -389,8 +389,90 @@ def rewrite_boot_files_from_windows(*, prefer_uefi: bool | None = None) -> bool:
     return ok
 
 
-def _bcdedit(*args: str, timeout: int = 90) -> tuple[int, str]:
-    return _run(["bcdedit", *args], timeout=timeout)
+def bcdedit_argv(store: str | None, *args: str) -> list[str]:
+    """bcdedit arguments as a list. No shell, so braces are not expanded."""
+    cmd = ["bcdedit"]
+    if store:
+        cmd.extend(["/store", str(store)])
+    cmd.extend(args)
+    if store and any(part.lower() == "{current}" for part in cmd):
+        raise ValueError("{current} is not a valid identifier for bcdedit /store")
+    return cmd
+
+
+def _bcdedit(*args: str, store: str | None = None, timeout: int = 90) -> tuple[int, str]:
+    return _run(bcdedit_argv(store, *args), timeout=timeout)
+
+
+def parse_loader_entries(enum_text: str) -> list[dict[str, str]]:
+    """Entries from ``bcdedit /enum {default} /v`` or ``/enum osloader /v``."""
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for raw in (enum_text or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip() or re.fullmatch(r"-{3,}", line.strip()):
+            if current.get("identifier") or current.get("path"):
+                entries.append(current)
+            current = {}
+            continue
+        matched = re.match(r"^([A-Za-z][A-Za-z ]*?)\s{2,}(\S.*)$", line)
+        if not matched:
+            continue
+        current[matched.group(1).strip().lower()] = matched.group(2).strip()
+    if current.get("identifier") or current.get("path"):
+        entries.append(current)
+    return entries
+
+
+def resolve_loader_identifier(enum_text: str, *, system_drive: str = "C:", store: str | None = None) -> str:
+    """The Windows Boot Loader GUID whose device points at the system partition.
+
+    ``{current}`` is never returned when a store file is in use. The fallback is ``{default}``.
+    """
+    drive = (system_drive or "C:").strip().rstrip("\\")
+    if len(drive) == 1:
+        drive = drive + ":"
+    want = f"partition={drive}".lower()
+    chosen = ""
+    for entry in parse_loader_entries(enum_text):
+        ident = entry.get("identifier", "")
+        if not ident or ident.lower() in ("{bootmgr}", "{fwbootmgr}", "{current}"):
+            continue
+        path = entry.get("path", "").lower()
+        if "winload" not in path and ident.lower() != "{default}":
+            continue
+        device = entry.get("device", "").lower().replace(" ", "")
+        osdevice = entry.get("osdevice", "").lower().replace(" ", "")
+        if want in device or want in osdevice:
+            if re.fullmatch(r"\{[0-9a-fA-F-]{36}\}", ident):
+                return ident
+            chosen = chosen or ident
+    if chosen and not (store and chosen.lower() == "{current}"):
+        return chosen
+    return "{default}"
+
+
+def loader_devices_match(enum_text: str, system_drive: str = "C:") -> bool:
+    """True when device and osdevice are both ``partition=<drive>``."""
+    drive = (system_drive or "C:").strip().rstrip("\\")
+    if len(drive) == 1:
+        drive = drive + ":"
+    want = f"partition={drive}".lower()
+    device = ""
+    osdevice = ""
+    for entry in parse_loader_entries(enum_text):
+        if entry.get("device"):
+            device = entry["device"].lower().replace(" ", "")
+        if entry.get("osdevice"):
+            osdevice = entry["osdevice"].lower().replace(" ", "")
+        if device and osdevice:
+            break
+    return want in device and want in osdevice
+
+
+def bcdedit_entry_error(output: str) -> bool:
+    text = (output or "").lower()
+    return "reference the specified entry" in text or "specified entry" in text
 
 
 def resolve_loader_guid(enum_text: str) -> str:
@@ -432,8 +514,6 @@ def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
 
     log("BCD heal — bcdedit store repair...", "STEP")
     invalidate_postflight_cache()
-    _code_all, enum_all = _bcdedit("/enum", "all")
-    loader = resolve_loader_guid(enum_all)
 
     # Export a fresh backup before mutating BCD further
     if backup_bcd():
@@ -451,8 +531,6 @@ def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
     for args, tag in (
         (("/set", "{bootmgr}", "timeout", "10"), "timeout10"),
         (("/set", "{bootmgr}", "displaybootmenu", "Yes"), "bootmenu"),
-        (("/set", loader, "bootstatuspolicy", "IgnoreAllFailures"), "ignore_boot_failures"),
-        (("/set", loader, "recoveryenabled", "Yes"), "recovery_enabled"),
         (("/set", "{default}", "bootstatuspolicy", "IgnoreAllFailures"), "default_ignore_fail"),
     ):
         c, o = _bcdedit(*args)
@@ -462,31 +540,35 @@ def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
             # Non-fatal — entry may not exist yet
             log(f"bcdedit {' '.join(args)} skipped: {(o or '')[:120]}", "INFO")
 
-    # Point OS loader device at SystemDrive when broken (common after ESP swap)
-    # device partition=C:  /  osdevice partition=C:  /  path winload
-    idents: list[str] = []
-    for ident in (loader, "{default}"):
-        if ident not in idents:
-            idents.append(ident)
-    for ident in idents:
-        for name, value in (
-            ("device", f"partition={drive}"),
-            ("osdevice", f"partition={drive}"),
-            ("path", winload),
-            ("systemroot", r"\Windows"),
-        ):
-            c, o = _bcdedit("/set", ident, name, value)
-            if c == 0:
-                actions.append(f"set_{ident.strip('{}')}_{name}")
-            else:
-                # Avoid spamming — one note per ident
-                if name == "device":
-                    log(f"bcdedit set {ident} {name}: {(o or '')[:100]}", "INFO")
+    # Point the real Windows loader at SystemDrive. {current} is not used:
+    # it does not exist in an offline store or WinRE.
+    _code_def, enum_default = _bcdedit("/enum", "{default}", "/v")
+    _code_os, enum_os = _bcdedit("/enum", "osloader", "/v")
+    ident = resolve_loader_identifier(f"{enum_default}\n{enum_os}", system_drive=drive)
+    actions.append(f"loader_{ident}")
+    for name, value in (
+        ("device", f"partition={drive}"),
+        ("osdevice", f"partition={drive}"),
+        ("path", winload),
+        ("systemroot", r"\Windows"),
+        ("bootstatuspolicy", "IgnoreAllFailures"),
+        ("recoveryenabled", "Yes"),
+    ):
+        c, o = _bcdedit("/set", ident, name, value)
+        if c == 0:
+            actions.append(f"set_{ident.strip('{}')}_{name}")
+        elif name == "device":
+            if bcdedit_entry_error(o or ""):
+                actions.append("catalog:bcdedit-current-entry")
+            log(f"bcdedit set {ident} {name}: {(o or '')[:100]}", "INFO")
 
-    # Describe for logs (sanitized later)
-    c2, enum_out = _bcdedit("/enum", loader)
-    if c2 == 0 and enum_out:
-        actions.append("enum_current_ok")
+    _code_v, enum_out = _bcdedit("/enum", ident, "/v")
+    if loader_devices_match(enum_out, drive):
+        actions.append("device_verified")
+    else:
+        actions.append("device_verify_failed")
+        log(f"BCD device/osdevice is not partition={drive}", "ERROR")
+    if _code_v == 0 and enum_out:
         try:
             (STATE_DIR / "bcd-enum-current.txt").write_text(
                 enum_out[:4000], encoding="utf-8", errors="replace"
@@ -616,8 +698,10 @@ def stage_temporary_winre_ramdisk_boot(*, one_shot: bool = True) -> dict[str, An
             log(f"reagentc /boottore failed: {(o or '')[:200]}", "WARN")
 
     # Also ensure recovery sequence is linked (multi-fallback)
-    _loader_code, _loader_text = _bcdedit("/enum", "all")
-    _bcdedit("/set", resolve_loader_guid(_loader_text), "recoveryenabled", "Yes")
+    _code_def, enum_default = _bcdedit("/enum", "{default}", "/v")
+    _code_os, enum_os = _bcdedit("/enum", "osloader", "/v")
+    loader = resolve_loader_identifier(f"{enum_default}\n{enum_os}", system_drive=os.environ.get("SystemDrive", "C:"))
+    _bcdedit("/set", loader, "recoveryenabled", "Yes")
     result["actions"].append("recoveryenabled_yes")
 
     # Write operator guide
