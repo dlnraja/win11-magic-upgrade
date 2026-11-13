@@ -714,6 +714,7 @@ def test_help_and_unattended_ci():
     if "tkinter" not in sys.modules:
         tk = types.ModuleType("tkinter")
         tk.Tk = type("Tk", (), {})
+        tk.Toplevel = type("Toplevel", (), {})
         for sub_name in ("messagebox", "scrolledtext", "ttk"):
             sub = types.ModuleType("tkinter." + sub_name)
             sys.modules["tkinter." + sub_name] = sub
