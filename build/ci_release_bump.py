@@ -5,13 +5,23 @@ a tag ref, or a release commit does not create another tag.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
+# engine/__init__.py imports winreg. This job runs on Ubuntu, so load the
+# version helpers without executing the package init.
+if "engine" not in sys.modules:
+    pkg = types.ModuleType("engine")
+    pkg.__path__ = [str(ROOT / "python" / "engine")]  # type: ignore[attr-defined]
+    pkg.__package__ = "engine"
+    sys.modules["engine"] = pkg
 
 from engine.self_update import bump_level, current_version, next_version, should_tag_release  # noqa: E402
 
@@ -77,7 +87,25 @@ def main() -> int:
     git("push", remote, "HEAD:main")
     git("push", remote, f"v{version}")
     print(f"Pushed v{version}")
+    # A tag pushed with GITHUB_TOKEN does not start another workflow.
+    # Ask release.yml to run on the tag so the exe, zip, and SHA256SUMS are published.
+    dispatch_release(repo, token, f"v{version}")
     return 0
+
+
+def dispatch_release(repo: str, token: str, tag: str) -> None:
+    request = Request(
+        f"https://api.github.com/repos/{repo}/actions/workflows/release.yml/dispatches",
+        data=json.dumps({"ref": tag}).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "win11-magic-upgrade-release-bump",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        print(f"Dispatched release.yml on {tag}: HTTP {response.status}")
 
 
 if __name__ == "__main__":
