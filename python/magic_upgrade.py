@@ -1603,6 +1603,25 @@ def _main_after_no_args() -> None:
     except Exception:
         pass
 
+    try:
+        from engine.pre_reboot import (  # type: ignore
+            boot_guard_skipped,
+            guard_blocks_action,
+            startup_action,
+            startup_boot_guard,
+        )
+
+        if not boot_guard_skipped(argv):
+            guard_report = startup_boot_guard(argv)
+            if guard_blocks_action(startup_action(argv), str(guard_report.get("verdict") or "")):
+                print("NO-GO: upgrade and reboot steps are blocked.")
+                if any(a in argv_l for a in ("--cli", "--oneclick", "-oneclick", "--mbr", "--srp")):
+                    raise SystemExit(2)
+    except SystemExit:
+        raise
+    except Exception as guard_error:
+        print(f"Startup boot guard failed: {guard_error}")
+
     if not argv and sys.stdin.isatty() and sys.stdout.isatty():
         from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
 
