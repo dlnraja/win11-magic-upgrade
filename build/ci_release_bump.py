@@ -26,16 +26,23 @@ if "engine" not in sys.modules:
 from engine.self_update import bump_level, current_version, next_version, should_tag_release  # noqa: E402
 
 
-def git(*args: str) -> str:
+def git(*args: str, check: bool = True) -> tuple[int, str]:
     result = subprocess.run(
         ["git", *args],
         cwd=ROOT,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=60,
     )
-    return (result.stdout or "").strip()
+    if result.returncode != 0:
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+        if check:
+            result.check_returncode()
+    return result.returncode, (result.stdout or "").strip()
 
 
 def write_version(version: str) -> None:
@@ -64,13 +71,33 @@ def write_version(version: str) -> None:
 
 def main() -> int:
     ref = os.environ.get("GITHUB_REF") or ""
-    message = git("log", "-1", "--format=%B")
-    files = [line for line in git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines() if line]
+    _code, message = git("log", "-1", "--format=%B")
+    _code, files_text = git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+    files = [line for line in files_text.splitlines() if line]
     if not should_tag_release(ref, message, files):
         print(f"No release tag for ref={ref!r}")
         return 0
-    messages = git("log", "--format=%s", "-n", "30").splitlines()
-    version = next_version(current_version(), bump_level(messages))
+    _code, subjects = git("log", "--format=%s", "-n", "30")
+    version = next_version(current_version(), bump_level(subjects.splitlines()))
+    token = os.environ.get("GH_TOKEN") or ""
+    repo = os.environ.get("GITHUB_REPOSITORY") or ""
+    if not token or not repo:
+        print("GH_TOKEN or GITHUB_REPOSITORY missing; tag was created locally only")
+        return 1
+    remote = f"https://x-access-token:{token}@github.com/{repo}.git"
+    # VERSION on main stays put when main rejects the version commit, so skip tags that already exist.
+    for _ in range(20):
+        code, existing = git("ls-remote", "--tags", remote, f"refs/tags/v{version}", check=False)
+        if code != 0:
+            print(f"Could not list tags while choosing v{version}")
+            return 1
+        if not existing:
+            break
+        print(f"v{version} already exists")
+        version = next_version(version, "patch")
+    else:
+        print("No free version tag in the next 20 patch numbers")
+        return 1
     print(f"Tagging v{version}")
     write_version(version)
     git("config", "user.name", "github-actions[bot]")
@@ -78,13 +105,11 @@ def main() -> int:
     git("add", "VERSION", "build/version_info.txt", "python/engine/gh_report.py")
     git("commit", "-m", f"chore: release v{version}")
     git("tag", f"v{version}")
-    token = os.environ.get("GH_TOKEN") or ""
-    repo = os.environ.get("GITHUB_REPOSITORY") or ""
-    if not token or not repo:
-        print("GH_TOKEN or GITHUB_REPOSITORY missing; tag was created locally only")
-        return 1
-    remote = f"https://x-access-token:{token}@github.com/{repo}.git"
-    git("push", remote, "HEAD:main")
+    code, _out = git("push", remote, "HEAD:main", check=False)
+    if code == 0:
+        print("Pushed the version commit to main")
+    else:
+        print("Main rejected the version commit. Publishing the tag on its own.")
     git("push", remote, f"v{version}")
     print(f"Pushed v{version}")
     # A tag pushed with GITHUB_TOKEN does not start another workflow.
