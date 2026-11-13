@@ -32,6 +32,28 @@ MAX_WIM_USED_BYTES = 900 * 1024 * 1024
 GPT_ESP_TYPE = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}"
 
 
+def live_bcd_hive_name(name: str) -> bool:
+    """The running BCD hive and its logs. Windows keeps them locked."""
+    low = (name or "").lower()
+    return low == "bcd" or low.startswith("bcd.log")
+
+
+def live_bcd_copy_action(name: str, *, export_ok: bool, offline: bool) -> str:
+    """Never copy a live hive. An offline store may be copied after export fails."""
+    if not live_bcd_hive_name(name):
+        return "copy"
+    if offline:
+        return "copy"
+    return "skip-info" if export_ok else "skip-warn"
+
+
+def export_file_ok(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
     try:
         r = subprocess.run(
@@ -144,8 +166,14 @@ $out | ConvertTo-Json -Compress -Depth 4
     return []
 
 
-def _copy_tree_filtered(src: Path, dst: Path) -> tuple[int, int]:
-    """Copy files recursively; skip System Volume Information / $RECYCLE.BIN. Returns (files, bytes)."""
+def _copy_tree_filtered(
+    src: Path,
+    dst: Path,
+    *,
+    export_ok: bool = False,
+    offline: bool = False,
+) -> tuple[int, int]:
+    """Copy files recursively. The live BCD hive is never copied."""
     files = 0
     nbytes = 0
     skip_names = {"system volume information", "$recycle.bin", "recycle.bin"}
@@ -155,6 +183,16 @@ def _copy_tree_filtered(src: Path, dst: Path) -> tuple[int, int]:
         target_dir = dst / rel_root
         target_dir.mkdir(parents=True, exist_ok=True)
         for name in filenames:
+            action = live_bcd_copy_action(name, export_ok=export_ok, offline=offline)
+            if action == "skip-info":
+                log(f"Live BCD hive {name} left locked; bcdedit /export is the backup", "INFO")
+                continue
+            if action == "skip-warn":
+                log(
+                    f"Live BCD hive {name} was not copied. bcdedit /export did not produce a file.",
+                    "WARN",
+                )
+                continue
             sp = Path(root) / name
             tp = target_dir / name
             try:
@@ -162,7 +200,7 @@ def _copy_tree_filtered(src: Path, dst: Path) -> tuple[int, int]:
                 files += 1
                 nbytes += sp.stat().st_size
             except Exception as exc:
-                # Error 32 (file in use) is a warning. It is not a reason to shrink or recreate an ESP.
+                # A locked file other than the BCD hive is a warning, not a reason to shrink the ESP.
                 log(f"Backup skipped locked file {name}: {exc}", "WARN")
                 continue
     return files, nbytes
@@ -382,7 +420,12 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
             src = Path(f"{letter.rstrip(':')}:\\")
             files_dir = part_dir / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
-            nfiles, nbytes = _copy_tree_filtered(src, files_dir)
+            nfiles, nbytes = _copy_tree_filtered(
+                src,
+                files_dir,
+                export_ok=bool(result.get("bcd")),
+                offline=False,
+            )
             part_info = {
                 "role": role,
                 "letter": letter,

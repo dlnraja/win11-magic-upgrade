@@ -11,6 +11,7 @@ import locale
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
@@ -129,6 +130,7 @@ class App(tk.Tk):
 
         self.geometry("980x760")
         self.minsize(860, 640)
+        self.resizable(True, True)
         self._action_buttons: list[tk.Button] = []
         self._opt_vars: dict[str, tk.BooleanVar] = {}
         lang = (locale.getdefaultlocale()[0] or "en").lower()
@@ -182,10 +184,23 @@ class App(tk.Tk):
             cursor="hand2",
             padx=18,
             pady=14,
-            command=lambda: self.start("oneclick"),
+            command=self._startup_button,
         )
         self.btn_go.pack(fill="x")
         self._action_buttons.append(self.btn_go)
+        self._startup_cancel_btn = tk.Button(
+            hero,
+            text="Cancel",
+            font=("Segoe UI", 11),
+            bg="#7f1d1d",
+            fg="white",
+            activebackground="#991b1b",
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=8,
+            command=self._startup_cancel,
+        )
 
         # --- Secondary actions ---
         btns = tk.Frame(self, bg="#0f172a")
@@ -242,11 +257,25 @@ class App(tk.Tk):
             anchor="w",
         ).pack(anchor="w")
 
-        # --- Options (checkboxes) ---
-        self._build_options_panel()
+        # --- Options above the log, with a draggable sash between them ---
+        self._paned = tk.PanedWindow(
+            self,
+            orient=tk.VERTICAL,
+            sashwidth=8,
+            sashrelief="raised",
+            bg="#334155",
+            opaqueresize=True,
+            bd=0,
+        )
+        self._paned.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        top = tk.Frame(self._paned, bg="#0f172a")
+        bottom = tk.Frame(self._paned, bg="#0f172a")
+        self._paned.add(top, stretch="always", minsize=160)
+        self._paned.add(bottom, stretch="always", minsize=140)
+        self._build_options_panel(top)
 
         # --- Progress panel ---
-        prog = tk.Frame(self, bg="#0f172a")
+        prog = tk.Frame(top, bg="#0f172a")
         prog.pack(fill="x", padx=20, pady=(4, 6))
         self.phase_var = tk.StringVar(value=self.t.get("progress_idle", "Idle"))
         self.detail_var = tk.StringVar(value="")
@@ -355,8 +384,28 @@ class App(tk.Tk):
         self._progress_job = None
         self._last_progress: dict = {}
 
+        tools = tk.Frame(bottom, bg="#0f172a")
+        tools.pack(fill="x", padx=8, pady=(4, 2))
+        for label, command in (
+            ("Open log in large window", self._open_log_window),
+            ("Open log folder", self._open_log_folder),
+        ):
+            tk.Button(
+                tools,
+                text=label,
+                font=("Segoe UI", 9),
+                bg="#1e293b",
+                fg="#e2e8f0",
+                activebackground="#334155",
+                relief="flat",
+                cursor="hand2",
+                padx=8,
+                pady=4,
+                command=command,
+            ).pack(side="left", padx=(0, 6))
+        self._log_viewers: list = []
         self.log = scrolledtext.ScrolledText(
-            self,
+            bottom,
             font=("Consolas", 9),
             bg="#020617",
             fg="#cbd5e1",
@@ -364,17 +413,33 @@ class App(tk.Tk):
             relief="flat",
             height=12,
         )
-        self.log.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        self.log.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._layout_file = self._gui_layout_file()
+        self._paned.bind("<ButtonRelease-1>", self._remember_sash)
+        self.bind("<Configure>", self._remember_sash_later)
+        self.after(250, self._restore_sash)
         self.append(f"Root: {self.root_dir}\n")
         self.append("GUI: check options below, then ONE-CLICK. Engine is pure Python.\n")
         if is_admin():
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
+        self._count_alive = False
+        self._count_job = None
+        if not self._auto_action:
+            from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
+
+            self._count_left = startup_countdown_seconds()
+            self._count_alive = True
+            self._startup_cancel_btn.pack(fill="x", pady=(6, 0))
+            self._paint_startup_button()
+            self._count_job = self.after(1000, self._startup_tick)
+        else:
+            self.btn_go.configure(command=lambda: self.start("oneclick"))
 
         if self._auto_action:
             self.after(350, lambda: self.start(self._auto_action or "oneclick"))
 
-    def _build_options_panel(self) -> None:
+    def _build_options_panel(self, parent: tk.Misc) -> None:
         from gui_panel import (  # type: ignore
             OPTIONS,
             apply_options_to_environ,
@@ -393,7 +458,7 @@ class App(tk.Tk):
         }
         saved = load_option_values()
         wrap = tk.LabelFrame(
-            self,
+            parent,
             text=self.t.get("opts_title", "Options (check / uncheck)"),
             font=("Segoe UI Semibold", 10),
             fg="#e2e8f0",
@@ -472,6 +537,64 @@ class App(tk.Tk):
     def append(self, text: str) -> None:
         self.log.insert("end", text)
         self.log.see("end")
+        for viewer in list(getattr(self, "_log_viewers", ())):
+            try:
+                viewer.add_text(text)
+            except Exception:
+                try:
+                    self._log_viewers.remove(viewer)
+                except ValueError:
+                    pass
+
+    def _gui_layout_file(self) -> Path:
+        from gui_log import layout_file
+
+        base = Path(os.environ.get("LOCALAPPDATA", ".")) / "Win11MagicUpgrade"
+        return layout_file(base)
+
+    def _remember_sash_later(self, _event: object | None = None) -> None:
+        if getattr(self, "_sash_job", None):
+            return
+        self._sash_job = self.after(400, self._remember_sash)
+
+    def _remember_sash(self, _event: object | None = None) -> None:
+        self._sash_job = None
+        try:
+            _x, pos = self._paned.sash_coord(0)
+        except Exception:
+            return
+        from gui_log import clamp_sash, save_sash
+
+        total = max(self._paned.winfo_height(), 1)
+        if total < 200:
+            return
+        save_sash(self._layout_file, clamp_sash(pos, total))
+
+    def _restore_sash(self) -> None:
+        from gui_log import clamp_sash, load_sash
+
+        total = max(self._paned.winfo_height(), 1)
+        pos = clamp_sash(load_sash(self._layout_file), total)
+        try:
+            self._paned.sash_place(0, 1, pos)
+        except Exception:
+            pass
+
+    def _open_log_folder(self) -> None:
+        from gui_log import log_folder
+
+        folder = log_folder()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(folder)  # type: ignore[attr-defined]
+            else:
+                self.append(f"Log folder: {folder}\n")
+        except OSError as exc:
+            self.append(f"Could not open log folder: {exc}\n")
+
+    def _open_log_window(self) -> None:
+        LogWindow(self)
 
     def _apply_progress_ui(self, info: dict) -> None:
         from engine.progress import format_elapsed, format_eta  # type: ignore
@@ -547,6 +670,148 @@ class App(tk.Tk):
         except Exception:
             pass
         self._progress_job = self.after(500, self._poll_progress)
+
+    def _paint_startup_button(self) -> None:
+        self.btn_go.configure(
+            text=f"Start boot check and official update ({self._count_left})",
+            command=self._startup_now,
+        )
+
+    def _startup_tick(self) -> None:
+        from engine.win11_inplace_policy import next_countdown  # type: ignore
+
+        if not self._count_alive:
+            return
+        self._count_left, action = next_countdown(self._count_left)
+        if action == "run":
+            self._begin_startup_chain()
+            return
+        self._paint_startup_button()
+        self._count_job = self.after(1000, self._startup_tick)
+
+    def _startup_button(self) -> None:
+        self.start("oneclick")
+
+    def _startup_now(self) -> None:
+        self._count_alive = False
+        if self._count_job is not None:
+            try:
+                self.after_cancel(self._count_job)
+            except Exception:
+                pass
+            self._count_job = None
+        self._begin_startup_chain()
+
+    def _startup_cancel(self) -> None:
+        if not self._count_alive:
+            return
+        self._count_alive = False
+        if self._count_job is not None:
+            try:
+                self.after_cancel(self._count_job)
+            except Exception:
+                pass
+            self._count_job = None
+        self.btn_go.configure(text="Start boot check and official update", command=self._startup_now)
+        try:
+            self._startup_cancel_btn.pack_forget()
+        except Exception:
+            pass
+        self.append("Startup countdown cancelled.\n")
+
+    def _begin_startup_chain(self) -> None:
+        self._count_alive = False
+        try:
+            self._startup_cancel_btn.pack_forget()
+        except Exception:
+            pass
+        self.btn_go.configure(state="disabled", text="Boot check and official update running")
+        self._noargs_boot_policy()
+
+    def _noargs_boot_policy(self) -> None:
+        """Boot guard, repair, then the official update only on a clean GO."""
+        if self._busy or self._auto_action:
+            return
+        self.append("Startup: boot guard (MBR/EFI/BCD/ESP) before any update.\n")
+
+        def work() -> None:
+            try:
+                from engine.detect import collect_report  # type: ignore
+                from engine.win11_inplace_policy import decide_noargs_startup, decide_oneclick  # type: ignore
+                from engine.win11_release import floor_target, refresh_latest_win11  # type: ignore
+                from gui_panel import apply_options_to_environ, load_option_values  # type: ignore
+
+                apply_options_to_environ(load_option_values())
+                opt_out = os.environ.get("MAGIC_SKIP_STARTUP_UPDATE", "").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                report = collect_report()
+                guard = self._startup_guard()
+                repaired = False
+                if guard.get("verdict") != "GO" or int(guard.get("errors") or 0) != 0:
+                    repaired = True
+                    guard = self._startup_repair(guard)
+                try:
+                    target = refresh_latest_win11(host_build=int(getattr(report, "build", 0) or 0))
+                except Exception:
+                    target = floor_target()
+                plan = decide_oneclick(
+                    build=int(getattr(report, "build", 0) or 0),
+                    ubr=int(getattr(report, "ubr", 0) or 0),
+                    display_version=str(getattr(report, "display_version", "") or ""),
+                    target_version=str(getattr(target, "version", "") or ""),
+                    target_build=int(getattr(target, "major", 0) or 0),
+                    target_ubr=int(getattr(target, "ubr", 0) or 0),
+                )
+                decision = decide_noargs_startup(
+                    is_win11=bool(getattr(report, "is_win11", False)),
+                    guard_go=guard.get("verdict") == "GO",
+                    issues=list(guard.get("issues") or []),
+                    opt_out=opt_out,
+                    update_path=plan.path,
+                    repaired=repaired,
+                    error_count=int(guard.get("errors") or 0),
+                )
+            except Exception as exc:
+                self.after(0, lambda: self.append(f"Startup boot policy skipped: {exc}\n"))
+                return
+            self.after(0, lambda: self._present_startup(decision))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _startup_guard(self) -> dict:
+        try:
+            from engine.boot_safe import postflight_boot_edit  # type: ignore
+
+            post = postflight_boot_edit()
+            issues = [str(item) for item in (post.get("issues") or []) if str(item)]
+            clean = bool(post.get("ok")) and not issues and post.get("verdict", "GO") != "NO-GO"
+            return {"verdict": "GO" if clean else "NO-GO", "issues": issues, "errors": 0 if clean else max(1, len(issues))}
+        except Exception as exc:
+            return {"verdict": "NO-GO", "issues": [type(exc).__name__]}
+
+    def _startup_repair(self, guard: dict) -> dict:
+        self.after(0, lambda: self.append("Boot guard is not GO. Repairing before any update.\n"))
+        try:
+            from engine.boot_guard import verify_and_heal_boot  # type: ignore
+
+            verify_and_heal_boot(force=True)
+        except Exception as exc:
+            self.after(0, lambda e=exc: self.append(f"Startup repair skipped: {e}\n"))
+            return guard
+        return self._startup_guard()
+
+    def _present_startup(self, decision) -> None:
+        self.append(decision.reason + "\n")
+        if decision.action == "official_update":
+            self.append("Boot guard is GO. Starting the official in-place update.\n")
+            self.btn_go.configure(state="normal", command=lambda: self.start("oneclick"))
+            self.start("oneclick")
+            return
+        if decision.action in ("repair", "nogo"):
+            self.append("Update stays off until every boot verification passes with zero errors.\n")
 
     def start(self, action: str) -> None:
         if self._busy or self._elevating:
@@ -829,6 +1094,194 @@ class App(tk.Tk):
         self.phase_var.set(self.t.get("progress_done", "Finished"))
 
 
+def run_console_startup() -> int:
+    """No-args console path: boot guard, repair, then the official update only on GO."""
+    from engine.detect import collect_report  # type: ignore
+    from engine.win11_inplace_policy import decide_noargs_startup, decide_oneclick  # type: ignore
+    from engine.win11_release import floor_target, refresh_latest_win11  # type: ignore
+
+    print("Startup: boot guard (MBR/EFI/BCD/ESP) before any update.")
+    report = collect_report()
+    guard = _guard_snapshot()
+    repaired = False
+    if guard.get("verdict") != "GO" or int(guard.get("errors") or 0) != 0:
+        repaired = True
+        print("Boot guard is not GO. Repairing before any update.")
+        try:
+            from engine.boot_guard import verify_and_heal_boot  # type: ignore
+
+            verify_and_heal_boot(force=True)
+        except Exception as exc:
+            print(f"Startup repair skipped: {exc}")
+        guard = _guard_snapshot()
+    try:
+        target = refresh_latest_win11(host_build=int(getattr(report, "build", 0) or 0))
+    except Exception:
+        target = floor_target()
+    plan = decide_oneclick(
+        build=int(getattr(report, "build", 0) or 0),
+        ubr=int(getattr(report, "ubr", 0) or 0),
+        display_version=str(getattr(report, "display_version", "") or ""),
+        target_version=str(getattr(target, "version", "") or ""),
+        target_build=int(getattr(target, "major", 0) or 0),
+        target_ubr=int(getattr(target, "ubr", 0) or 0),
+    )
+    opt_out = os.environ.get("MAGIC_SKIP_STARTUP_UPDATE", "").strip().lower() in ("1", "true", "yes")
+    decision = decide_noargs_startup(
+        is_win11=bool(getattr(report, "is_win11", False)),
+        guard_go=guard.get("verdict") == "GO",
+        issues=list(guard.get("issues") or []),
+        opt_out=opt_out,
+        update_path=plan.path,
+        repaired=repaired,
+        error_count=int(guard.get("errors") or 0),
+    )
+    print(decision.reason)
+    if decision.action != "official_update":
+        return 0 if decision.action in ("health", "idle") else 2
+    return int(run_pipeline())
+
+
+def _guard_snapshot() -> dict:
+    try:
+        from engine.boot_safe import postflight_boot_edit  # type: ignore
+
+        post = postflight_boot_edit()
+        issues = [str(item) for item in (post.get("issues") or []) if str(item)]
+        clean = bool(post.get("ok")) and not issues and post.get("verdict", "GO") != "NO-GO"
+        return {"verdict": "GO" if clean else "NO-GO", "issues": issues, "errors": 0 if clean else max(1, len(issues))}
+    except Exception as exc:
+        return {"verdict": "NO-GO", "issues": [type(exc).__name__], "errors": 1}
+
+
+def console_countdown(seconds: int, *, wait, key_pressed) -> bool:
+    """Print a countdown. Return False when a key cancels it."""
+    from engine.win11_inplace_policy import next_countdown
+
+    print(f"Boot check and official update start in {seconds} s. Press a key to cancel.", flush=True)
+    left = seconds
+    while True:
+        print(f"\r{left} s remaining. Press a key to cancel.", end="", flush=True)
+        if key_pressed(wait):
+            print("\nStartup countdown cancelled.")
+            return False
+        left, action = next_countdown(left)
+        if action == "run":
+            print("\nStarting boot check.")
+            return True
+
+
+def _console_key_pressed(wait) -> bool:
+    import select
+
+    wait(0.1)
+    for _ in range(9):
+        if os.name == "nt":
+            import msvcrt
+
+            if msvcrt.kbhit():
+                msvcrt.getwch()
+                return True
+        else:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+            if ready:
+                sys.stdin.read(1)
+                return True
+        wait(0.1)
+    return False
+
+
+class LogWindow(tk.Toplevel):
+    """Resizable live view of the session log, with search and copy."""
+
+    def __init__(self, app: App) -> None:
+        super().__init__(app)
+        self.title("Win11 Magic Upgrade — log")
+        self.geometry("900x640")
+        self.minsize(640, 400)
+        self.resizable(True, True)
+        self.configure(bg="#0f172a")
+        self._app = app
+        self._file_pos = 0
+        self._search_from = "1.0"
+        bar = tk.Frame(self, bg="#0f172a")
+        bar.pack(fill="x", padx=10, pady=8)
+        self._query = tk.StringVar()
+        tk.Entry(bar, textvariable=self._query, font=("Segoe UI", 10), width=32).pack(side="left")
+        tk.Button(bar, text="Search", command=self._search, relief="flat", bg="#1e293b", fg="#e2e8f0").pack(
+            side="left", padx=6
+        )
+        tk.Button(bar, text="Copy", command=self._copy, relief="flat", bg="#1e293b", fg="#e2e8f0").pack(side="left")
+        self.text = scrolledtext.ScrolledText(
+            self,
+            font=("Consolas", 10),
+            bg="#020617",
+            fg="#e2e8f0",
+            insertbackground="#e2e8f0",
+            relief="flat",
+        )
+        self.text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.text.insert("1.0", app.log.get("1.0", "end"))
+        self.text.see("end")
+        app._log_viewers.append(self)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.after(500, self._tick)
+
+    def add_text(self, text: str) -> None:
+        self.text.insert("end", text)
+        self.text.see("end")
+
+    def _tick(self) -> None:
+        from gui_log import log_folder, newest_log
+
+        path = newest_log(log_folder())
+        if path is not None:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                data = b""
+            if len(data) < self._file_pos:
+                self._file_pos = 0
+            if len(data) > self._file_pos:
+                chunk = data[self._file_pos :].decode("utf-8", "replace")
+                self._file_pos = len(data)
+                tail = self.text.get("end-1500c", "end")
+                if chunk and chunk not in tail:
+                    self.add_text(chunk if chunk.endswith("\n") else chunk + "\n")
+        if self.winfo_exists():
+            self.after(700, self._tick)
+
+    def _search(self) -> None:
+        needle = self._query.get()
+        if not needle:
+            return
+        start = self.text.search(needle, self._search_from, nocase=True, stopindex="end")
+        if not start:
+            start = self.text.search(needle, "1.0", nocase=True, stopindex="end")
+        if not start:
+            return
+        end = f"{start}+{len(needle)}c"
+        self.text.tag_remove("sel", "1.0", "end")
+        self.text.tag_add("sel", start, end)
+        self.text.see(start)
+        self._search_from = end
+
+    def _copy(self) -> None:
+        try:
+            payload = self.text.get("sel.first", "sel.last")
+        except tk.TclError:
+            payload = self.text.get("1.0", "end-1c")
+        self.clipboard_clear()
+        self.clipboard_append(payload)
+
+    def _close(self) -> None:
+        try:
+            self._app._log_viewers.remove(self)
+        except ValueError:
+            pass
+        self.destroy()
+
+
 def _parse_auto_action(argv: list[str]) -> str | None:
     lower = [a.lower() for a in argv]
     if "--auto" in lower:
@@ -992,6 +1445,8 @@ Env (selected):
   MAGIC_BOOT_AUTO_FIX=1        Run EFI/MBR/smart-partition failover bot
   MAGIC_SKIP_BOOT_REMEDIATE=1  Disable boot remediation bot
   MAGIC_SKIP_BOOT_GUARD=1      Disable autonomous EFI/GRUB/WinRE safety net
+  MAGIC_SKIP_STARTUP_UPDATE=1  Double-click runs the boot guard only, no auto update
+  MAGIC_STARTUP_COUNTDOWN=20   Seconds before the no-args startup chain (default 20)
   MAGIC_WINRE_BOOT=1           Force one-shot WinRE ramdisk on next reboot
   MAGIC_WINPE_BOOT=1           Force one-shot WinPE ramdisk if WinRE unavailable
   MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
@@ -1062,10 +1517,20 @@ def main() -> None:
     except Exception:
         pass
 
+    if not argv and sys.stdin.isatty() and sys.stdout.isatty():
+        from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
+
+        if not console_countdown(startup_countdown_seconds(), wait=time.sleep, key_pressed=_console_key_pressed):
+            raise SystemExit(0)
+        if not is_admin() and relaunch_as_admin(["--startup-chain"]):
+            raise SystemExit(0)
+        raise SystemExit(run_console_startup())
+
     cli = any(
         a in argv_l
         for a in (
             "--cli",
+            "--startup-chain",
             "--oneclick",
             "-oneclick",
             "--diagnose",
@@ -1128,6 +1593,8 @@ def main() -> None:
 
                 print(apply_research_pack(collect_report(), resume=False))
                 return
+            if "--startup-chain" in argv_l:
+                raise SystemExit(run_console_startup())
             if "--diagnose" in argv_l:
                 run_diagnose()
                 return
