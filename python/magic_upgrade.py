@@ -956,6 +956,8 @@ Win11 Magic Upgrade - CLI
   Win11MagicUpgrade.exe --cli --support-zip | --offline-pack
   Win11MagicUpgrade.exe --cli --research
   Win11MagicUpgrade.exe --cli --stats
+  Win11MagicUpgrade.exe --update
+  Win11MagicUpgrade.exe --no-update
 
 Exit codes:
   0  OK / Setup launched / already done
@@ -1048,6 +1050,12 @@ def main() -> None:
         pass
     auto_action = _parse_auto_action(argv)
     strings = load_strings(root)
+    try:
+        from engine.self_update import startup_update  # type: ignore
+
+        startup_update(argv)
+    except Exception:
+        pass
 
     cli = any(
         a in argv_l

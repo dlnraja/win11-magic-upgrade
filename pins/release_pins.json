@@ -1,0 +1,11 @@
+{
+  "win11_floor": {
+    "version": "26H2",
+    "build": 26300,
+    "ubr": 9725
+  },
+  "opencore": {
+    "version": "1.0.8",
+    "sha256": "2011e8b7216ecb2645d97ea710df965947edd406846e92050b9bc4190be6d27b"
+  }
+}

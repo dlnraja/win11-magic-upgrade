@@ -124,6 +124,20 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
         return False
 
     log("Repairing Windows Boot Manager (bcdboot, no format)...", "STEP")
+    from .self_update import boot_critical_section
+
+    with boot_critical_section():
+        return _repair_boot_locked(prefer_uefi, sys_root, bcdboot)
+
+
+def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool:
+    from .drive_map import access_root, bcdboot_target
+    from .esp_access import bcdboot_command, poll_if_due, prepare_boot_step, resolved_bcd_mode
+    from .proc_guard import GateState, PostState, probe_admin, precheck, postcheck
+    from .secureboot_certs import efi_write_block_reason
+    from .sysreserved import mount_esp, unmount_letter
+    from .diskpart_safe import assign_letter_to_volume, find_esp_candidates, free_letter, remove_letter_from_volume
+
     step = prepare_boot_step("bcdboot")
     if step is not None and step.abort:
         return False

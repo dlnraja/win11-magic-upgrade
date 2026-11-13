@@ -47,6 +47,7 @@ python/gui_panel.py                Checkbox options → MAGIC_* env (persisted)
               ├── rollback_scan.py Prior SafeOS Rollback folder analysis
               ├── preflight_power.py AC power + sleep timeouts for Setup
               ├── version_planner.py  Host/ISO build evaluation + smart skip logic
+              ├── self_update.py  GitHub release check, staged swap, pin refresh
               ├── logutil.py       Panther logs + MigrationReport + state.json
               └── pipeline.py      Orchestration + quiet setup + resume
 ```

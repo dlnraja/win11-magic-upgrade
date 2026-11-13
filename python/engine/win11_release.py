@@ -74,7 +74,7 @@ class ReleaseTarget:
 
 
 def floor_target() -> ReleaseTarget:
-    return ReleaseTarget(
+    base = ReleaseTarget(
         version=FALLBACK_WIN11_VERSION,
         major=FALLBACK_WIN11_BUILD,
         ubr=FALLBACK_WIN11_UBR,
@@ -82,6 +82,19 @@ def floor_target() -> ReleaseTarget:
         excluded=FALLBACK_EXCLUDED,
         edition_ids=FALLBACK_EDITION_IDS,
     )
+    try:
+        from .self_update import pin_win11_floor
+
+        pin = pin_win11_floor()
+    except Exception:
+        pin = None
+    if not pin:
+        return base
+    version, build, ubr = pin
+    newer = version == base.version and (build > base.major or (build == base.major and ubr > base.ubr))
+    if not newer:
+        return base
+    return replace(base, major=build, ubr=ubr, source="pin")
 
 
 def version_key(version: str) -> tuple[int, int]:

@@ -1,0 +1,40 @@
+name: Release bump
+
+# After a code merge to main, create the next semver tag.
+# The tag push is what starts release.yml. This workflow does not run on
+# pull requests, and it refuses every ref that is not refs/heads/main.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-bump-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag-main:
+    name: Tag main after code merge
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/main' && github.repository == 'dlnraja/win11-magic-upgrade'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 50
+          ref: main
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Bump VERSION and push the tag
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python build/ci_release_bump.py
