@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "bcdedit-current-entry",
+      "patterns": [
+        "An error occurred while attempting to reference the specified entry",
+        "The specified entry"
+      ],
+      "cause": "bcdedit was aimed at {current}. That identifier does not exist in an offline BCD store or in WinRE, and braces are mangled when the command is sent through a shell.",
+      "syntax": "bcdedit /enum {default} /v",
+      "repair_order": [
+        "Run bcdedit as an argument list, with no shell.",
+        "Parse bcdedit /enum {default} /v and bcdedit /enum osloader /v.",
+        "Choose the Windows Boot Loader whose device or osdevice is partition=<system drive>.",
+        "Use that GUID. If none matches, use {default}.",
+        "Never pass {current} together with /store.",
+        "After /set, run /enum and require device and osdevice to be partition=C:."
+      ],
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdedit"
+      ]
+    }
+  ]
+}

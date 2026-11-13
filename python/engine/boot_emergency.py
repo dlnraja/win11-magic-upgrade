@@ -157,13 +157,17 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None, mounted: str | No
     c_bm, o_bm = _bcdedit("/enum", "{bootmgr}")
     _check("bcd_bootmgr", c_bm == 0 and bool(o_bm) and "cannot" not in (o_bm or "").lower())
 
-    from .boot_safe import resolve_loader_guid
+    from .boot_safe import resolve_loader_identifier
 
-    _all_code, all_text = _bcdedit("/enum", "all")
-    loader = resolve_loader_guid(all_text or "")
-    c_cur, o_cur = _bcdedit("/enum", loader)
+    _def_code, enum_default = _bcdedit("/enum", "{default}", "/v")
+    _os_code, enum_os = _bcdedit("/enum", "osloader", "/v")
+    loader = resolve_loader_identifier(
+        f"{enum_default}\n{enum_os}",
+        system_drive=os.environ.get("SystemDrive", "C:"),
+    )
+    c_cur, o_cur = _bcdedit("/enum", loader, "/v")
     if c_cur != 0 and loader != "{default}":
-        c_cur, o_cur = _bcdedit("/enum", "{default}")
+        c_cur, o_cur = _bcdedit("/enum", "{default}", "/v")
     _check("bcd_osloader", c_cur == 0 and bool(o_cur), warn=True)
 
     device_ok = False
@@ -463,10 +467,14 @@ def emergency_regenerate_bcd(*, prefer_uefi: bool | None = None) -> dict[str, An
     out["actions"].extend(heal_bcd_store(prefer_uefi=uefi))
 
     # Rebuild boot menu order: Windows first
-    from .boot_safe import resolve_loader_guid
+    from .boot_safe import resolve_loader_identifier
 
-    _order_code, order_text = _bcdedit("/enum", "all")
-    _bcdedit("/displayorder", resolve_loader_guid(order_text or ""), "/addfirst")
+    _order_code, order_text = _bcdedit("/enum", "osloader", "/v")
+    _bcdedit(
+        "/displayorder",
+        resolve_loader_identifier(order_text or "", system_drive=os.environ.get("SystemDrive", "C:")),
+        "/addfirst",
+    )
     out["actions"].append("displayorder_current_first")
 
     verify = deep_boot_verification(prefer_uefi=uefi)
