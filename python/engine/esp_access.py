@@ -852,11 +852,23 @@ def mount_system_partition(*, role: str = "auto", prefer_letter: str | None = No
         log(f"ESP mount failed: {exc}", "ERROR")
         return None
     remember_mount(path, applied, target)
-    letter = drive_letter_of(path)
+    method = {
+        "assign_letter": "Add-PartitionAccessPath",
+        "diskpart_assign": "diskpart assign",
+        "mountvol": "mountvol /S",
+        "folder": "folder mount",
+        "reuse_letter": "existing letter",
+        "reuse_folder": "existing folder",
+    }.get(applied.action, applied.action)
+    cleanup = (
+        " This letter is temporary and will be removed at cleanup."
+        if applied.mounted_by_us
+        else " The existing access path is left in place."
+    )
+    shown = path if not (letter := drive_letter_of(path)) else f"{letter}:"
+    log(f"ESP opened at {shown} via {method}.{cleanup}", "OK")
     if letter and (access_root(path) or "").upper() == f"{letter}:\\":
-        log(f"System partition available at {letter}: ({applied.action})", "OK")
         return f"{letter}:"
-    log(f"System partition available at {path} ({applied.action})", "OK")
     return path.rstrip("\\")
 
 

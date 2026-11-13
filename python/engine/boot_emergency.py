@@ -37,19 +37,10 @@ def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
 
 
 def _ps(script: str, timeout: int = 240) -> tuple[int, str]:
-    """Run a PowerShell snippet; returns (code, stdout+stderr)."""
-    return _run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
-        timeout=timeout,
-    )
+    """Run a PowerShell snippet with UTF-8 pipes; returns (code, stdout+stderr)."""
+    from .proc_guard import powershell_command
+
+    return _run(powershell_command(script), timeout=timeout)
 
 
 def _firmware() -> str:
@@ -370,32 +361,10 @@ Write-Output ("OK|" + $letter + "|" + $partStyle + "|" + $diskN)
 
 
 def ps_mount_esp_letter() -> str | None:
-    """Mount ESP via Storage Add-PartitionAccessPath (no diskpart)."""
-    script = r"""
-$ErrorActionPreference = 'Stop'
-$esp = Get-Partition | Where-Object {
-  $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -or $_.IsSystem -eq $true
-} | Select-Object -First 1
-if (-not $esp) { throw 'No ESP/system partition' }
-if ($esp.DriveLetter) { Write-Output ($esp.DriveLetter.ToString() + ':'); exit 0 }
-$letter = $null
-foreach ($L in 90..68) {
-  $ch = [char]$L
-  if (-not (Test-Path ("$ch" + ':\'))) { $letter = "$ch"; break }
-}
-if (-not $letter) { throw 'No free letter' }
-Add-PartitionAccessPath -DiskNumber $esp.DiskNumber -PartitionNumber $esp.PartitionNumber -AccessPath ($letter + ':')
-Write-Output ($letter + ':')
-"""
-    code, out = _ps(script, timeout=120)
-    if code != 0:
-        return None
-    for line in (out or "").splitlines():
-        line = line.strip()
-        if re.fullmatch(r"[A-Z]:", line):
-            log(f"ESP mounted via Storage → {line}", "OK")
-            return line
-    return None
+    """Open the ESP from the fresh drive map. Storage assign comes before mountvol /S."""
+    from .esp_access import mount_system_partition
+
+    return mount_system_partition()
 
 
 # ---------------------------------------------------------------------------

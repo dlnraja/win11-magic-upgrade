@@ -13,6 +13,7 @@ from engine.proc_guard import (  # noqa: E402
     GateState,
     PostState,
     copy_bounded,
+    decode_tool_output,
     download_bounded,
     postcheck,
     precheck,
@@ -39,6 +40,16 @@ class _HangProc:
 
     def wait(self, timeout=None) -> int:
         return -9
+
+
+def test_french_oem_output_is_not_mojibake() -> None:
+    french = "Paramètre incorrect."
+    oem = french.encode("cp850")
+    decoded = decode_tool_output(oem, oem="cp850")
+    assert decoded == french
+    assert "\ufffd" not in decoded
+    assert decode_tool_output(french.encode("utf-8")) == french
+    assert decode_tool_output(french) == french
 
 
 def test_tool_timeouts_are_bounded() -> None:
@@ -283,6 +294,7 @@ def test_workflow_jobs_have_timeouts() -> None:
 
 
 if __name__ == "__main__":
+    test_french_oem_output_is_not_mojibake()
     test_tool_timeouts_are_bounded()
     test_precheck_blocks_admin_space_target_bitlocker_secureboot()
     test_postcheck_requires_files_bcd_and_esp()

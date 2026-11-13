@@ -24,7 +24,6 @@ from .diskpart_safe import (
     find_esp_candidates,
     find_system_reserved_candidates,
     find_volume_by_letter,
-    free_letter as _dp_free_letter,
     get_system_disk_number,
     remove_letter_from_volume,
     run_diskpart,
@@ -37,7 +36,16 @@ MIN_FREE_MB = 50
 TARGET_ESP_MB = 512
 MIN_SIZE_MB_COMFORTABLE = 260
 
-LETTER_CANDIDATES = ["Y", "X", "W", "V", "U", "S"]
+def _free_letter() -> str | None:
+    """Any free letter from the live volumes. Nothing is preferred, including X:."""
+    from .drive_map import pick_free_letter
+
+    used = set()
+    for code in range(ord("A"), ord("Z") + 1):
+        letter = chr(code)
+        if Path(f"{letter}:\\").exists():
+            used.add(letter)
+    return pick_free_letter(used)
 
 
 def _run(cmd: list[str], input_text: str | None = None, timeout: int = 300) -> tuple[int, str]:
@@ -55,8 +63,6 @@ def _diskpart(script: str) -> str:
     return out
 
 
-def _free_letter() -> str | None:
-    return _dp_free_letter(tuple(LETTER_CANDIDATES))
 
 
 def _mb(path: str | Path) -> tuple[float, float]:

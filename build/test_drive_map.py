@@ -674,11 +674,15 @@ def test_letter_x_taken_and_esp_already_lettered() -> None:
     bare = _esp(letter=None)
     drive_map = _gpt(bare, taken)
     chain = access_chain(bare, letters_in_use(drive_map), folder_fallback="esp-mount", firmware="UEFI")
-    assert [step.action for step in chain] == ["assign_letter", "diskpart_assign", "folder"]
-    assert all(step.letter != "X" for step in chain if step.letter)
-    assert "mountvol" not in [step.action for step in chain]
+    assert [step.action for step in chain[:3]] == ["assign_letter", "diskpart_assign", "folder"]
+    assert chain[-1].action == "mountvol"
+    assert chain[0].letter != "X"
+    assert chain[-1].letter == chain[0].letter
+    bios = access_chain(bare, letters_in_use(drive_map), folder_fallback="esp-mount", firmware="BIOS")
+    assert "mountvol" not in [step.action for step in bios]
     decision = decide(drive_map)
-    assert decision.mount is not None and decision.mount.letter != "X"
+    assert decision.mount is not None and decision.mount.action == "assign_letter"
+    assert decision.mount.letter != "X"
 
     lettered = access_chain(_esp(letter="E"), {"C"}, folder_fallback="esp-mount", firmware="UEFI")
     assert len(lettered) == 1

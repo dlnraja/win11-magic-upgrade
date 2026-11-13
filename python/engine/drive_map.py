@@ -662,11 +662,11 @@ def access_chain(
     folder_fallback: str,
     firmware: str = "UEFI",
 ) -> tuple[MountPlan, ...]:
-    """How to open a volume. mountvol /S is never the only step, and not the first.
+    """How to open a volume. Storage and diskpart come before mountvol /S.
 
-    Order: existing letter or folder, Add-PartitionAccessPath, diskpart assign, folder.
+    mountvol /S is last, and only when this boot is UEFI and the volume has
+    no letter and no folder yet. The letter is whatever is free, never a fixed X:.
     """
-    del firmware  # kept so callers record the mode they already detected
     if volume.letter:
         return (
             MountPlan(
@@ -688,6 +688,8 @@ def access_chain(
         steps.append(MountPlan("assign_letter", f"{free}:", free, True, folder_fallback))
         steps.append(MountPlan("diskpart_assign", f"{free}:", free, True, folder_fallback))
     steps.append(MountPlan("folder", folder_fallback, None, True, folder_fallback))
+    if free and (firmware or "").upper() == "UEFI":
+        steps.append(MountPlan("mountvol", f"{free}:", free, True, folder_fallback))
     return tuple(steps)
 
 

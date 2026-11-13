@@ -165,14 +165,63 @@ def _kill_tree(proc: subprocess.Popen) -> bool:
     return killed
 
 
+def oem_code_page() -> str:
+    """Console OEM code page. French Windows mountvol writes cp850, not UTF-8."""
+    if os.name != "nt":
+        return "cp850"
+    try:
+        import ctypes
+
+        return f"cp{int(ctypes.windll.kernel32.GetOEMCP())}"
+    except Exception:
+        return "cp850"
+
+
+def decode_tool_output(data: str | bytes | None, *, oem: str | None = None) -> str:
+    """Decode a native tool's pipe. Valid UTF-8 is kept; otherwise use the OEM page.
+
+    ``Paramètre`` encoded as cp850 must not become ``Param�tre``.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    if not data:
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(oem or oem_code_page(), errors="replace")
+
+
+def _join_output(stdout: str | bytes | None, stderr: str | bytes | None) -> str:
+    return (decode_tool_output(stdout) + "\n" + decode_tool_output(stderr)).strip()
+
+
+PS_UTF8_PREFIX = (
+    "$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+    "try { chcp 65001 > $null } catch {}; "
+)
+
+
+def powershell_command(script: str) -> list[str]:
+    """Run PowerShell with UTF-8 pipes so French messages are not mojibake."""
+    return [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        PS_UTF8_PREFIX + script,
+    ]
+
+
 def _popen_kwargs(input_text: str | None) -> dict:
     kwargs: dict = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "stdin": subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
         "shell": False,
     }
     if os.name == "nt":
@@ -221,22 +270,27 @@ def run_bounded(
         proc = launcher(list(cmd), **_popen_kwargs(input_text))
     except OSError as exc:
         return ExtResult(code=1, output=str(exc), ok=False, reason=f"failed to start {cmd[0]}: {exc}")
+    payload = input_text.encode("utf-8") if isinstance(input_text, str) else input_text
     try:
-        stdout, stderr = proc.communicate(input=input_text, timeout=limit)
+        stdout, stderr = proc.communicate(input=payload, timeout=limit)
     except subprocess.TimeoutExpired as exc:
-        stdout = getattr(exc, "stdout", None) or ""
-        stderr = getattr(exc, "stderr", None) or ""
+        chunks_out = [getattr(exc, "stdout", None)]
+        chunks_err = [getattr(exc, "stderr", None)]
         killed = killer(proc) if killer is not None else _kill_tree(proc)
         try:
             extra_out, extra_err = proc.communicate(timeout=5)
-            stdout = (stdout or "") + (extra_out or "")
-            stderr = (stderr or "") + (extra_err or "")
+            chunks_out.append(extra_out)
+            chunks_err.append(extra_err)
         except Exception:
             pass
-        output = ((stdout or "") + "\n" + (stderr or "")).strip()
+        output = (
+            "".join(decode_tool_output(chunk) for chunk in chunks_out)
+            + "\n"
+            + "".join(decode_tool_output(chunk) for chunk in chunks_err)
+        ).strip()
         reason = f"timeout after {limit}s: {Path(str(cmd[0])).name} killed"
         return ExtResult(code=124, output=output, ok=False, timed_out=True, killed=bool(killed), reason=reason)
-    output = ((stdout or "") + "\n" + (stderr or "")).strip()
+    output = _join_output(stdout, stderr)
     code = proc.returncode if proc.returncode is not None else 1
     if code not in accept_codes:
         return ExtResult(
