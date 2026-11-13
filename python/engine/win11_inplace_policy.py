@@ -180,6 +180,48 @@ def next_remediation(cause: str, *, used: set[str], attempt: int, architecture: 
     return actions
 
 
+_BOOT_ISSUE = re.compile(r"mbr|efi|esp|bcd|bootmgr|bootmgfw", re.I)
+
+
+@dataclass(frozen=True)
+class StartupDecision:
+    action: str  # repair | official_update | health | idle
+    countdown: bool = False
+    allow_bypass: bool = False
+    reason: str = ""
+
+
+def boot_issues_block_update(issues: list[str] | tuple[str, ...]) -> bool:
+    return any(_BOOT_ISSUE.search(str(item) or "") for item in issues)
+
+
+def decide_noargs_startup(
+    *,
+    is_win11: bool,
+    guard_go: bool,
+    issues: list[str] | tuple[str, ...] = (),
+    opt_out: bool = False,
+    update_path: str = "health_check_only",
+) -> StartupDecision:
+    """Double-click policy after the boot guard. Official update only on GO."""
+    if not guard_go or boot_issues_block_update(issues):
+        return StartupDecision(
+            "repair",
+            reason="Boot guard is not GO. Repair MBR/EFI/BCD/ESP first. No update until GO.",
+        )
+    if opt_out:
+        return StartupDecision("idle", reason="Startup update is turned off.")
+    if not is_win11:
+        return StartupDecision("idle", reason="Boot guard is GO. This PC is not Windows 11 yet.")
+    if update_path not in ("inplace_least", "cumulative_update"):
+        return StartupDecision("health", reason="Already on the latest Windows 11. Health check only.")
+    return StartupDecision(
+        "official_update",
+        countdown=True,
+        reason="Windows 11 and boot guard GO. Official in-place update, no bypass.",
+    )
+
+
 def run_inplace_attempts(
     *,
     launch,

@@ -370,6 +370,8 @@ class App(tk.Tk):
         if is_admin():
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
+        if not self._auto_action:
+            self.after(600, self._noargs_boot_policy)
 
         if self._auto_action:
             self.after(350, lambda: self.start(self._auto_action or "oneclick"))
@@ -547,6 +549,86 @@ class App(tk.Tk):
         except Exception:
             pass
         self._progress_job = self.after(500, self._poll_progress)
+
+    def _noargs_boot_policy(self) -> None:
+        """Boot guard first. A GO Windows 11 PC may start the official update."""
+        if self._busy or self._auto_action:
+            return
+        self.append("Startup: boot guard (MBR/EFI/BCD/ESP) before any update.\n")
+
+        def work() -> None:
+            try:
+                from engine.detect import collect_report  # type: ignore
+                from engine.win11_inplace_policy import decide_noargs_startup, decide_oneclick  # type: ignore
+                from engine.win11_release import floor_target, refresh_latest_win11  # type: ignore
+                from gui_panel import apply_options_to_environ, load_option_values  # type: ignore
+
+                apply_options_to_environ(load_option_values())
+                opt_out = os.environ.get("MAGIC_SKIP_STARTUP_UPDATE", "").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                report = collect_report()
+                guard = self._startup_guard()
+                if guard.get("verdict") != "GO":
+                    guard = self._startup_repair(guard)
+                try:
+                    target = refresh_latest_win11(host_build=int(getattr(report, "build", 0) or 0))
+                except Exception:
+                    target = floor_target()
+                plan = decide_oneclick(
+                    build=int(getattr(report, "build", 0) or 0),
+                    ubr=int(getattr(report, "ubr", 0) or 0),
+                    display_version=str(getattr(report, "display_version", "") or ""),
+                    target_version=str(getattr(target, "version", "") or ""),
+                    target_build=int(getattr(target, "major", 0) or 0),
+                    target_ubr=int(getattr(target, "ubr", 0) or 0),
+                )
+                decision = decide_noargs_startup(
+                    is_win11=bool(getattr(report, "is_win11", False)),
+                    guard_go=guard.get("verdict") == "GO",
+                    issues=list(guard.get("issues") or []),
+                    opt_out=opt_out,
+                    update_path=plan.path,
+                )
+            except Exception as exc:
+                self.after(0, lambda: self.append(f"Startup boot policy skipped: {exc}\n"))
+                return
+            self.after(0, lambda: self._present_startup(decision))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _startup_guard(self) -> dict:
+        try:
+            from engine.boot_safe import postflight_boot_edit  # type: ignore
+
+            post = postflight_boot_edit()
+            return {
+                "verdict": "GO" if post.get("ok") or post.get("verdict") == "GO" else "NO-GO",
+                "issues": list(post.get("issues") or []),
+            }
+        except Exception as exc:
+            return {"verdict": "NO-GO", "issues": [type(exc).__name__]}
+
+    def _startup_repair(self, guard: dict) -> dict:
+        self.after(0, lambda: self.append("Boot guard is not GO. Repairing before any update.\n"))
+        try:
+            from engine.boot_guard import verify_and_heal_boot  # type: ignore
+
+            verify_and_heal_boot(force=True)
+        except Exception as exc:
+            self.after(0, lambda e=exc: self.append(f"Startup repair skipped: {e}\n"))
+            return guard
+        return self._startup_guard()
+
+    def _present_startup(self, decision) -> None:
+        self.append(decision.reason + "\n")
+        if decision.action == "official_update" and decision.countdown:
+            StartupCountdown(self, on_go=lambda: self.start("oneclick"))
+            return
+        if decision.action == "repair":
+            self.append("Update stays off until the boot guard reports GO.\n")
 
     def start(self, action: str) -> None:
         if self._busy or self._elevating:
@@ -829,6 +911,51 @@ class App(tk.Tk):
         self.phase_var.set(self.t.get("progress_done", "Finished"))
 
 
+class StartupCountdown(tk.Toplevel):
+    """Cancellable pause before the official Windows 11 update."""
+
+    def __init__(self, app: App, on_go) -> None:
+        super().__init__(app)
+        self.title("Official Windows 11 update")
+        self.resizable(False, False)
+        self.configure(bg="#0f172a")
+        self._left = 15
+        self._on_go = on_go
+        self._alive = True
+        self._label = tk.StringVar(value=self._line())
+        tk.Label(
+            self,
+            textvariable=self._label,
+            font=("Segoe UI", 12),
+            fg="#e2e8f0",
+            bg="#0f172a",
+            padx=16,
+            pady=12,
+        ).pack()
+        tk.Button(self, text="Cancel", command=self._cancel).pack(pady=(0, 12))
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.after(1000, self._tick)
+
+    def _line(self) -> str:
+        return f"Official in-place update starts in {self._left} s. No bypass."
+
+    def _tick(self) -> None:
+        if not self._alive:
+            return
+        self._left -= 1
+        if self._left <= 0:
+            self._alive = False
+            self.destroy()
+            self._on_go()
+            return
+        self._label.set(self._line())
+        self.after(1000, self._tick)
+
+    def _cancel(self) -> None:
+        self._alive = False
+        self.destroy()
+
+
 def _parse_auto_action(argv: list[str]) -> str | None:
     lower = [a.lower() for a in argv]
     if "--auto" in lower:
@@ -992,6 +1119,7 @@ Env (selected):
   MAGIC_BOOT_AUTO_FIX=1        Run EFI/MBR/smart-partition failover bot
   MAGIC_SKIP_BOOT_REMEDIATE=1  Disable boot remediation bot
   MAGIC_SKIP_BOOT_GUARD=1      Disable autonomous EFI/GRUB/WinRE safety net
+  MAGIC_SKIP_STARTUP_UPDATE=1  Double-click runs the boot guard only, no auto update
   MAGIC_WINRE_BOOT=1           Force one-shot WinRE ramdisk on next reboot
   MAGIC_WINPE_BOOT=1           Force one-shot WinPE ramdisk if WinRE unavailable
   MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing

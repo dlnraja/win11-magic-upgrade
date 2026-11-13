@@ -15,6 +15,7 @@ if "engine" not in sys.modules:
 
 from engine.win11_inplace_policy import (  # noqa: E402
     classify_setup_failure,
+    decide_noargs_startup,
     decide_oneclick,
     next_remediation,
     official_setup_args,
@@ -69,6 +70,54 @@ def test_behind_win11_is_official_inplace_only() -> None:
     assert first[:2] == ["/auto", "upgrade"]
     assert "IgnoreWarning" not in first
     assert "/Product" not in first
+
+
+def test_noargs_win11_go_starts_official_update() -> None:
+    go = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=[],
+        update_path="inplace_least",
+    )
+    assert go.action == "official_update"
+    assert go.countdown is True
+    assert go.allow_bypass is False
+    cumulative = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        update_path="cumulative_update",
+    )
+    assert cumulative.action == "official_update"
+    assert cumulative.allow_bypass is False
+
+
+def test_noargs_repairs_until_go_and_honors_opt_out() -> None:
+    repair = decide_noargs_startup(
+        is_win11=True,
+        guard_go=False,
+        issues=["esp_bcd_missing"],
+        update_path="inplace_least",
+    )
+    assert repair.action == "repair"
+    assert repair.countdown is False
+    blocked = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=["efi bootmgfw missing"],
+        update_path="inplace_least",
+    )
+    assert blocked.action == "repair"
+    opted = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        opt_out=True,
+        update_path="inplace_least",
+    )
+    assert opted.action == "idle"
+    latest = decide_noargs_startup(is_win11=True, guard_go=True, update_path="health_check_only")
+    assert latest.action == "health"
+    older = decide_noargs_startup(is_win11=False, guard_go=True, update_path="inplace_least")
+    assert older.action == "idle"
 
 
 def test_failure_picks_one_matching_retry() -> None:
@@ -129,6 +178,8 @@ def main() -> None:
     test_older_windows_starts_official_too()
     test_already_latest_is_health_check_only()
     test_behind_win11_is_official_inplace_only()
+    test_noargs_win11_go_starts_official_update()
+    test_noargs_repairs_until_go_and_honors_opt_out()
     test_failure_picks_one_matching_retry()
     print("test_win11_inplace_policy ok")
 

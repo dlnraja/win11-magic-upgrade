@@ -71,6 +71,15 @@ OPTIONS: list[GuiOption] = [
         group="migration",
     ),
     GuiOption(
+        "startup_update",
+        "MAGIC_SKIP_STARTUP_UPDATE",
+        "After a GO boot check, start the official Windows 11 update",
+        "Après un contrôle GO, lancer la mise à jour Windows 11 officielle",
+        True,
+        invert=True,
+        group="migration",
+    ),
+    GuiOption(
         "install_vlc",
         "MAGIC_INSTALL_VLC",
         "Install VLC if Windows DVD Player missing",
