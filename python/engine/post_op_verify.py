@@ -6,14 +6,20 @@ returns NO-GO. The operation is not left in place on a failed check.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import time
+from pathlib import Path
 from typing import Any, Callable
 
-from .logutil import log
+from .logutil import STATE_DIR, log
 
 _ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 _MBR_BOOT_TYPES = {"07", "7", "0x07", "06", "6", "0x06", "0c", "0x0c", "ef", "0xef"}
 MAX_REGEN_ATTEMPTS = 4
+REGEN_BUDGET_S = 180
+STRATEGY_TIMEOUT_S = 90
+_LEDGER_NAME = "post-op-regen.json"
 _REGEN: dict[str, tuple[str, ...]] = {
     "drive-map": ("rescan-map",),
     "esp-type": ("bcdboot-uefi", "bcdboot-uefi-clean"),
@@ -259,14 +265,14 @@ def attempt_regeneration(
     if strategy == "rescan-map":
         from .diskpart_safe import run_diskpart
 
-        ok, _out = run_diskpart("rescan\nexit", timeout=60)
+        ok, _out = run_diskpart("rescan\nexit", timeout=STRATEGY_TIMEOUT_S)
         return ok
     command = strategy_command(strategy, windows=windows_root, target=target, locale=locale, backup=backup)
     if not command or os.name != "nt" or command[0] == "diskpart":
         return False
     from .proc_guard import run_bounded
 
-    result = run_bounded(command, timeout=180)
+    result = run_bounded(command, timeout=STRATEGY_TIMEOUT_S)
     return result.code == 0 and not result.timed_out
 
 
@@ -301,6 +307,91 @@ def gate_after_boot_work(*, scopes: tuple[str, ...], root: str | None = None) ->
         attempt=lambda strategy: attempt_regeneration(strategy, target=letter),
     )
     return report.get("verdict") == "GO"
+
+
+def evidence_fingerprint(evidence: dict[str, Any], checks: list[dict[str, Any]]) -> str:
+    """Stable id for a failed read. The same boot state must not be repaired twice."""
+    failed = [str(item.get("name")) for item in checks if not item.get("ok")]
+    part = evidence.get("partition") or {}
+    files = evidence.get("files") or {}
+    file_bits = []
+    for name in sorted(files):
+        record = files.get(name) or {}
+        file_bits.append(
+            f"{name}:{int(bool(record.get('present')))}:{str(record.get('sha256') or '')[:12]}"
+        )
+    payload = "|".join(
+        [
+            ",".join(failed),
+            str(evidence.get("style") or ""),
+            str(part.get("gpt_type") or ""),
+            str(part.get("mbr_type") or ""),
+            str(bool(part.get("is_active"))),
+            *file_bits,
+            str(evidence.get("bcd_text") or "")[:180],
+            str(evidence.get("firmware_text") or "")[:80],
+        ]
+    )
+    return sha256_hex(payload.encode("utf-8"))
+
+
+def empty_regen_ledger() -> dict[str, Any]:
+    return {"attempts": 0, "tried": [], "fingerprints": [], "started": None, "exhausted": False}
+
+
+def load_regen_ledger(path: Path | None = None) -> dict[str, Any]:
+    ledger_path = path or (STATE_DIR / _LEDGER_NAME)
+    if not ledger_path.is_file():
+        return empty_regen_ledger()
+    try:
+        data = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty_regen_ledger()
+    ledger = empty_regen_ledger()
+    ledger.update({key: data.get(key, ledger[key]) for key in ledger})
+    ledger["attempts"] = int(ledger.get("attempts") or 0)
+    ledger["tried"] = [str(item) for item in (ledger.get("tried") or [])]
+    ledger["fingerprints"] = [str(item) for item in (ledger.get("fingerprints") or [])]
+    return ledger
+
+
+def save_regen_ledger(ledger: dict[str, Any], path: Path | None = None) -> None:
+    ledger_path = path or (STATE_DIR / _LEDGER_NAME)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+
+
+def regen_block_reason(
+    ledger: dict[str, Any],
+    *,
+    strategy: str | None,
+    fingerprint: str,
+    now: float,
+    budget_s: float = REGEN_BUDGET_S,
+    max_attempts: int = MAX_REGEN_ATTEMPTS,
+) -> str:
+    """Why this attempt must not run. Empty means it is still allowed."""
+    if ledger.get("exhausted"):
+        return "persisted-exhausted"
+    if int(ledger.get("attempts") or 0) >= max_attempts:
+        return "max-attempts"
+    started = ledger.get("started")
+    if started is not None and now - float(started) > budget_s:
+        return "budget"
+    if strategy and strategy in (ledger.get("tried") or []):
+        return "strategy-already-tried"
+    if fingerprint and fingerprint in (ledger.get("fingerprints") or []):
+        return "repeated-state"
+    return ""
+
+
+def regen_is_exhausted(path: Path | None = None, *, now: float | None = None) -> bool:
+    """True when a previous process already spent the regeneration budget."""
+    ledger = load_regen_ledger(path)
+    clock = time.time() if now is None else now
+    return bool(
+        regen_block_reason(ledger, strategy=None, fingerprint="", now=clock, max_attempts=MAX_REGEN_ATTEMPTS)
+    )
 
 
 def regeneration_plan(checks: list[dict[str, Any]]) -> list[str]:
@@ -366,8 +457,12 @@ def mandatory_post_op_verify(
     reread: Callable[[], dict[str, Any]] | None = None,
     attempt: Callable[[str], bool] | None = None,
     backup: str = "pre-op",
+    ledger_path: Path | None = None,
+    now: float | None = None,
+    budget_s: float = REGEN_BUDGET_S,
+    max_attempts: int = MAX_REGEN_ATTEMPTS,
 ) -> dict[str, Any]:
-    """Run the checks. On failure, try the matching repairs, then roll back if they do not verify."""
+    """Run the checks. Each repair runs once, inside a persisted budget, or the backup is restored."""
     current = evidence if evidence is not None else collect_post_op_evidence(scopes=scopes)
     checks = evaluate_post_op(current, scopes=scopes)
     _log_checks("post-op", checks)
@@ -380,35 +475,78 @@ def mandatory_post_op_verify(
             "after_rollback": [],
             "decision": [],
         }
+    clock = time.time() if now is None else now
+    ledger = load_regen_ledger(ledger_path)
+    if ledger.get("started") is None:
+        ledger["started"] = clock
+    fingerprint = evidence_fingerprint(current, checks)
     plan = regeneration_plan(checks)
     failed = [str(item.get("name")) for item in checks if not item.get("ok")]
     log(f"post-op decision: failed={','.join(failed)} plan={','.join(plan)}", "WARN")
     decision: list[dict[str, Any]] = []
-    for index, strategy in enumerate(plan, start=1):
-        log(f"post-op attempt {index}/{MAX_REGEN_ATTEMPTS} {strategy}", "INFO")
-        try:
-            ran = bool(attempt(strategy)) if attempt is not None else False
-        except Exception as exc:
-            log(f"post-op attempt {strategy} failed: {exc}", "ERROR")
-            ran = False
-        verified = False
-        if ran and reread is not None:
-            current = reread()
-            checks = evaluate_post_op(current, scopes=scopes)
-            _log_checks(f"post-op after {strategy}", checks)
-            verified = all(item.get("ok") for item in checks)
-        decision.append({"strategy": strategy, "ran": ran, "verified": verified})
-        if verified:
-            log(f"post-op attempt {strategy} verified", "OK")
-            return {
-                "verdict": "GO",
-                "rollback": False,
-                "restored": True,
-                "checks": checks,
-                "after_rollback": [],
-                "decision": decision,
-            }
-        log(f"post-op attempt {strategy} did not verify", "WARN")
+    stop = regen_block_reason(
+        ledger, strategy=None, fingerprint=fingerprint, now=clock, budget_s=budget_s, max_attempts=max_attempts
+    )
+    if stop:
+        log(f"post-op regeneration stopped before any repair: {stop}", "ERROR")
+        decision.append({"strategy": "", "ran": False, "verified": False, "stop": stop})
+    else:
+        for index, strategy in enumerate(plan, start=1):
+            if now is None:
+                clock = time.time()
+            if index > max_attempts or int(ledger.get("attempts") or 0) >= max_attempts:
+                log("post-op regeneration stopped: max-attempts", "ERROR")
+                decision.append({"strategy": strategy, "ran": False, "verified": False, "stop": "max-attempts"})
+                break
+            blocked = regen_block_reason(
+                ledger,
+                strategy=strategy,
+                fingerprint="",
+                now=clock,
+                budget_s=budget_s,
+                max_attempts=max_attempts,
+            )
+            if blocked:
+                log(f"post-op regeneration stopped: {blocked}", "ERROR")
+                decision.append({"strategy": strategy, "ran": False, "verified": False, "stop": blocked})
+                break
+            ledger["attempts"] = int(ledger.get("attempts") or 0) + 1
+            ledger["tried"] = list(ledger.get("tried") or []) + [strategy]
+            ledger["fingerprints"] = list(ledger.get("fingerprints") or []) + [fingerprint]
+            save_regen_ledger(ledger, ledger_path)
+            log(f"post-op attempt {ledger['attempts']}/{max_attempts} {strategy}", "INFO")
+            try:
+                ran = bool(attempt(strategy)) if attempt is not None else False
+            except Exception as exc:
+                log(f"post-op attempt {strategy} failed: {exc}", "ERROR")
+                ran = False
+            verified = False
+            if ran and reread is not None:
+                current = reread()
+                checks = evaluate_post_op(current, scopes=scopes)
+                _log_checks(f"post-op after {strategy}", checks)
+                verified = all(item.get("ok") for item in checks)
+                new_fp = evidence_fingerprint(current, checks)
+                if not verified and new_fp in (ledger.get("fingerprints") or []):
+                    log("post-op regeneration stopped: repeated-state", "ERROR")
+                    decision.append({"strategy": strategy, "ran": ran, "verified": False, "stop": "repeated-state"})
+                    break
+                fingerprint = new_fp
+            decision.append({"strategy": strategy, "ran": ran, "verified": verified})
+            if verified:
+                log(f"post-op attempt {strategy} verified", "OK")
+                save_regen_ledger(empty_regen_ledger(), ledger_path)
+                return {
+                    "verdict": "GO",
+                    "rollback": False,
+                    "restored": True,
+                    "checks": checks,
+                    "after_rollback": [],
+                    "decision": decision,
+                }
+            log(f"post-op attempt {strategy} did not verify", "WARN")
+    ledger["exhausted"] = True
+    save_regen_ledger(ledger, ledger_path)
     log("post-op regeneration exhausted. Rolling back to the last known-good backup.", "ERROR")
     try:
         rolled = bool(rollback(backup)) if rollback is not None else _default_rollback()

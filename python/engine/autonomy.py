@@ -129,6 +129,12 @@ def clear_boot_persistence() -> None:
 
 def register_boot_persistence() -> None:
     """RunOnce (next boot) + logon task (fallback) while migration is active."""
+    from .post_op_verify import regen_is_exhausted
+
+    if regen_is_exhausted():
+        log("RunOnce not registered: post-op regeneration budget is exhausted", "ERROR")
+        clear_boot_persistence()
+        return
     register_runonce_resume()
     register_scheduled_task_resume()
     _reg_set_migration_active(True)

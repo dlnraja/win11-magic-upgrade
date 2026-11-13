@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
 
 from engine.post_op_verify import (  # noqa: E402
+    STRATEGY_TIMEOUT_S,
     boot_sector_signature_ok,
     evaluate_post_op,
+    load_regen_ledger,
     mandatory_post_op_verify,
     regeneration_plan,
+    regen_is_exhausted,
     sha256_hex,
     strategy_command,
 )
@@ -79,7 +83,12 @@ def test_uefi_and_mbr_pass() -> None:
     mbr = evaluate_post_op(_mbr(), scopes=("mbr",))
     assert all(item["ok"] for item in mbr)
     assert any(item["name"] == "bootsect-signature" and item["ok"] for item in mbr)
-    report = mandatory_post_op_verify(evidence=_uefi(), scopes=("uefi",), rollback=lambda _backup: (_ for _ in ()).throw(AssertionError("rollback")))
+    report = mandatory_post_op_verify(
+        evidence=_uefi(),
+        scopes=("uefi",),
+        rollback=lambda _backup: (_ for _ in ()).throw(AssertionError("rollback")),
+        ledger_path=Path(tempfile.mkdtemp()) / "ledger.json",
+    )
     assert report["verdict"] == "GO" and report["rollback"] is False
     print("pass OK")
 
@@ -100,6 +109,7 @@ def test_failed_check_rolls_back_and_is_no_go() -> None:
         rollback=rollback,
         reread=_mbr,
         backup="pre-op-snapshot",
+        ledger_path=Path(tempfile.mkdtemp()) / "ledger.json",
     )
     assert report["verdict"] == "NO-GO"
     assert calls == ["pre-op-snapshot"]
@@ -183,6 +193,7 @@ def test_each_failure_class_picks_its_repair() -> None:
             attempt=attempt,
             reread=reread,
             rollback=lambda _backup: (_ for _ in ()).throw(AssertionError(kind)),
+            ledger_path=Path(tempfile.mkdtemp()) / f"{kind}.json",
         )
         assert report["verdict"] == "GO", kind
         assert seen[0] == first
@@ -196,6 +207,81 @@ def test_each_failure_class_picks_its_repair() -> None:
     assert "/createstore" in strategy_command("bcdedit-createstore")
     assert strategy_command("fix-device-refs", device="partition=C:")[-1] == "partition=C:"
     print("classes OK")
+
+
+def test_loop_guards_stop_repeated_repairs() -> None:
+    evidence, scopes = _broken("file:BCD")
+    folder = Path(tempfile.mkdtemp())
+    ledger = folder / "post-op-regen.json"
+    tried: list[str] = []
+
+    def attempt(strategy: str) -> bool:
+        tried.append(strategy)
+        return True
+
+    first = mandatory_post_op_verify(
+        evidence=evidence,
+        scopes=scopes,
+        attempt=attempt,
+        reread=lambda: evidence,
+        rollback=lambda _backup: True,
+        ledger_path=ledger,
+        now=1_000.0,
+        budget_s=180,
+        max_attempts=4,
+    )
+    assert first["verdict"] == "NO-GO"
+    assert tried == ["bcdedit-import"]
+    assert first["decision"][-1]["stop"] == "repeated-state"
+    saved = load_regen_ledger(ledger)
+    assert saved["exhausted"] is True
+    assert saved["tried"] == ["bcdedit-import"]
+    assert regen_is_exhausted(ledger, now=1_010.0) is True
+
+    tried.clear()
+    second = mandatory_post_op_verify(
+        evidence=evidence,
+        scopes=scopes,
+        attempt=attempt,
+        reread=lambda: evidence,
+        rollback=lambda _backup: True,
+        ledger_path=ledger,
+        now=1_010.0,
+    )
+    assert second["verdict"] == "NO-GO"
+    assert tried == []
+    assert second["decision"][0]["stop"] == "persisted-exhausted"
+
+    fresh = folder / "budget.json"
+    budget = mandatory_post_op_verify(
+        evidence=evidence,
+        scopes=scopes,
+        attempt=attempt,
+        rollback=lambda _backup: True,
+        ledger_path=fresh,
+        now=5_000.0,
+        budget_s=30,
+    )
+    # Prime the clock, then a later restart is past the budget.
+    assert budget["verdict"] == "NO-GO"
+    primed = load_regen_ledger(fresh)
+    primed["exhausted"] = False
+    primed["attempts"] = 1
+    from engine.post_op_verify import save_regen_ledger
+
+    save_regen_ledger(primed, fresh)
+    later = mandatory_post_op_verify(
+        evidence=evidence,
+        scopes=scopes,
+        attempt=attempt,
+        rollback=lambda _backup: True,
+        ledger_path=fresh,
+        now=5_000.0 + 31,
+        budget_s=30,
+    )
+    assert later["decision"][0]["stop"] == "budget"
+    assert STRATEGY_TIMEOUT_S <= 90
+    print("loop guards OK")
 
 
 def test_exhausted_repairs_roll_back() -> None:
@@ -217,6 +303,7 @@ def test_exhausted_repairs_roll_back() -> None:
         reread=still_bad,
         rollback=lambda backup: calls.append(backup) or True,
         backup="last-known-good",
+        ledger_path=Path(tempfile.mkdtemp()) / "ledger.json",
     )
     assert report["verdict"] == "NO-GO"
     assert calls == ["last-known-good"]
@@ -230,4 +317,5 @@ if __name__ == "__main__":
     test_failed_check_rolls_back_and_is_no_go()
     test_each_failure_class_picks_its_repair()
     test_exhausted_repairs_roll_back()
+    test_loop_guards_stop_repeated_repairs()
     print("ALL post-op verify tests passed")
