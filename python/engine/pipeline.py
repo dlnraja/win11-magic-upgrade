@@ -139,6 +139,25 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     setup = root / "setup.exe"
     prep = root / "sources" / "setupprep.exe"
     try:
+        from .esp_access import prepare_boot_step
+        from .proc_guard import GateState, precheck, probe_admin
+
+        step = prepare_boot_step("setup")
+        if step is not None and step.abort:
+            raise RuntimeError(step.explanation or "drive map refused Setup")
+        bitlocker = "unknown"
+        if step is not None and step.windows is not None:
+            bitlocker = step.windows.bitlocker or "unknown"
+        ok_pre, why = precheck(
+            GateState(is_admin=probe_admin(), target_exists=root.exists(), bitlocker=bitlocker)
+        )
+        if not ok_pre:
+            raise RuntimeError(why)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        log(f"Setup drive-map pre-check skipped: {exc}", "WARN")
+    try:
         from .secureboot_certs import setup_media_block_reason
 
         cert_reason = setup_media_block_reason(root)

@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from .diskpart_safe import (
@@ -42,23 +41,12 @@ LETTER_CANDIDATES = ["Y", "X", "W", "V", "U", "S"]
 
 
 def _run(cmd: list[str], input_text: str | None = None, timeout: int = 300) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        log(f"Command timed out ({timeout}s): {cmd[0] if cmd else '?'}", "ERROR")
-        return 124, "TIMEOUT"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout, input_text=input_text)
+    if result.timed_out:
+        log(result.reason or f"Command timed out ({timeout}s): {cmd[0] if cmd else '?'}", "ERROR")
+    return result.code, result.output or result.reason
 
 
 def _diskpart(script: str) -> str:
@@ -90,24 +78,19 @@ def _is_uefi() -> bool:
 
 
 def mount_esp(letter: str | None = None) -> str | None:
-    """Mount EFI System Partition via mountvol /s. Returns 'Y:' or None."""
-    letter = letter or _free_letter()
-    if not letter:
-        log("No free drive letter to mount ESP", "ERROR")
-        return None
-    # Dismount if leftover
-    _run(["mountvol", f"{letter}:", "/d"])
-    code, out = _run(["mountvol", f"{letter}:", "/s"])
-    if code != 0 or not Path(f"{letter}:\\").exists():
-        log(f"mountvol {letter}: /s failed: {out}", "WARN")
-        _run(["mountvol", f"{letter}:", "/d"])
-        return None
-    log(f"ESP mounted at {letter}:", "OK")
-    return f"{letter}:"
+    """Open the firmware system partition. The letter is chosen at runtime."""
+    from .esp_access import mount_system_partition
+
+    return mount_system_partition(prefer_letter=letter)
 
 
 def find_system_reserved_letter() -> str | None:
-    """Find MBR System Reserved / boot partition and assign a letter (EN+FR diskpart)."""
+    """Find the MBR system partition from the drive map and assign a free letter."""
+    from .esp_access import mount_system_partition
+
+    mounted = mount_system_partition(role="srp")
+    if mounted:
+        return mounted
     cands = find_system_reserved_candidates()
     if not cands:
         log("No System Reserved candidate in list volume (EN/FR)", "WARN")
@@ -256,12 +239,20 @@ def cleanup_boot_volume(root: str) -> dict:
 
 def unmount_letter(letter_root: str) -> None:
     """
-    Safely hide a temporary ESP/SRP letter.
-    Order matters: resolve volume WHILE letter exists, remove via volume index,
-    then mountvol /d. Never `select volume L` after the letter is already gone
-    (causes FR: Aucun volume n'a été sélectionné).
+    Remove a temporary ESP/SRP path this process created.
+    A letter that was already on the volume is left in place.
     """
-    L = letter_root.rstrip("\\").rstrip(":").upper()[:1]
+    from .esp_access import release_access
+
+    if release_access(letter_root):
+        return
+    # Legacy callers assigned a letter outside the helper. Only then strip it.
+    from .drive_map import access_root, drive_letter_of
+
+    root = access_root(letter_root)
+    if root and drive_letter_of(root) is None:
+        return
+    L = (drive_letter_of(root) or letter_root).rstrip("\\").rstrip(":").upper()[:1]
     if not L:
         return
 

@@ -717,12 +717,22 @@ def write_openduet_disk(
     staged = prepare_openduet_stick(bless_path=bless_path, zip_path=zip_path)
     letter = volume_letter.upper()[:1]
     if partition:
-        letter = letter or "Y"
+        from .diskpart_safe import free_letter
+
+        letter = letter or free_letter() or ""
+        if not letter:
+            raise OpenDuetError("no free drive letter for the OpenDuet volume")
         script = diskpart_create_gpt_fat32(disk, letter)
         ok, out = run_diskpart(script)
         log(f"diskpart GPT+FAT32 → {ok}: {out[:300]}", "OK" if ok else "ERROR")
         if not ok:
             raise OpenDuetError("diskpart failed; disk was not assumed to be an OpenDuet stick")
+    try:
+        from .esp_access import GuardError, guard_write_letter
+
+        guard_write_letter(letter, expect_disk=int(disk), step="openduet")
+    except GuardError as exc:
+        raise DiskWriteRefused(str(exc)) from exc
     _copy_tree_to_volume(staged, Path(f"{letter}:\\"))
     _splice_live_sectors(
         disk=disk,

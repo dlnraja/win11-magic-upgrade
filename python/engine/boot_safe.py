@@ -65,21 +65,10 @@ class BootSnapshot:
 
 
 def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return 124, "TIMEOUT"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout)
+    return result.code, result.output or result.reason
 
 
 def _firmware() -> str:
@@ -137,7 +126,9 @@ def _partition_style(disk_n: int | None) -> str:
 
 
 def inspect_boot_files_on_letter(letter: str) -> dict[str, bool]:
-    root = Path(f"{letter.strip().rstrip(':')}:\\")
+    from .drive_map import access_root
+
+    root = Path(access_root(letter) or letter)
     checks = {
         "efi_boot_bootx64": root / "EFI" / "Boot" / "bootx64.efi",
         "efi_boot_bootia32": root / "EFI" / "Boot" / "bootia32.efi",
@@ -219,7 +210,9 @@ def snapshot_esp_critical_files() -> Path | None:
         if not mounted:
             log("ESP snapshot skipped — cannot mount", "WARN")
             return None
-        src_root = Path(f"{mounted.rstrip(':\\')}:\\")
+        from .drive_map import access_root
+
+        src_root = Path(access_root(mounted) or mounted)
         for rel in _CRITICAL_REL_PATHS:
             src = src_root / rel
             if not src.is_file():
@@ -266,7 +259,9 @@ def restore_esp_critical_files() -> bool:
         if not mounted:
             log("Cannot mount ESP to restore snapshot", "ERROR")
             return False
-        dst_root = Path(f"{mounted.rstrip(':\\')}:\\")
+        from .drive_map import access_root
+
+        dst_root = Path(access_root(mounted) or mounted)
         cert_state = None
         snapshot_restore_allowed = None
         try:
@@ -536,7 +531,7 @@ def stage_temporary_winre_ramdisk_boot(*, one_shot: bool = True) -> dict[str, An
                     "- Does NOT wipe disks; does NOT replace your Windows boot entry",
                     "",
                     "In WinRE you can run:",
-                    "  Startup Repair | bcdboot C:\\Windows /s S: /f UEFI | diskpart | bootrec",
+                    "  Startup Repair | mount the ESP, then bcdboot %SystemRoot% /s <ESP> /f UEFI | diskpart | bootrec",
                     "",
                     "Disable one-shot staging: MAGIC_WINRE_FALLBACK=0",
                     "Force staging even when boot looks OK: MAGIC_WINRE_BOOT=1",
@@ -1184,8 +1179,7 @@ def postflight_boot_edit(
     try:
         mounted = mount_esp()
         if mounted:
-            letter = mounted.rstrip(":\\")[:1]
-            files = inspect_boot_files_on_letter(letter)
+            files = inspect_boot_files_on_letter(mounted)
             result["boot_files"] = files
             want_uefi = expect_uefi if expect_uefi is not None else (result["firmware"] == "UEFI")
             if want_uefi:
@@ -1268,7 +1262,8 @@ IMPORTANT
   then reboot to Windows and run:
     Win11MagicUpgrade.exe --cli --srp
   or repair boot with:
-    bcdboot %SystemRoot% /s S: /f UEFI
+    mount the ESP (any free letter or a folder), then:
+    bcdboot %SystemRoot% /s <ESP> /f UEFI
 • GParted Live is a LAST RESORT when Windows diskpart cannot shrink/create.
 
 Recommended GParted steps (UEFI/GPT)

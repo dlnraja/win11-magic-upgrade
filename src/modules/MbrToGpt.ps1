@@ -134,10 +134,13 @@ function Invoke-WmuMbrToGpt {
             NeedsUefiFirmware = $true
             Mbr2gptCode      = $cCode
         }
-        # Fix boot files
+        # Fix boot files on the ESP resolved from the current drive map.
         try {
-            $sys = $env:SystemDrive
-            & bcdboot "$sys\Windows" /f UEFI 2>&1 | ForEach-Object { Write-WmuLog "bcdboot: $_" }
+            if (-not (Get-Command Invoke-WmuEspBcdboot -ErrorAction SilentlyContinue)) {
+                throw "EspAccess.ps1 is not loaded"
+            }
+            Invoke-WmuEspBcdboot -Mode UEFI | Out-Null
+            Write-WmuLog "bcdboot wrote UEFI boot files to the resolved ESP" "OK"
         } catch {
             Write-WmuLog "bcdboot warning: $($_.Exception.Message)" "WARN"
         }

@@ -49,7 +49,7 @@ def write_remediation_scripts(
     Emit .cmd / .txt scripts for WinRE and Desktop (human or bot-assisted).
     """
     REMEDIATE_DIR.mkdir(parents=True, exist_ok=True)
-    disk = 0 if system_disk is None else int(system_disk)
+    disk = "UNKNOWN" if system_disk is None else str(int(system_disk))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     paths: dict[str, str] = {}
 
@@ -60,10 +60,25 @@ def write_remediation_scripts(
             [
                 "@echo off",
                 "REM Win11 Magic Upgrade — run from WinRE / Command Prompt",
-                "REM Assign a letter to Windows (usually C:) and ESP (e.g. S:)",
+                "REM Windows root is %SystemRoot%. Mount the ESP on any free letter.",
                 "echo === bcdboot heal ===",
-                "bcdboot C:\\Windows /s S: /f UEFI",
-                "if errorlevel 1 bcdboot C:\\Windows /s S: /f ALL",
+                "set ESP=",
+                "for %%L in (Z Y X W V U T S R Q P O N M L K J I H G F E D) do (",
+                "  if not exist %%L:\\ (",
+                "    mountvol %%L: /S",
+                "    if exist %%L:\\EFI\\ set ESP=%%L:",
+                "    if defined ESP goto :boot",
+                "    mountvol %%L: /D",
+                "  )",
+                ")",
+                "if not defined ESP (",
+                "  echo No free letter and mountvol /S did not expose an EFI directory.",
+                "  exit /b 1",
+                ")",
+                ":boot",
+                "bcdboot %SystemRoot% /s %ESP% /f UEFI",
+                "if errorlevel 1 bcdboot %SystemRoot% /s %ESP% /f ALL",
+                "mountvol %ESP% /D",
                 "bootrec /fixboot",
                 "bootrec /fixmbr",
                 "bootrec /rebuildbcd",
@@ -97,7 +112,8 @@ def write_remediation_scripts(
                 "shrink desired=512 minimum=300",
                 "create partition efi size=512",
                 "format quick fs=fat32 label=System",
-                "assign letter=S",
+                "REM assign a free letter here after list volume; do not reuse one that is taken",
+                "REM assign letter=<FREE>",
                 "exit",
                 "",
             ]
@@ -153,7 +169,7 @@ def write_remediation_scripts(
         "Win11 Magic Upgrade — Boot remediation guide",
         "=" * 48,
         f"Mode: {mode}",
-        f"System disk #: {disk}",
+        f"System disk #: {disk} (UNKNOWN means list disk and pick the Windows disk; never assume 0)",
         f"UTC: {datetime.now(timezone.utc).isoformat()}",
         "",
         "Automatic failover order:",

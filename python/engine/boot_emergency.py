@@ -30,21 +30,10 @@ FREEDOS_ISO_URL = (
 
 
 def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return 124, "TIMEOUT"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout)
+    return result.code, result.output or result.reason
 
 
 def _ps(script: str, timeout: int = 240) -> tuple[int, str]:
@@ -133,8 +122,7 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]
         mounted = mount_esp()
         try:
             if mounted:
-                letter = mounted.rstrip(":\\")[:1]
-                files = inspect_boot_files_on_letter(letter)
+                files = inspect_boot_files_on_letter(mounted)
                 report["checks"]["esp_files"] = files
                 if uefi:
                     _check(
@@ -319,7 +307,7 @@ if ($partStyle -eq 'GPT') {{
   $np = New-Partition -DiskNumber $diskN -Size $need -MbrType 0x0C
 }}
 $letter = $null
-foreach ($L in 83..90) {{
+foreach ($L in 90..68) {{
   $ch = [char]$L
   if (-not (Test-Path ("$ch" + ':\\'))) {{ $letter = "$ch"; break }}
 }}
@@ -391,7 +379,7 @@ $esp = Get-Partition | Where-Object {
 if (-not $esp) { throw 'No ESP/system partition' }
 if ($esp.DriveLetter) { Write-Output ($esp.DriveLetter.ToString() + ':'); exit 0 }
 $letter = $null
-foreach ($L in 83..90) {
+foreach ($L in 90..68) {
   $ch = [char]$L
   if (-not (Test-Path ("$ch" + ':\'))) { $letter = "$ch"; break }
 }
@@ -437,10 +425,12 @@ def emergency_regenerate_bcd(*, prefer_uefi: bool | None = None) -> dict[str, An
         mounted = mount_esp()
         try:
             if mounted:
-                letter = mounted.rstrip(":\\")[:1]
+                from .drive_map import access_root
+
+                root = Path(access_root(mounted) or mounted)
                 candidates = [
-                    Path(f"{letter}:\\EFI\\Microsoft\\Boot\\BCD"),
-                    Path(f"{letter}:\\Boot\\BCD"),
+                    root / "EFI" / "Microsoft" / "Boot" / "BCD",
+                    root / "Boot" / "BCD",
                 ]
                 for p in candidates:
                     if not p.is_file():

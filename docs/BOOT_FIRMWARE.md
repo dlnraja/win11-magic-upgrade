@@ -106,6 +106,12 @@ Background for the legacy-BIOS technique (rewritten here, not copied): <https://
 
 `ocvalidate.linux` from the 1.0.8 archive was run on this config (empty `BlessOverride`, and a non-Windows bless path). Both returned “No issues found”. A Windows `bootmgfw.efi` bless is the one case treated as acceptable when it is the only issue.
 
+## Drive map
+
+Boot writes do not assume a drive letter, a disk number, or a partition index. `drive_map.py` records each volume (style, GPT type or MBR type, filesystem, label, size, current letter or folder, boot/system/active, BitLocker, redacted serial) and a read-only content summary (EFI loaders, BCD, Windows build/bitness, install media, WinRE, OpenCore/OpenDuet, other OS loaders). The map is refreshed before bcdboot, Setup, mbr2gpt, OpenCore copy, and Secure Boot checks, after a mount or partition change, and on a timer during long steps. A new map is diffed against the previous one and the plan is rebuilt: reuse a new letter, remount, or switch to the remaining ESP on the firmware boot disk. The write stops only when no safe volume remains. Other OS loaders are left in place. A newer ESP boot manager is not overwritten.
+
+`proc_guard.py` runs diskpart, mountvol, PowerShell, bcdboot, bcdedit, mbr2gpt, manage-bde, DISM, downloads, and file copies with a finite timeout, no console window, and no shell. A timeout kills the process tree. Pre-checks cover administrator, free space, target existence, BitLocker lock, and a Secure Boot refusal. Post-checks cover files written, a BCD entry, and that the ESP still matches the map. Failure runs the cleanup callback.
+
 ## What still needs real hardware
 
 Unit tests cover release-health parsing (including the 2026-10 OOB and D rows), the firmware decision matrix, the Secure Boot certificate gate (db / dbx / SVN / signer), sector splice, and write refusals. They do not boot a PC. Still untested on hardware: a real disk write, firmware setup screens, a machine whose db is missing Windows UEFI CA 2023, Bay Trail `bootia32.efi`, CSM machines whose firmware does not advertise UEFI in the registry or BIOS version, and `ocvalidate.exe` on Windows (the Linux binary of the same release was the one executed here).

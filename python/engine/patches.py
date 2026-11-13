@@ -51,21 +51,10 @@ ERROR_PATTERNS = (
 
 
 def _run(cmd: list[str], timeout: int = 180) -> str:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return f"TIMEOUT after {timeout}s"
-    except Exception as e:
-        return str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout)
+    return result.output or result.reason
 
 
 def _reg_exists(hive: int, path: str) -> bool:

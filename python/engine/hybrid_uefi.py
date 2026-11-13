@@ -184,19 +184,16 @@ def prepare_bios_boot_files() -> bool:
     if not bcdboot.exists():
         return False
     log("Installing BIOS Boot Manager files (for CSMWrap/SeaBIOS handoff)...", "STEP")
-    import subprocess
+    from .esp_access import prepare_boot_step
+    from .proc_guard import run_bounded
 
-    r = subprocess.run(
-        [str(bcdboot), sys_root, "/f", "BIOS"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    out = ((r.stdout or "") + (r.stderr or "")).strip()
-    log(f"bcdboot /f BIOS -> {r.returncode}: {out[:240]}")
-    return r.returncode == 0 or "successfully" in out.lower()
+    step = prepare_boot_step("bcdboot")
+    if step is not None and (step.abort or step.skip_loader_overwrite):
+        log(step.explanation or "boot map refused BIOS bcdboot", "ERROR" if step.abort else "WARN")
+        return not step.abort and bool(step.skip_loader_overwrite)
+    result = run_bounded([str(bcdboot), sys_root, "/f", "BIOS"], timeout=180)
+    log(f"bcdboot /f BIOS -> {result.code}: {(result.output or result.reason)[:240]}")
+    return result.ok or "successfully" in (result.output or "").lower()
 
 
 def apply_hybrid_ia32_path(*, activate: bool = False, prepare_bios: bool = True) -> dict:

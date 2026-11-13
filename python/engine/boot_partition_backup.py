@@ -237,7 +237,7 @@ def _mount_letter_for_meta(meta: dict[str, Any]) -> str | None:
     script = f"""
 $ErrorActionPreference = 'Stop'
 $letter = $null
-foreach ($L in 83..90) {{
+foreach ($L in 90..68) {{
   $ch = [char]$L
   if (-not (Test-Path ("$ch" + ':\\'))) {{ $letter = "$ch"; break }}
 }}
@@ -326,6 +326,7 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
     if not metas:
         # Fallback: mount ESP via existing helper and treat as single unknown partition
         try:
+            from .drive_map import access_root
             from .sysreserved import mount_esp, unmount_letter
 
             mounted = mount_esp()
@@ -334,9 +335,10 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
                     {
                         "DiskNumber": system_disk,
                         "PartitionNumber": None,
-                        "DriveLetter": mounted.rstrip(":\\")[:1],
+                        "DriveLetter": "",
+                        "AccessPath": mounted,
                         "Role": "ESP" if _firmware() == "UEFI" else "SRP",
-                        "Size": shutil.disk_usage(f"{mounted.rstrip(':\\')}:\\").total,
+                        "Size": shutil.disk_usage(str(Path(access_root(mounted) or mounted))).total,
                         "PartitionStyle": "Unknown",
                         "GptType": GPT_ESP_TYPE if _firmware() == "UEFI" else "",
                         "_mounted_via_helper": True,
