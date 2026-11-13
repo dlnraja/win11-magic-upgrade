@@ -185,7 +185,7 @@ _BOOT_ISSUE = re.compile(r"mbr|efi|esp|bcd|bootmgr|bootmgfw", re.I)
 
 @dataclass(frozen=True)
 class StartupDecision:
-    action: str  # repair | official_update | health | idle
+    action: str  # repair | nogo | official_update | health | idle
     countdown: bool = False
     allow_bypass: bool = False
     reason: str = ""
@@ -202,13 +202,25 @@ def decide_noargs_startup(
     issues: list[str] | tuple[str, ...] = (),
     opt_out: bool = False,
     update_path: str = "health_check_only",
+    repaired: bool = False,
+    error_count: int = 0,
 ) -> StartupDecision:
-    """Double-click policy after the boot guard. Official update only on GO."""
-    if not guard_go or boot_issues_block_update(issues):
+    """Double-click policy after the boot guard. Official update only on a clean GO."""
+    dirty = (not guard_go) or error_count != 0 or boot_issues_block_update(issues)
+    if repaired and dirty:
+        return StartupDecision(
+            "nogo",
+            reason="Post-repair verification failed. NO-GO. The official update will not start.",
+        )
+    if dirty:
         return StartupDecision(
             "repair",
-            reason="Boot guard is not GO. Repair MBR/EFI/BCD/ESP first. No update until GO.",
+            reason="Boot guard is not GO. Repair MBR/EFI/BCD/ESP first. No update until every check passes.",
         )
+    if repaired:
+        reason = "Boot repair verified with zero errors. Official in-place update, no bypass."
+    else:
+        reason = "Windows 11 and boot guard GO. Official in-place update, no bypass."
     if opt_out:
         return StartupDecision("idle", reason="Startup update is turned off.")
     if not is_win11:
@@ -218,7 +230,7 @@ def decide_noargs_startup(
     return StartupDecision(
         "official_update",
         countdown=True,
-        reason="Windows 11 and boot guard GO. Official in-place update, no bypass.",
+        reason=reason,
     )
 
 

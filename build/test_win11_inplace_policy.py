@@ -118,6 +118,36 @@ def test_noargs_repairs_until_go_and_honors_opt_out() -> None:
     assert latest.action == "health"
     older = decide_noargs_startup(is_win11=False, guard_go=True, update_path="inplace_least")
     assert older.action == "idle"
+    healed = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=[],
+        update_path="inplace_least",
+        repaired=True,
+        error_count=0,
+    )
+    assert healed.action == "official_update"
+    assert healed.countdown is True
+    assert healed.allow_bypass is False
+    failed = decide_noargs_startup(
+        is_win11=True,
+        guard_go=False,
+        issues=["bcd_bootmgr_missing"],
+        update_path="inplace_least",
+        repaired=True,
+        error_count=1,
+    )
+    assert failed.action == "nogo"
+    assert failed.countdown is False
+    still_wrong = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=[],
+        update_path="inplace_least",
+        repaired=True,
+        error_count=1,
+    )
+    assert still_wrong.action == "nogo"
 
 
 def test_failure_picks_one_matching_retry() -> None:

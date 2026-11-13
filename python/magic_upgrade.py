@@ -571,7 +571,9 @@ class App(tk.Tk):
                 )
                 report = collect_report()
                 guard = self._startup_guard()
-                if guard.get("verdict") != "GO":
+                repaired = False
+                if guard.get("verdict") != "GO" or int(guard.get("errors") or 0) != 0:
+                    repaired = True
                     guard = self._startup_repair(guard)
                 try:
                     target = refresh_latest_win11(host_build=int(getattr(report, "build", 0) or 0))
@@ -591,6 +593,8 @@ class App(tk.Tk):
                     issues=list(guard.get("issues") or []),
                     opt_out=opt_out,
                     update_path=plan.path,
+                    repaired=repaired,
+                    error_count=int(guard.get("errors") or 0),
                 )
             except Exception as exc:
                 self.after(0, lambda: self.append(f"Startup boot policy skipped: {exc}\n"))
@@ -604,10 +608,9 @@ class App(tk.Tk):
             from engine.boot_safe import postflight_boot_edit  # type: ignore
 
             post = postflight_boot_edit()
-            return {
-                "verdict": "GO" if post.get("ok") or post.get("verdict") == "GO" else "NO-GO",
-                "issues": list(post.get("issues") or []),
-            }
+            issues = [str(item) for item in (post.get("issues") or []) if str(item)]
+            clean = bool(post.get("ok")) and not issues and post.get("verdict", "GO") != "NO-GO"
+            return {"verdict": "GO" if clean else "NO-GO", "issues": issues, "errors": 0 if clean else max(1, len(issues))}
         except Exception as exc:
             return {"verdict": "NO-GO", "issues": [type(exc).__name__]}
 
@@ -627,8 +630,8 @@ class App(tk.Tk):
         if decision.action == "official_update" and decision.countdown:
             StartupCountdown(self, on_go=lambda: self.start("oneclick"))
             return
-        if decision.action == "repair":
-            self.append("Update stays off until the boot guard reports GO.\n")
+        if decision.action in ("repair", "nogo"):
+            self.append("Update stays off until every boot verification passes with zero errors.\n")
 
     def start(self, action: str) -> None:
         if self._busy or self._elevating:
