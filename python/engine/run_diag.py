@@ -508,6 +508,13 @@ class IssueClient:
         return None
 
 
+def finish_run_async(**kwargs) -> None:
+    """File diagnostics without delaying startup or the migration."""
+    from .issue_url import run_in_background
+
+    run_in_background(lambda: finish_run(**kwargs), name="auto-diag")
+
+
 def finish_run(
     *,
     mode: str = "session",
@@ -572,18 +579,32 @@ def finish_run(
             actor.comment(existing, body)
             filed.append({"signature": finding.signature, "action": "comment", "url": existing})
             continue
-        from .issue_url import short_issue_body, try_gh_issue
+        from .issue_url import bundle_text_files, file_report, short_issue_body
 
         full_body = _with_history(_report_body(finding, facts, mode)[1], summary)
         paste = _write_paste(state, finding.signature, title, full_body)
         report_path = str(history_note.get("bundle") or paste)
         if client is None:
-            created_now = try_gh_issue(title, full_body)
-            if created_now:
-                filed.append(
-                    {"signature": finding.signature, "action": "create", "url": created_now, "file": str(paste)}
+            try:
+                filed_now = file_report(
+                    title=title,
+                    body=full_body,
+                    files=bundle_text_files(full_body, history_note.get("bundle") or None),
                 )
-                log(f"auto-diag filed with gh: {created_now}", "INFO")
+            except Exception as exc:
+                filed_now = None
+                log(f"auto-diag issue failed: {exc}", "WARN")
+            if filed_now and filed_now.get("url"):
+                filed.append(
+                    {
+                        "signature": finding.signature,
+                        "action": "create",
+                        "url": filed_now["url"],
+                        "file": str(paste),
+                        "gist": filed_now.get("gist") or "",
+                    }
+                )
+                log(f"auto-diag filed: {filed_now['url']}", "INFO")
                 continue
         url = _prefilled_url(
             title,
@@ -608,12 +629,7 @@ def finish_run(
         created = actor.create(title, body)
         filed.append({"signature": finding.signature, "action": "create", "url": created or url, "file": str(paste)})
     if open_browser and filed and filed[0].get("action") == "paste":
-        try:
-            import webbrowser
-
-            webbrowser.open(filed[0]["url"])
-        except Exception:
-            pass
+        log(f"auto-diag report is local. Open when ready: {filed[0].get('url')}", "INFO")
     if filed and fresh:
         save_uploaded(state, uploaded | {item.identity for item in fresh})
         history_note["attached"] = True

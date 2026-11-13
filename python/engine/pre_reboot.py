@@ -1103,22 +1103,26 @@ def repair_issue_url(report: dict[str, Any], *, repo: str = _ISSUE_REPO) -> str:
 
 
 def open_repair_issue(report: dict[str, Any]) -> str:
-    from .issue_url import try_gh_issue
+    """Return a short local link immediately. Filing runs in the background."""
+    from .issue_url import bundle_text_files, file_report, run_in_background
 
-    created = try_gh_issue(
-        f"One-Click repair before reboot: {report.get('verdict') or 'NO-GO'}",
-        redact_issue_text(str(report.get("summary_text") or "")),
-        label="auto-diag",
-    )
-    if created:
-        return created
     url = repair_issue_url(report)
-    if os.environ.get("MAGIC_NO_BROWSER", "").strip().lower() in ("1", "true", "yes"):
-        return url
-    try:
-        import webbrowser
+    title = f"One-Click repair before reboot: {report.get('verdict') or 'NO-GO'}"
+    body = redact_issue_text(str(report.get("summary_text") or ""))
+    bundle = str(report.get("bundle") or "")
 
-        webbrowser.open(url)
-    except Exception:
-        pass
+    def _file() -> None:
+        try:
+            filed = file_report(title=title, body=body, files=bundle_text_files(body, bundle or None))
+            if filed and filed.get("url"):
+                log(f"repair issue filed: {filed['url']}", "INFO")
+            else:
+                log(f"repair report kept locally: {bundle or url}", "WARN")
+        except Exception as exc:
+            log(f"repair issue failed: {exc}", "WARN")
+
+    try:
+        run_in_background(_file, name="repair-issue")
+    except Exception as exc:
+        log(f"repair issue failed: {exc}", "WARN")
     return url

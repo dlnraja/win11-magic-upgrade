@@ -114,9 +114,9 @@ def end_session(*, success: bool = True) -> None:
     except Exception:
         pass
     try:
-        from .run_diag import finish_run
+        from .run_diag import finish_run_async
 
-        finish_run(mode="session", step=step)
+        finish_run_async(mode="session", step=step)
     except Exception:
         pass
 

@@ -14,7 +14,12 @@ if "engine" not in sys.modules:
     sys.modules["engine"] = pkg
 
 import stdio_safe  # noqa: E402
-from engine.issue_url import prefilled_issue_url, short_issue_body  # noqa: E402
+from engine.issue_url import (  # noqa: E402
+    file_report,
+    prefilled_issue_url,
+    run_in_background,
+    short_issue_body,
+)
 from engine.run_diag import _prefilled_url  # noqa: E402
 
 
@@ -81,7 +86,55 @@ def test_issue_url_stays_under_6000() -> None:
     assert len(short) <= 6000
 
 
+def test_token_posts_secret_gist_and_capped_issue() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def post(url: str, payload: dict, token: str, timeout: int = 20) -> tuple[int, str]:
+        calls.append((url, payload))
+        assert token == "sek"
+        assert timeout == 20
+        if url.endswith("/gists"):
+            assert payload["public"] is False
+            return 201, '{"html_url":"https://gist.github.com/example/abc"}'
+        assert len(payload["body"]) <= 60000
+        assert "https://gist.github.com/example/abc" in payload["body"]
+        return 201, '{"html_url":"https://github.com/dlnraja/win11-magic-upgrade/issues/9"}'
+
+    def gh_run(args: list[str], timeout: int = 20) -> tuple[int, str]:
+        raise AssertionError(args)
+
+    filed = file_report(title="diag", body="e" * 80000, token="sek", http_post=post, gh_run=gh_run)
+    assert filed is not None
+    assert filed["url"].endswith("/issues/9")
+    assert filed["gist"].endswith("/abc")
+    assert len(calls) == 2
+
+
+def test_without_auth_does_not_file() -> None:
+    assert file_report(title="diag", body="e", token="", gh_run=lambda args, timeout=20: (1, "")) is None
+
+
+def test_background_report_does_not_raise() -> None:
+    seen: list[int] = []
+
+    def boom() -> None:
+        seen.append(1)
+        raise RuntimeError("diag failed")
+
+    run_in_background(boom, name="test-diag")
+    for _ in range(20):
+        if seen:
+            break
+        import time
+
+        time.sleep(0.05)
+    assert seen == [1]
+
+
 if __name__ == "__main__":
     test_none_streams_do_not_crash_help()
     test_issue_url_stays_under_6000()
+    test_token_posts_secret_gist_and_capped_issue()
+    test_without_auth_does_not_file()
+    test_background_report_does_not_raise()
     print("windowed stdio tests OK")
