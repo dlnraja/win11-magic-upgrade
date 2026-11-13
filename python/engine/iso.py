@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from .logutil import STATE_DIR, log
-from .progress import format_bytes, format_eta, format_speed, report_progress
+from .progress import format_bytes, report_progress
 
 ORG_ID = "y6jn8c31"
 PROFILE_ID = "606624d44113"
@@ -189,138 +189,58 @@ def resolve_iso_url(win: str = "11", lang_hint: str = "en-US", arch: str = "x64"
 
     # DownloadType: 1=x86, 2=x64 typically (Fido Get-Arch-From-Type)
     chosen = None
+    chosen_opt: dict | None = None
     for opt in options:
         dtype = opt.get("DownloadType")
         uri = opt.get("Uri") or ""
         if arch == "x64" and (dtype == 2 or "x64" in uri.lower() or "X64" in uri):
             chosen = uri
+            chosen_opt = opt
             break
         if arch != "x64" and dtype == 1:
             chosen = uri
+            chosen_opt = opt
             break
     if not chosen:
-        chosen = options[0].get("Uri")
+        chosen_opt = options[0]
+        chosen = chosen_opt.get("Uri")
     if not chosen:
         raise RuntimeError("Empty ISO URI")
-    log("Microsoft CDN URL obtained.", "OK")
+    from .segment_download import official_sha256, redact_url
+
+    resolve_iso_url.last_sha256 = official_sha256(chosen_opt)  # type: ignore[attr-defined]
+    log(f"Microsoft CDN URL obtained: {redact_url(chosen)}", "OK")
     return chosen
 
 
-def download_file(url: str, dest: Path, log_every_mb: int = 32) -> Path:
+def download_file(
+    url: str,
+    dest: Path,
+    log_every_mb: int = 32,
+    *,
+    expected_sha256: str | None = None,
+) -> Path:
+    """Segmented download of an official ISO or ESD. ``log_every_mb`` is retained for callers."""
+    from .segment_download import download_image, make_ui_callback
+
+    _ = log_every_mb
+    dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    log(f"Downloading -> {dest.name} (urllib, resumable)...", "STEP")
-    report_progress(
-        phase=f"Download {dest.name}",
-        percent=0.0,
-        detail="Connecting to Microsoft CDN…",
-        indeterminate=True,
+    log(f"Downloading -> {dest.name} (segmented, resumable)...", "STEP")
+    path = download_image(
+        url,
+        dest,
+        expected_sha256=expected_sha256,
+        on_progress=make_ui_callback(dest.name),
+        log=log,
+        label=dest.name,
     )
-    existing = dest.stat().st_size if dest.exists() else 0
-    headers: dict[str, str] = {}
-    if existing > 0:
-        headers["Range"] = f"bytes={existing}-"
-        log(f"Resuming from {existing} bytes", "INFO")
-
-    req = urllib.request.Request(url, headers=headers)
-    started = time.time()
-    last_ui = 0.0
-    expected_total: int | None = None
-    with urllib.request.urlopen(req, context=_ctx(), timeout=120) as resp:
-        status = int(getattr(resp, "status", None) or resp.getcode() or 0)
-        # If we asked for a Range resume but got 200 (full body), rewrite — never append a full ISO onto a partial
-        mode = "ab"
-        session_base = existing
-        if existing > 0 and status == 200:
-            log(
-                "CDN ignored Range (HTTP 200) — restarting download from byte 0 to avoid corrupt ISO",
-                "WARN",
-            )
-            existing = 0
-            session_base = 0
-            mode = "wb"
-        elif existing > 0 and status not in (206, 200):
-            log(f"Unexpected resume HTTP {status} — restarting download", "WARN")
-            existing = 0
-            session_base = 0
-            mode = "wb"
-        elif existing == 0:
-            mode = "wb"
-            session_base = 0
-
-        cl_hdr = resp.headers.get("Content-Length")
-        cr_hdr = resp.headers.get("Content-Range") or ""
-        total_i: int | None = None
-        if status == 206 and cr_hdr:
-            m = re.search(r"/\s*(\d+)\s*$", cr_hdr)
-            if m:
-                total_i = int(m.group(1))
-            elif cl_hdr:
-                total_i = session_base + int(cl_hdr)
-        elif cl_hdr:
-            total_i = int(cl_hdr) if session_base == 0 or status == 200 else session_base + int(cl_hdr)
-        expected_total = total_i
-
-        written = session_base
-        last_report = session_base
-        with dest.open(mode) as f:
-            if mode == "wb":
-                written = 0
-                last_report = 0
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                written += len(chunk)
-                now = time.time()
-                elapsed = max(now - started, 0.001)
-                downloaded_session = written if mode == "wb" else max(written - session_base, 0)
-                speed = downloaded_session / elapsed
-                eta = None
-                pct = None
-                if total_i and total_i > 0:
-                    pct = 100.0 * written / total_i
-                    remain = max(total_i - written, 0)
-                    if speed > 0:
-                        eta = remain / speed
-                if now - last_ui >= 0.4:
-                    detail = (
-                        f"{format_bytes(written)}"
-                        + (f" / {format_bytes(total_i)}" if total_i else "")
-                        + f"  ·  {format_speed(speed)}"
-                        + f"  ·  ETA {format_eta(eta)}"
-                    )
-                    report_progress(
-                        phase=f"Download {dest.name}",
-                        percent=pct,
-                        detail=detail,
-                        bytes_done=written,
-                        bytes_total=total_i or 0,
-                        speed_bps=speed,
-                        eta_seconds=eta,
-                        indeterminate=total_i is None,
-                    )
-                    last_ui = now
-                if written - last_report >= log_every_mb * 1024 * 1024:
-                    if total_i:
-                        log(
-                            f"Download {written/1e9:.2f}/{total_i/1e9:.2f} GB "
-                            f"({100.0 * written / total_i:.1f}%) · {format_speed(speed)} · ETA {format_eta(eta)}"
-                        )
-                    else:
-                        log(f"Download {written/1e9:.2f} GB · {format_speed(speed)}")
-                    last_report = written
-
-    final_size = dest.stat().st_size
+    final_size = path.stat().st_size
     if final_size < 1_000_000_000:
-        raise RuntimeError(f"ISO too small / incomplete: {dest}")
-    if expected_total and final_size + 1_048_576 < expected_total:
-        raise RuntimeError(
-            f"ISO incomplete: got {final_size} bytes, expected ~{expected_total}"
-        )
-    log(f"Download complete: {dest} ({final_size/1e9:.2f} GB)", "OK")
+        raise RuntimeError(f"ISO too small / incomplete: {path}")
+    log(f"Download complete: {path} ({final_size / 1e9:.2f} GB)", "OK")
     report_progress(
-        phase=f"Download {dest.name}",
+        phase=f"Download {path.name}",
         percent=100.0,
         detail=f"Complete — {format_bytes(final_size)}",
         bytes_done=final_size,
@@ -328,7 +248,7 @@ def download_file(url: str, dest: Path, log_every_mb: int = 32) -> Path:
         speed_bps=0.0,
         eta_seconds=0.0,
     )
-    return dest
+    return path
 
 
 def _iso_name_matches(win: str, arch: str, name: str) -> bool:
@@ -653,7 +573,11 @@ def get_iso(
                 )
         except Exception as e:
             log(f"ISO name build check: {e}", "INFO")
-    dest = download_file(url, out_dir / fname)
+    dest = download_file(
+        url,
+        out_dir / fname,
+        expected_sha256=getattr(resolve_iso_url, "last_sha256", "") or None,
+    )
     # Hash + catalog the freshly downloaded official ISO (skip remount if slow — still hash)
     try:
         from .iso_inspect import inspect_iso

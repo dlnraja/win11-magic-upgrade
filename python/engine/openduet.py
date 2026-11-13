@@ -542,15 +542,19 @@ def ensure_opencore_zip(cache_dir: Path | None = None) -> Path:
     if dest.is_file() and _sha256(dest) == expected:
         return dest
     log(f"Downloading OpenCorePkg {version} RELEASE (pinned)...", "STEP")
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=180) as resp:
-        dest.write_bytes(resp.read())
-    got = _sha256(dest)
-    if got != expected:
-        dest.unlink(missing_ok=True)
-        raise OpenDuetError(
-            f"OpenCore zip sha256 mismatch (got {got}, expected {expected})"
+    from .segment_download import download_image, make_ui_callback
+
+    try:
+        download_image(
+            url,
+            dest,
+            expected_sha256=expected,
+            on_progress=make_ui_callback(dest.name),
+            log=log,
+            label=dest.name,
         )
+    except RuntimeError as exc:
+        raise OpenDuetError(str(exc)) from exc
     log(f"OpenCore {version} cached ({dest.stat().st_size} bytes)", "OK")
     return dest
 

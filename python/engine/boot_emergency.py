@@ -711,15 +711,20 @@ def stage_freedos_rescue_media(*, reason: str = "boot_emergency") -> dict[str, A
     if not dest.exists() or dest.stat().st_size < 1_000_000:
         try:
             log(f"Downloading FreeDOS Live staging package ({FREEDOS_ISO_NAME})...", "STEP")
-            req = urllib.request.Request(
+            from .segment_download import download_image, make_ui_callback
+
+            download_image(
                 FREEDOS_ISO_URL,
-                headers={"User-Agent": "Win11MagicUpgrade-Rescue/1.26"},
+                dest,
+                on_progress=make_ui_callback(dest.name),
+                log=log,
+                label=dest.name,
             )
-            with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
-                shutil.copyfileobj(resp, f, length=1024 * 1024)
             result["actions"].append("freedos_downloaded")
         except Exception as e:
-            log(f"FreeDOS download skipped/failed: {e}", "WARN")
+            from .segment_download import redact_text
+
+            log(f"FreeDOS download skipped/failed: {redact_text(str(e))}", "WARN")
             result["actions"].append(f"freedos_download_fail:{type(e).__name__}")
             # Still write guide pointing at official URL
     else:
