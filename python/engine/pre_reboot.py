@@ -8,8 +8,10 @@ rewritten by a heal. Partitions are never deleted.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -17,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .logutil import STATE_DIR
-from .sanitize import sanitize_text
+from .sanitize import sanitize_obj, sanitize_text
 
 _STAMP = re.compile(r"(20\d{6}T\d{6}Z)")
 _LOG_TS = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
@@ -433,10 +435,156 @@ def format_summary(report: dict[str, Any]) -> str:
         lines.append("NO-GO for reboot. Do not restart until the lines above are resolved.")
         for blocker in plan.get("go_blockers") or []:
             lines.append(f"  blocker: {blocker}")
+    analysis = ((report.get("diag") or {}).get("analysis") or {})
+    if analysis:
+        lines.append("")
+        lines.append("Previous runs:")
+        lines.append(f"  run count: {analysis.get('run_count', 0)}")
+        lines.append(f"  repeated runs: {bool(analysis.get('repeated_runs'))}")
+        lines.append(f"  cascade (false unmountable then repair/shrink): {bool(analysis.get('cascade'))}")
+        lines.append(f"  error codes: {', '.join(analysis.get('error_codes') or []) or 'none'}")
+        lines.append(f"  bcdboot exit 32 / BcdOpenStore: {bool(analysis.get('bcdboot_32'))}")
+        lines.append(f"  DISM 1005: {bool(analysis.get('dism_1005'))}")
+        for step in (analysis.get("failed_steps") or [])[:8]:
+            lines.append(f"  failed: {step}")
     return "\n".join(lines) + "\n"
 
 
+_DIAG_DIRS = (
+    ("logs", "session_log"),
+    ("Panther", "panther"),
+    ("bcd-backups", "bcd_export"),
+    ("partition-backups", "esp_backup"),
+    ("boot-snapshots", "snapshot"),
+    ("updates", "self_update"),
+    ("autodiag", "autodiag"),
+    ("repair-before-reboot", "prior_repair"),
+    ("crashes", "crash_dump"),
+)
+_DIAG_TEXT = {".log", ".txt", ".json", ".xml"}
+_DIAG_DUMP = {".dmp", ".mdmp", ".wer"}
+_MAX_DIAG_FILES = 120
+_MAX_DIAG_TEXT = 200_000
+
+
+def _windows_setup_logs() -> list[Path]:
+    roots = []
+    windir = os.environ.get("SystemRoot", "")
+    if windir:
+        roots.append(Path(windir) / "Panther")
+    roots.append(Path(r"C:\$WINDOWS.~BT\Sources\Panther"))
+    found = []
+    for folder in roots:
+        for name in ("setupact.log", "setuperr.log"):
+            path = folder / name
+            if path.is_file():
+                found.append(path)
+    return found
+
+
+def collect_diag_inventory(root: Path, extra: list[Path] | None = None) -> tuple[dict[str, Any], str]:
+    """Every prior run log, backup manifest, crash dump, and self-update note."""
+    files: list[dict[str, Any]] = []
+    chunks: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: Path, role: str) -> None:
+        if len(files) >= _MAX_DIAG_FILES:
+            return
+        try:
+            if not path.is_file():
+                return
+            key = str(path.resolve()).lower()
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        files.append({"role": role, "path": str(path), "name": path.name, "bytes": size})
+        if path.suffix.lower() in _DIAG_DUMP:
+            return
+        if path.suffix.lower() not in _DIAG_TEXT and path.name.lower() not in {"bcd-export", "manifest"}:
+            if "bcd-export" not in path.name.lower() and path.suffix.lower() != "":
+                return
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_DIAG_TEXT]
+        except OSError:
+            return
+        chunks.append(f"===== {path} =====\n{text}")
+
+    for folder_name, role in _DIAG_DIRS:
+        folder = root / folder_name
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob("*")):
+            if path.is_file():
+                add(path, role)
+    for name in (
+        "state.json",
+        "srp-fix.json",
+        "boot-preflight.json",
+        "boot-postflight.json",
+        "boot-deep-verify.json",
+        "boot-emergency.json",
+        "MigrationReport.txt",
+    ):
+        add(root / name, "state")
+    for path in extra or []:
+        add(path, "windows_panther")
+    for path in _windows_setup_logs():
+        add(path, "windows_panther")
+    inventory = {"files": files, "file_count": len(files)}
+    return inventory, "\n".join(chunks)
+
+
+def analyze_runs(text: str, inventory: dict[str, Any]) -> dict[str, Any]:
+    """Repeated runs, failed steps, the false-unmountable cascade, and error codes."""
+    blob = text or ""
+    session_files = [item for item in inventory.get("files") or [] if item.get("role") == "session_log"]
+    session_marks = re.findall(r"SESSION \d{8}-\d{6}|upgrade-\d{8}-\d{6}", blob)
+    run_count = max(len(session_files), len(set(session_marks)))
+    failed: list[str] = []
+    for line in blob.splitlines():
+        if re.search(r"\b(ERROR|FATAL|FAIL)\b|BcdOpenStore|esp_unmountable", line, re.I):
+            failed.append(line.strip()[:240])
+            if len(failed) >= 30:
+                break
+    codes = sorted(set(re.findall(r"(?i)(?:exit|error|erreur)\s*[:= ]+\s*(\d{2,5})", blob)))
+    bcdboot_32 = bool(re.search(r"BcdOpenStore|bcdboot[^\n]{0,80}\b32\b|exit\s+32", blob, re.I))
+    dism_1005 = "1005" in blob
+    if bcdboot_32 and "32" not in codes:
+        codes.append("32")
+    if dism_1005 and "1005" not in codes:
+        codes.append("1005")
+        codes = sorted(set(codes))
+    cascade = bool(
+        re.search(r"esp_unmountable", blob, re.I)
+        and re.search(r"INTELLIGENT BOOT REPAIR|Creating new \d+ MB EFI|bcdboot rewrite", blob, re.I)
+    )
+    by_role: dict[str, int] = {}
+    for item in inventory.get("files") or []:
+        role = str(item.get("role") or "other")
+        by_role[role] = by_role.get(role, 0) + 1
+    return {
+        "run_count": run_count,
+        "repeated_runs": run_count >= 2,
+        "failed_step_count": len(failed),
+        "failed_steps": failed[:12],
+        "error_codes": codes,
+        "cascade": cascade,
+        "bcdboot_32": bcdboot_32,
+        "dism_1005": dism_1005,
+        "files_by_role": by_role,
+    }
+
+
 def _read_logs(root: Path) -> str:
+    _inventory, text = collect_diag_inventory(root)
+    return text
     chunks: list[str] = []
     for folder in (root / "logs", root / "Panther", root):
         if not folder.is_dir():
@@ -493,21 +641,27 @@ def _write_bundle(root: Path, report: dict[str, Any], log_text: str) -> Path:
     out_dir = root / "repair-before-reboot" / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
     summary = sanitize_text(format_summary(report))
+    diag = sanitize_obj(report.get("diag") or {})
+    bundle = out_dir / "repair-before-reboot-diagnostic.zip"
+    summary = summary + "\nFull diagnostic zip:\n" + sanitize_text(str(bundle)) + "\n"
     (out_dir / "SUMMARY.txt").write_text(summary, encoding="utf-8")
-    payload = {
-        "verdict": report.get("verdict"),
-        "history": {key: value for key, value in (report.get("history") or {}).items() if key != "heal_at"},
-        "chosen_backup": (report.get("plan") or {}).get("chosen_backup"),
-        "actions": (report.get("plan") or {}).get("actions"),
-        "applied": report.get("applied"),
-        "delete_partitions": False,
-    }
-    (out_dir / "summary.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (out_dir / "diag.json").write_text(json.dumps(diag, indent=2), encoding="utf-8")
+    (out_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "verdict": report.get("verdict"),
+                "delete_partitions": False,
+                "analysis": (report.get("diag") or {}).get("analysis") or {},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     redacted_log = sanitize_text(log_text[-100_000:])
     (out_dir / "logs-redacted.txt").write_text(redacted_log, encoding="utf-8")
-    bundle = out_dir / "repair-before-reboot-diagnostic.zip"
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(out_dir / "SUMMARY.txt", "SUMMARY.txt")
+        archive.write(out_dir / "diag.json", "diag.json")
         archive.write(out_dir / "summary.json", "summary.json")
         archive.write(out_dir / "logs-redacted.txt", "logs-redacted.txt")
     report["bundle"] = str(bundle)
@@ -525,11 +679,26 @@ def repair_before_reboot(
     uefi: bool = True,
     unmount_letter: Callable[[str], None] | None = None,
     esp_root_for: Callable[[dict[str, Any]], Path | None] | None = None,
+    budget_s: int | None = None,
 ) -> dict[str, Any]:
     """Inventory, validate, restore the pre-run BCD, and print GO or NO-GO."""
     state = root or STATE_DIR
-    run = runner or _default_runner
-    log_text = _read_logs(state)
+    inner = runner or _default_runner
+    started = time.monotonic()
+    budget_hit = False
+
+    def run(cmd: list[str], timeout: int) -> tuple[int, str]:
+        nonlocal budget_hit
+        limit = timeout
+        if budget_s is not None:
+            left = budget_s - (time.monotonic() - started)
+            if left < 1:
+                budget_hit = True
+                return 124, "boot guard budget exceeded"
+            limit = min(int(timeout), max(1, int(left)))
+        return inner(cmd, limit)
+    inventory, log_text = collect_diag_inventory(state)
+    diag_analysis = analyze_runs(log_text, inventory)
     backups = inventory_bcd_backups(state)
     attach_export_times(backups, log_text)
     # Bound the live bcdedit work. Newest exports are first.
@@ -596,6 +765,8 @@ def repair_before_reboot(
         for letter in history.get("letters_assigned") or []:
             unmount_letter(letter)
             applied.append(f"removed_letter:{letter}")
+    if budget_hit:
+        plan.setdefault("go_blockers", []).append("startup_budget_exceeded")
     blockers = list(plan.get("go_blockers") or [])
     if plan.get("need_import") and not any(item.startswith("import:0") for item in applied):
         if apply:
@@ -622,6 +793,310 @@ def repair_before_reboot(
         "applied": applied,
         "verify": {key: value for key, value in verify.items() if key != "objects"},
         "delete_partitions": False,
+        "diag": {"files": inventory.get("files") or [], "analysis": diag_analysis},
     }
     _write_bundle(state, report, log_text)
     return report
+
+
+_SERIAL_FIELD = re.compile(r"(?i)(serial(?:\s*number)?\s*[:=]\s*)([A-Za-z0-9._\-]+)")
+_ISSUE_REPO = "dlnraja/win11-magic-upgrade"
+
+
+def default_uefi() -> bool:
+    """BIOS/legacy repairs accept winload.exe. Unknown firmware stays on the UEFI checks."""
+    try:
+        from .esp_access import detect_firmware_mode
+
+        mode, _capable = detect_firmware_mode()
+        if str(mode).upper() in ("BIOS", "LEGACY", "MBR"):
+            return False
+    except Exception:
+        return True
+    return True
+
+
+_LAST_GUARD: dict[str, Any] | None = None
+_UPGRADE_ACTIONS = frozenset(
+    {
+        "oneclick",
+        "mbr",
+        "srp",
+        "boot-fix",
+        "boot-heal",
+        "hybrid",
+        "hybrid-activate",
+        "resume",
+        "boot-resume",
+        "patch",
+        "patch-deep",
+        "install-patches",
+        "bypass",
+        "reboot",
+    }
+)
+STARTUP_GUARD_BUDGET_S = 180
+
+
+def no_args_entrypoint(*, guard, update, continue_app) -> None:
+    """Plain exe or double-click. The boot guard runs before update or the UI."""
+    guard()
+    update()
+    continue_app()
+
+
+def boot_guard_skipped(argv: list[str] | None = None) -> bool:
+    """The startup guard runs unless this flag or MAGIC_SKIP_BOOT_GUARD is set."""
+    if any(str(arg).lower() == "--skip-boot-guard" for arg in (argv or [])):
+        return True
+    return os.environ.get("MAGIC_SKIP_BOOT_GUARD", "").strip().lower() in ("1", "true", "yes")
+
+
+def startup_action(argv: list[str] | None) -> str:
+    """The upgrade action this launch would run. Empty means read-only."""
+    args = [str(arg).lower() for arg in (argv or [])]
+    flags = {
+        "--oneclick": "oneclick",
+        "-oneclick": "oneclick",
+        "--mbr": "mbr",
+        "--srp": "srp",
+        "--boot-fix": "boot-fix",
+        "--boot-heal": "boot-heal",
+        "--hybrid": "hybrid",
+        "--hybrid-activate": "hybrid-activate",
+        "--resume": "resume",
+        "--boot-resume": "boot-resume",
+        "--patch": "patch",
+        "--patch-deep": "patch-deep",
+        "--install-patches": "install-patches",
+        "--bypass": "bypass",
+    }
+    for flag, name in flags.items():
+        if flag in args:
+            return name
+    read_only = {
+        "--diagnose",
+        "--stats",
+        "--support-zip",
+        "--offline-pack",
+        "--research",
+        "--dry-run",
+        "--dryrun",
+        "--repair-before-reboot",
+        "--update",
+        "--no-update",
+        "--help",
+        "-h",
+        "/?",
+        "--skip-boot-guard",
+        "--openduet-prepare",
+        "--openduet-write",
+    }
+    if not args or args == ["--cli"] or not any(arg in read_only for arg in args):
+        return "oneclick"
+    return ""
+
+
+def guard_blocks_action(action: str, verdict: str) -> bool:
+    """NO-GO stops upgrade and reboot. Read-only commands and an explicit skip do not."""
+    if (verdict or "").strip().upper() in ("GO", "SKIPPED"):
+        return False
+    return (action or "").strip().lower() in _UPGRADE_ACTIONS
+
+
+def last_boot_guard() -> dict[str, Any] | None:
+    return _LAST_GUARD
+
+
+def decide_startup_repair(diag: dict[str, Any]) -> dict[str, Any]:
+    """Choose UEFI repair, MBR repair, both, or neither. A healthy path is never selected."""
+    firmware = str(diag.get("firmware") or "UNKNOWN").upper()
+    style = str(diag.get("partition_style") or "UNKNOWN").upper()
+    csm = bool(diag.get("csm"))
+    esp = diag.get("esp") or {}
+    mbr = diag.get("mbr") or {}
+    failed = str(diag.get("failed_path") or "").lower()
+    if int(diag.get("boot_disk_count") or 1) > 1 and not diag.get("boot_disk_known", True):
+        return {"mode": "none", "repair_uefi": False, "repair_mbr": False, "reason": "multiple_boot_disks"}
+    uefi_eligible = firmware in ("UEFI", "UNKNOWN") or csm or style in ("GPT", "HYBRID")
+    mbr_eligible = firmware in ("BIOS", "LEGACY", "MBR", "UNKNOWN") or csm or style in ("MBR", "HYBRID")
+    if firmware == "BIOS" and not csm and style not in ("MBR", "HYBRID"):
+        uefi_eligible = False
+    if firmware == "UEFI" and not csm and style not in ("GPT", "HYBRID", "UNKNOWN"):
+        mbr_eligible = False
+    repair_uefi = uefi_eligible and bool(esp.get("present")) and not bool(esp.get("healthy", True))
+    repair_mbr = mbr_eligible and bool(mbr.get("present")) and not bool(mbr.get("healthy", True))
+    if failed == "uefi":
+        repair_mbr = False
+    elif failed == "bios":
+        repair_uefi = False
+    if repair_uefi and repair_mbr:
+        mode = "hybrid"
+    elif repair_uefi:
+        mode = "uefi"
+    elif repair_mbr:
+        mode = "mbr"
+    else:
+        mode = "none"
+    return {
+        "mode": mode,
+        "repair_uefi": repair_uefi,
+        "repair_mbr": repair_mbr,
+        "reason": "healthy" if mode == "none" else mode,
+    }
+
+
+def apply_startup_repairs(decision: dict[str, Any], *, uefi_repair: Callable[[], None], mbr_repair: Callable[[], None]) -> list[str]:
+    done: list[str] = []
+    if decision.get("repair_uefi"):
+        uefi_repair()
+        done.append("uefi")
+    if decision.get("repair_mbr"):
+        mbr_repair()
+        done.append("mbr")
+    return done
+
+
+def collect_startup_diagnostics() -> dict[str, Any]:
+    """Best-effort firmware, style, and path health. Missing data does not invent a repair."""
+    firmware = "UNKNOWN"
+    try:
+        import ctypes
+
+        kind = ctypes.c_uint(0)
+        if ctypes.windll.kernel32.GetFirmwareType(ctypes.byref(kind)):
+            firmware = {1: "BIOS", 2: "UEFI"}.get(int(kind.value), "UNKNOWN")
+    except Exception:
+        firmware = "UNKNOWN"
+    return {
+        "firmware": firmware,
+        "partition_style": "UNKNOWN",
+        "csm": False,
+        "secure_boot": "unknown",
+        "boot_disk_count": 1,
+        "boot_disk_known": True,
+        "failed_path": "",
+        "esp": {"present": False, "healthy": True, "reasons": ()},
+        "mbr": {"present": False, "healthy": True, "reasons": ()},
+    }
+
+
+def startup_boot_guard(argv: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Run the anti-failed-boot guard once per process, inside a wall-clock budget."""
+    global _LAST_GUARD
+    if _LAST_GUARD is not None:
+        return _LAST_GUARD
+    if boot_guard_skipped(argv):
+        _LAST_GUARD = {
+            "verdict": "SKIPPED",
+            "skipped": True,
+            "summary_text": "Startup boot guard skipped.\n",
+            "bundle": "",
+        }
+        return _LAST_GUARD
+    supplied = kwargs.pop("diagnostics", None)
+    diag = supplied if supplied is not None else collect_startup_diagnostics()
+    decision = decide_startup_repair(diag)
+    saw_path = bool((diag.get("esp") or {}).get("present") or (diag.get("mbr") or {}).get("present"))
+    if supplied is not None or saw_path:
+        touched: list[str] = []
+
+        def _uefi() -> None:
+            touched.append("uefi")
+            repair_before_reboot(uefi=True, **{k: v for k, v in kwargs.items() if k in ("root", "runner", "apply", "esps", "firmware_text", "unmount_letter", "esp_root_for", "budget_s")})
+
+        def _mbr() -> None:
+            touched.append("mbr")
+            repair_before_reboot(uefi=False, **{k: v for k, v in kwargs.items() if k in ("root", "runner", "apply", "esps", "firmware_text", "unmount_letter", "esp_root_for", "budget_s")})
+
+        apply_startup_repairs(decision, uefi_repair=_uefi, mbr_repair=_mbr)
+        verdict = "GO" if decision["mode"] == "none" or touched else "NO-GO"
+        if decision["reason"] == "multiple_boot_disks":
+            verdict = "NO-GO"
+        _LAST_GUARD = {
+            "verdict": verdict,
+            "repair_mode": decision["mode"],
+            "repair_uefi": decision["repair_uefi"],
+            "repair_mbr": decision["repair_mbr"],
+            "touched": touched,
+            "summary_text": (
+                f"Startup repair mode {decision['mode']}. "
+                f"UEFI repair={decision['repair_uefi']} MBR repair={decision['repair_mbr']}.\n"
+            ),
+            "bundle": "",
+            "delete_partitions": False,
+        }
+        open_repair_issue(_LAST_GUARD)
+        return _LAST_GUARD
+    raw_budget = os.environ.get("MAGIC_BOOT_GUARD_BUDGET", str(STARTUP_GUARD_BUDGET_S))
+    try:
+        budget = max(5, int(raw_budget))
+    except ValueError:
+        budget = STARTUP_GUARD_BUDGET_S
+    allowed = {
+        "root",
+        "runner",
+        "apply",
+        "esps",
+        "firmware_text",
+        "uefi",
+        "unmount_letter",
+        "esp_root_for",
+        "budget_s",
+    }
+    options = {key: value for key, value in kwargs.items() if key in allowed}
+    options.setdefault("uefi", default_uefi())
+    options.setdefault("budget_s", budget)
+    report = repair_before_reboot(**options)
+    open_repair_issue(report)
+    _LAST_GUARD = report
+    return report
+
+
+def upgrade_allowed(verdict: str) -> bool:
+    """One-Click continues the upgrade only after a GO verdict."""
+    return (verdict or "").strip().upper() == "GO"
+
+
+def redact_issue_text(text: str) -> str:
+    cleaned = sanitize_text(text or "")
+    return _SERIAL_FIELD.sub(r"\1<SERIAL>", cleaned)
+
+
+def verdict_message(verdict: str, zip_path: str) -> str:
+    if upgrade_allowed(verdict):
+        head = "GO — the boot repair checked out. The upgrade can continue."
+    else:
+        head = "NO-GO — the upgrade will not continue. Do not reboot until this is resolved."
+    shown = redact_issue_text(zip_path or "")
+    return head + "\n\nDiagnostic zip (drag this file onto the GitHub issue):\n" + shown
+
+
+def repair_issue_url(report: dict[str, Any], *, repo: str = _ISSUE_REPO) -> str:
+    """Browser issue form. No token is placed in the URL or the exe."""
+    from urllib.parse import urlencode
+
+    verdict = str(report.get("verdict") or "NO-GO")
+    zip_path = redact_issue_text(str(report.get("bundle") or ""))
+    body = "Full diagnostic zip:\n" + zip_path + "\n\n"
+    body += redact_issue_text(str(report.get("summary_text") or ""))
+    query = urlencode(
+        {
+            "title": f"One-Click repair before reboot: {verdict}"[:140],
+            "body": body[:5000],
+        }
+    )
+    return f"https://github.com/{repo}/issues/new?{query}"
+
+
+def open_repair_issue(report: dict[str, Any]) -> str:
+    url = repair_issue_url(report)
+    if os.environ.get("MAGIC_NO_BROWSER", "").strip().lower() in ("1", "true", "yes"):
+        return url
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception:
+        pass
+    return url

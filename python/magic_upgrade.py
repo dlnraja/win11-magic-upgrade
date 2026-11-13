@@ -816,6 +816,17 @@ class App(tk.Tk):
     def start(self, action: str) -> None:
         if self._busy or self._elevating:
             return
+        try:
+            from engine.pre_reboot import guard_blocks_action, last_boot_guard, verdict_message  # type: ignore
+
+            prior = last_boot_guard()
+            if prior and guard_blocks_action(action, str(prior.get("verdict") or "")):
+                notice = verdict_message(str(prior.get("verdict") or ""), str(prior.get("bundle") or ""))
+                self.append(notice + "\n")
+                messagebox.showerror(self.t.get("app_title", "Win11 Magic Upgrade"), notice)
+                return
+        except Exception:
+            pass
         title = self.t.get("app_title", "Win11 Magic Upgrade")
         # Persist + apply checkbox options before elevate / run
         try:
@@ -974,11 +985,49 @@ class App(tk.Tk):
                 elif action == "dryrun":
                     code = run_pipeline(sink, quiet=True, dry_run=True)
                 else:
-                    code = run_pipeline(
-                        sink,
-                        quiet=True,
-                        resume=getattr(self, "_resume_chain", False),
-                    )
+                    code = None
+                    if action == "oneclick":
+                        from engine.pre_reboot import (  # type: ignore
+                            default_uefi,
+                            guard_blocks_action,
+                            last_boot_guard,
+                            open_repair_issue,
+                            repair_before_reboot,
+                            upgrade_allowed,
+                            verdict_message,
+                        )
+
+                        repair = last_boot_guard()
+                        if repair is None:
+                            repair = repair_before_reboot(uefi=default_uefi())
+                            open_repair_issue(repair)
+                        verdict = str(repair.get("verdict") or "NO-GO")
+                        summary = str(repair.get("summary_text") or verdict)
+                        bundle = str(repair.get("bundle") or "")
+                        sink(summary + "\n")
+                        sink(verdict_message(verdict, bundle) + "\n")
+                        notice = verdict_message(verdict, bundle)
+
+                        def _show_verdict(text: str = notice, ok: bool = upgrade_allowed(verdict)) -> None:
+                            if ok:
+                                messagebox.showinfo(title, text)
+                            else:
+                                messagebox.showerror(title, text)
+
+                        self.after(0, _show_verdict)
+                        try:
+                            issue = open_repair_issue(repair)
+                            sink(f"GitHub issue form: {issue}\n")
+                        except Exception as issue_error:
+                            sink(f"GitHub issue form: {issue_error}\n")
+                        if guard_blocks_action("oneclick", verdict):
+                            code = 2
+                    if code is None:
+                        code = run_pipeline(
+                            sink,
+                            quiet=True,
+                            resume=getattr(self, "_resume_chain", False),
+                        )
                 try:
                     from engine.logutil import load_state  # type: ignore
 
@@ -1412,6 +1461,7 @@ Win11 Magic Upgrade - CLI
   Win11MagicUpgrade.exe --cli --stats
   Win11MagicUpgrade.exe --update
   Win11MagicUpgrade.exe --no-update
+  Win11MagicUpgrade.exe --skip-boot-guard
 
 Exit codes:
   0  OK / Setup launched / already done
@@ -1468,6 +1518,8 @@ Env (selected):
   MAGIC_NO_DIALOG=1            Print errors instead of a modal dialog (set in CI)
   MAGIC_SKIP_AUTO_DIAG=1      Do not scan logs or open an auto-diag issue at the end
   MAGIC_AUTO_DIAG_GIST=1      Upload the redacted log zip with gh gist when logged in
+  MAGIC_SKIP_BOOT_GUARD=1     Skip the startup anti-failed-boot guard
+  MAGIC_BOOT_GUARD_BUDGET=180 Wall-clock seconds for that guard
 
 Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
 """.strip()
@@ -1490,7 +1542,39 @@ def _emit_cli_help() -> None:
     print(data.decode("ascii", errors="replace"))
 
 
+def _no_args_guard() -> None:
+    """ESP/SRP, BCD, bootmgr, firmware mode, Secure Boot CA, and BIOS boot code."""
+    from engine.pre_reboot import boot_guard_skipped, startup_boot_guard  # type: ignore
+
+    if boot_guard_skipped([]):
+        return
+    if not is_admin():
+        if relaunch_as_admin([]):
+            raise SystemExit(0)
+        print("UAC elevation failed. The boot guard could not verify the firmware store.")
+    report = startup_boot_guard([])
+    print(report.get("summary_text") or report.get("verdict") or "")
+
+
+def _no_args_update() -> None:
+    try:
+        from engine.self_update import startup_update  # type: ignore
+
+        startup_update([])
+    except Exception:
+        pass
+
+
 def main() -> None:
+    if not sys.argv[1:]:
+        from engine.pre_reboot import no_args_entrypoint  # type: ignore
+
+        no_args_entrypoint(guard=_no_args_guard, update=_no_args_update, continue_app=lambda: _main_after_no_args())
+        return
+    _main_after_no_args()
+
+
+def _main_after_no_args() -> None:
     root = app_root()
     _ensure_sys_path(root)
     argv = sys.argv[1:]
@@ -1518,6 +1602,25 @@ def main() -> None:
         startup_update(argv)
     except Exception:
         pass
+
+    try:
+        from engine.pre_reboot import (  # type: ignore
+            boot_guard_skipped,
+            guard_blocks_action,
+            startup_action,
+            startup_boot_guard,
+        )
+
+        if not boot_guard_skipped(argv):
+            guard_report = startup_boot_guard(argv)
+            if guard_blocks_action(startup_action(argv), str(guard_report.get("verdict") or "")):
+                print("NO-GO: upgrade and reboot steps are blocked.")
+                if any(a in argv_l for a in ("--cli", "--oneclick", "-oneclick", "--mbr", "--srp")):
+                    raise SystemExit(2)
+    except SystemExit:
+        raise
+    except Exception as guard_error:
+        print(f"Startup boot guard failed: {guard_error}")
 
     if not argv and sys.stdin.isatty() and sys.stdout.isatty():
         from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
@@ -1626,9 +1729,9 @@ def main() -> None:
                     heal = verify_and_heal_boot(force=True)
                     raise SystemExit(0 if heal.get("ok") or heal.get("bootable") else 2)
                 if "--repair-before-reboot" in argv_l:
-                    from engine.pre_reboot import repair_before_reboot  # type: ignore
+                    from engine.pre_reboot import default_uefi, repair_before_reboot  # type: ignore
 
-                    report = repair_before_reboot()
+                    report = repair_before_reboot(uefi=default_uefi())
                     print(report.get("summary_text") or report.get("verdict"))
                     raise SystemExit(0 if report.get("verdict") == "GO" else 2)
                 if "--boot-fix" in argv_l:
@@ -1691,6 +1794,24 @@ def main() -> None:
                         raise
                     except Exception:
                         pass
+                if "--oneclick" in argv_l or "-oneclick" in argv_l:
+                    from engine.pre_reboot import (  # type: ignore
+                        default_uefi,
+                        guard_blocks_action,
+                        last_boot_guard,
+                        open_repair_issue,
+                        repair_before_reboot,
+                        verdict_message,
+                    )
+
+                    repair = last_boot_guard()
+                    if repair is None:
+                        repair = repair_before_reboot(uefi=default_uefi())
+                        print(open_repair_issue(repair))
+                    print(repair.get("summary_text") or repair.get("verdict"))
+                    print(verdict_message(str(repair.get("verdict") or ""), str(repair.get("bundle") or "")))
+                    if guard_blocks_action("oneclick", str(repair.get("verdict") or "")):
+                        raise SystemExit(2)
                 code = run_pipeline(resume="--resume" in argv_l or "--boot-resume" in argv_l)
                 if code in (EXIT_BLOCKED, EXIT_FAILED):
                     kind, detail = _failure_detail(code=code)
