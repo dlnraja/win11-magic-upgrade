@@ -40,3 +40,21 @@ The label is `auto-diag`.
 - With no `gh` login and no `MAGIC_GITHUB_TOKEN` or `GITHUB_TOKEN`, the program does not call GitHub. It writes `autodiag/paste-<signature>.md` and a prefilled issue URL you can open yourself.
 
 No token is stored in the program.
+
+## Earlier logs
+
+The same end-of-run pass also reads logs that were not packed before:
+
+- session logs under `%LOCALAPPDATA%\Win11MagicUpgrade\logs`
+- `C:\MagicUpgrade\logs`
+- state counters (`postflight-loop.json`, `*count*`, boot status files)
+- BCD export backup metadata (file name and size only; the hive is not read)
+- excerpts from `C:\Windows\Panther\setupact.log` and `setuperr.log`
+- excerpts from `C:\$WINDOWS.~BT\Sources\Panther` and `Rollback`
+- `C:\Windows\System32\LogFiles\Srt\SrtTrail.txt`
+
+Text is redacted before it is stored. The issue body gets a short summary: one line per new file, one line per signature, cut at 4000 characters. The full redacted text is a zip under `autodiag/bundle-<id>.zip`.
+
+`autodiag/uploaded.json` records the content id of each packed file. A later run does not pack that file again. A changed file is a new id and is packed once.
+
+Set `MAGIC_AUTO_DIAG_GIST=1` when `gh` is logged in to upload that zip as a gist. The command line does not carry a token. Without that setting, the issue text contains the local zip path and the issue link.

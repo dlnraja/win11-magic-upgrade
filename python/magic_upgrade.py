@@ -1010,6 +1010,7 @@ Env (selected):
   MAGIC_OPENDUET_ALLOW_LARGE=1 Allow partitioning a USB larger than 128 GiB
   MAGIC_NO_DIALOG=1            Print errors instead of a modal dialog (set in CI)
   MAGIC_SKIP_AUTO_DIAG=1      Do not scan logs or open an auto-diag issue at the end
+  MAGIC_AUTO_DIAG_GIST=1      Upload the redacted log zip with gh gist when logged in
 
 Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
 """.strip()
