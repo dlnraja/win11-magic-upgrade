@@ -130,6 +130,7 @@ class App(tk.Tk):
 
         self.geometry("980x760")
         self.minsize(860, 640)
+        self.resizable(True, True)
         self._action_buttons: list[tk.Button] = []
         self._opt_vars: dict[str, tk.BooleanVar] = {}
         lang = (locale.getdefaultlocale()[0] or "en").lower()
@@ -256,11 +257,25 @@ class App(tk.Tk):
             anchor="w",
         ).pack(anchor="w")
 
-        # --- Options (checkboxes) ---
-        self._build_options_panel()
+        # --- Options above the log, with a draggable sash between them ---
+        self._paned = tk.PanedWindow(
+            self,
+            orient=tk.VERTICAL,
+            sashwidth=8,
+            sashrelief="raised",
+            bg="#334155",
+            opaqueresize=True,
+            bd=0,
+        )
+        self._paned.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        top = tk.Frame(self._paned, bg="#0f172a")
+        bottom = tk.Frame(self._paned, bg="#0f172a")
+        self._paned.add(top, stretch="always", minsize=160)
+        self._paned.add(bottom, stretch="always", minsize=140)
+        self._build_options_panel(top)
 
         # --- Progress panel ---
-        prog = tk.Frame(self, bg="#0f172a")
+        prog = tk.Frame(top, bg="#0f172a")
         prog.pack(fill="x", padx=20, pady=(4, 6))
         self.phase_var = tk.StringVar(value=self.t.get("progress_idle", "Idle"))
         self.detail_var = tk.StringVar(value="")
@@ -369,8 +384,28 @@ class App(tk.Tk):
         self._progress_job = None
         self._last_progress: dict = {}
 
+        tools = tk.Frame(bottom, bg="#0f172a")
+        tools.pack(fill="x", padx=8, pady=(4, 2))
+        for label, command in (
+            ("Open log in large window", self._open_log_window),
+            ("Open log folder", self._open_log_folder),
+        ):
+            tk.Button(
+                tools,
+                text=label,
+                font=("Segoe UI", 9),
+                bg="#1e293b",
+                fg="#e2e8f0",
+                activebackground="#334155",
+                relief="flat",
+                cursor="hand2",
+                padx=8,
+                pady=4,
+                command=command,
+            ).pack(side="left", padx=(0, 6))
+        self._log_viewers: list = []
         self.log = scrolledtext.ScrolledText(
-            self,
+            bottom,
             font=("Consolas", 9),
             bg="#020617",
             fg="#cbd5e1",
@@ -378,7 +413,11 @@ class App(tk.Tk):
             relief="flat",
             height=12,
         )
-        self.log.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        self.log.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._layout_file = self._gui_layout_file()
+        self._paned.bind("<ButtonRelease-1>", self._remember_sash)
+        self.bind("<Configure>", self._remember_sash_later)
+        self.after(250, self._restore_sash)
         self.append(f"Root: {self.root_dir}\n")
         self.append("GUI: check options below, then ONE-CLICK. Engine is pure Python.\n")
         if is_admin():
@@ -400,7 +439,7 @@ class App(tk.Tk):
         if self._auto_action:
             self.after(350, lambda: self.start(self._auto_action or "oneclick"))
 
-    def _build_options_panel(self) -> None:
+    def _build_options_panel(self, parent: tk.Misc) -> None:
         from gui_panel import (  # type: ignore
             OPTIONS,
             apply_options_to_environ,
@@ -419,7 +458,7 @@ class App(tk.Tk):
         }
         saved = load_option_values()
         wrap = tk.LabelFrame(
-            self,
+            parent,
             text=self.t.get("opts_title", "Options (check / uncheck)"),
             font=("Segoe UI Semibold", 10),
             fg="#e2e8f0",
@@ -498,6 +537,64 @@ class App(tk.Tk):
     def append(self, text: str) -> None:
         self.log.insert("end", text)
         self.log.see("end")
+        for viewer in list(getattr(self, "_log_viewers", ())):
+            try:
+                viewer.add_text(text)
+            except Exception:
+                try:
+                    self._log_viewers.remove(viewer)
+                except ValueError:
+                    pass
+
+    def _gui_layout_file(self) -> Path:
+        from gui_log import layout_file
+
+        base = Path(os.environ.get("LOCALAPPDATA", ".")) / "Win11MagicUpgrade"
+        return layout_file(base)
+
+    def _remember_sash_later(self, _event: object | None = None) -> None:
+        if getattr(self, "_sash_job", None):
+            return
+        self._sash_job = self.after(400, self._remember_sash)
+
+    def _remember_sash(self, _event: object | None = None) -> None:
+        self._sash_job = None
+        try:
+            _x, pos = self._paned.sash_coord(0)
+        except Exception:
+            return
+        from gui_log import clamp_sash, save_sash
+
+        total = max(self._paned.winfo_height(), 1)
+        if total < 200:
+            return
+        save_sash(self._layout_file, clamp_sash(pos, total))
+
+    def _restore_sash(self) -> None:
+        from gui_log import clamp_sash, load_sash
+
+        total = max(self._paned.winfo_height(), 1)
+        pos = clamp_sash(load_sash(self._layout_file), total)
+        try:
+            self._paned.sash_place(0, 1, pos)
+        except Exception:
+            pass
+
+    def _open_log_folder(self) -> None:
+        from gui_log import log_folder
+
+        folder = log_folder()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(folder)  # type: ignore[attr-defined]
+            else:
+                self.append(f"Log folder: {folder}\n")
+        except OSError as exc:
+            self.append(f"Could not open log folder: {exc}\n")
+
+    def _open_log_window(self) -> None:
+        LogWindow(self)
 
     def _apply_progress_ui(self, info: dict) -> None:
         from engine.progress import format_elapsed, format_eta  # type: ignore
@@ -1092,6 +1189,97 @@ def _console_key_pressed(wait) -> bool:
                 return True
         wait(0.1)
     return False
+
+
+class LogWindow(tk.Toplevel):
+    """Resizable live view of the session log, with search and copy."""
+
+    def __init__(self, app: App) -> None:
+        super().__init__(app)
+        self.title("Win11 Magic Upgrade — log")
+        self.geometry("900x640")
+        self.minsize(640, 400)
+        self.resizable(True, True)
+        self.configure(bg="#0f172a")
+        self._app = app
+        self._file_pos = 0
+        self._search_from = "1.0"
+        bar = tk.Frame(self, bg="#0f172a")
+        bar.pack(fill="x", padx=10, pady=8)
+        self._query = tk.StringVar()
+        tk.Entry(bar, textvariable=self._query, font=("Segoe UI", 10), width=32).pack(side="left")
+        tk.Button(bar, text="Search", command=self._search, relief="flat", bg="#1e293b", fg="#e2e8f0").pack(
+            side="left", padx=6
+        )
+        tk.Button(bar, text="Copy", command=self._copy, relief="flat", bg="#1e293b", fg="#e2e8f0").pack(side="left")
+        self.text = scrolledtext.ScrolledText(
+            self,
+            font=("Consolas", 10),
+            bg="#020617",
+            fg="#e2e8f0",
+            insertbackground="#e2e8f0",
+            relief="flat",
+        )
+        self.text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.text.insert("1.0", app.log.get("1.0", "end"))
+        self.text.see("end")
+        app._log_viewers.append(self)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.after(500, self._tick)
+
+    def add_text(self, text: str) -> None:
+        self.text.insert("end", text)
+        self.text.see("end")
+
+    def _tick(self) -> None:
+        from gui_log import log_folder, newest_log
+
+        path = newest_log(log_folder())
+        if path is not None:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                data = b""
+            if len(data) < self._file_pos:
+                self._file_pos = 0
+            if len(data) > self._file_pos:
+                chunk = data[self._file_pos :].decode("utf-8", "replace")
+                self._file_pos = len(data)
+                tail = self.text.get("end-1500c", "end")
+                if chunk and chunk not in tail:
+                    self.add_text(chunk if chunk.endswith("\n") else chunk + "\n")
+        if self.winfo_exists():
+            self.after(700, self._tick)
+
+    def _search(self) -> None:
+        needle = self._query.get()
+        if not needle:
+            return
+        start = self.text.search(needle, self._search_from, nocase=True, stopindex="end")
+        if not start:
+            start = self.text.search(needle, "1.0", nocase=True, stopindex="end")
+        if not start:
+            return
+        end = f"{start}+{len(needle)}c"
+        self.text.tag_remove("sel", "1.0", "end")
+        self.text.tag_add("sel", start, end)
+        self.text.see(start)
+        self._search_from = end
+
+    def _copy(self) -> None:
+        try:
+            payload = self.text.get("sel.first", "sel.last")
+        except tk.TclError:
+            payload = self.text.get("1.0", "end-1c")
+        self.clipboard_clear()
+        self.clipboard_append(payload)
+
+    def _close(self) -> None:
+        try:
+            self._app._log_viewers.remove(self)
+        except ValueError:
+            pass
+        self.destroy()
 
 
 def _parse_auto_action(argv: list[str]) -> str | None:
