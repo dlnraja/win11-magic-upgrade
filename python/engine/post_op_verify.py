@@ -396,6 +396,15 @@ def regen_is_exhausted(path: Path | None = None, *, now: float | None = None) ->
 
 def regeneration_plan(checks: list[dict[str, Any]]) -> list[str]:
     """Ordered strategies for the checks that failed. Capped so a loop cannot grow."""
+    names = [str(item.get("name") or "") for item in checks if not item.get("ok")]
+    try:
+        from .error_catalog import repairs_for_ids
+
+        catalog_plan = repairs_for_ids(names)
+    except Exception:
+        catalog_plan = []
+    if catalog_plan:
+        return catalog_plan[:MAX_REGEN_ATTEMPTS]
     plan: list[str] = []
     for check in checks:
         if check.get("ok"):
