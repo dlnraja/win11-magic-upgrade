@@ -135,7 +135,16 @@ def cleanup_boot_volume(root: str) -> dict:
     Deletes only known-safe expendable files (fonts, OEM firmware payloads).
     Never deletes BCD, bootmgfw.efi, or bootmgr.
     """
-    base = Path(root + "\\")
+    base = Path(str(root).rstrip("\\") + "\\")
+    if (base / "Windows" / "System32" / "ntoskrnl.exe").is_file():
+        log("Boot target is the Windows volume. ESP cleanup is skipped so user files stay put.", "WARN")
+        total, free = _mb(base)
+        return {
+            "total_mb": total,
+            "free_mb": free,
+            "freed_mb": 0.0,
+            "actions": ["skip_cleanup_windows_volume"],
+        }
     freed_files = 0
     actions = []
 
@@ -553,10 +562,7 @@ def inspect_and_fix_system_reserved(
         else:
             result["mode"] = "SystemReserved"
             mounted = find_system_reserved_letter()
-            if not mounted:
-                mounted = mount_esp()
-                if mounted:
-                    result["mode"] = "EFI"
+            # BIOS-only machines have no ESP. Do not fall through to mountvol /S.
 
         if not mounted:
             log("Could not mount system/EFI partition - skip SRP fix", "WARN")
@@ -646,8 +652,11 @@ def inspect_and_fix_system_reserved(
                 else:
                     new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
                     if not new_root:
-                        log("MBR system create failed - trying EFI create fallback", "WARN")
-                        new_root = create_larger_esp(TARGET_ESP_MB, system_disk=disk_n)
+                        log(
+                            "MBR system partition was not created. "
+                            "BIOS-only firmware: an ESP is not created unless UEFI conversion was requested.",
+                            "ERROR",
+                        )
 
                 if new_root:
                     result["expanded"] = True

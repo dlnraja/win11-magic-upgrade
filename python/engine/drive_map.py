@@ -9,6 +9,7 @@ can feed fake maps and fake volume contents.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
@@ -152,6 +153,7 @@ class VolumeRecord:
     bus: str = "unknown"
     serial_redacted: str = ""
     offset: int | None = None
+    dynamic: bool = False
     content: VolumeContent | None = None
 
 
@@ -164,6 +166,7 @@ class DriveMap:
     windows_volume_guid: str = ""
     source: str = "injected"
     captured_at: float = 0.0
+    uefi_capable: bool = False
 
 
 @dataclass(frozen=True)
@@ -529,24 +532,9 @@ def plan_mount(
     folder_fallback: str,
     allow_mountvol: bool = False,
 ) -> MountPlan:
-    """Reuse a path, otherwise a free letter, otherwise a folder. Never invent Y:."""
-    if volume.letter:
-        return MountPlan(
-            "reuse_letter",
-            f"{volume.letter.upper()[:1]}:",
-            volume.letter.upper()[:1],
-            False,
-            folder_fallback,
-        )
-    folder = existing_folder(volume)
-    if folder:
-        return MountPlan("reuse_folder", folder.rstrip("\\"), None, False, folder_fallback)
-    free = pick_free_letter(used)
-    if free and allow_mountvol:
-        return MountPlan("mountvol", f"{free}:", free, True, folder_fallback)
-    if free:
-        return MountPlan("assign_letter", f"{free}:", free, True, folder_fallback)
-    return MountPlan("folder", folder_fallback, None, True, folder_fallback)
+    """First step of ``access_chain``. ``allow_mountvol`` is ignored on purpose."""
+    del allow_mountvol
+    return access_chain(volume, used, folder_fallback=folder_fallback)[0]
 
 
 def verify_for_write(
@@ -554,6 +542,7 @@ def verify_for_write(
     content: VolumeContent | None = None,
     *,
     allow_empty: bool = False,
+    allow_windows_boot: bool = False,
 ) -> tuple[bool, str]:
     """FAT32 + an EFI tree, or a real MBR system volume, before any write."""
     if is_locked(volume):
@@ -563,6 +552,8 @@ def verify_for_write(
     if is_install_media(volume):
         return False, "install_media_not_esp"
     if is_windows_volume(volume) and not is_mbr_efi(volume):
+        if allow_windows_boot and (volume.is_boot or (probe is not None and probe.has_windows)):
+            return True, "windows_boot_volume"
         return False, "windows_volume_not_esp"
     typed_esp = is_gpt_esp(volume) or volume.mbr_type == MBR_EFI
     if typed_esp:
@@ -603,19 +594,127 @@ def disk_style(drive_map: DriveMap, disk: int | None) -> str:
     return "unknown"
 
 
+def classify_firmware(
+    *,
+    firmware_type: str | None = None,
+    env_var_present: bool | None = None,
+    bcd_loader: str | None = None,
+) -> str:
+    """Current boot mode. winload.exe means BIOS even if the box could do UEFI.
+
+    ``mountvol /S`` only works for a UEFI boot that has an ESP. A legacy BIOS
+    boot, WinPE, or a failed firmware API must not be reported as UEFI.
+    """
+    loader = (bcd_loader or "").lower()
+    if "winload.exe" in loader or loader == "exe":
+        return "BIOS"
+    if "winload.efi" in loader or loader == "efi":
+        return "UEFI"
+    kind = (firmware_type or "").strip().upper()
+    if kind == "BIOS":
+        return "BIOS"
+    if env_var_present is False and kind != "UEFI":
+        return "BIOS"
+    if kind == "UEFI" or env_var_present is True:
+        return "UEFI"
+    return "unknown"
+
+
+def uefi_supported(
+    *,
+    firmware_type: str | None = None,
+    env_var_present: bool | None = None,
+    bcd_loader: str | None = None,
+    firmware_text: str = "",
+) -> bool:
+    """True only when the firmware can boot UEFI. Required before mbr2gpt."""
+    if classify_firmware(
+        firmware_type=firmware_type,
+        env_var_present=env_var_present,
+        bcd_loader=bcd_loader,
+    ) == "UEFI":
+        return True
+    if (firmware_type or "").strip().upper() == "UEFI" or env_var_present is True:
+        return True
+    return bool(re.search(r"\bUEFI\b", firmware_text or "", re.I))
+
+
 def _firmware(drive_map: DriveMap) -> str:
     name = (drive_map.firmware or "").strip().upper()
     if name in ("BIOS", "LEGACY", "MBR"):
         return "BIOS"
     if name in ("UEFI", "EFI"):
         return "UEFI"
-    return "UEFI" if name == "" else name
+    return "unknown"
+
+
+MOUNTVOL_UNSUPPORTED = (
+    "mountvol /S was not used as the mount method. It only works when this Windows "
+    "boot is UEFI and an ESP exists. It fails on legacy BIOS, when the ESP already "
+    "has a letter, when the chosen letter is taken, in WinPE, and without administrator rights."
+)
+
+
+def access_chain(
+    volume: VolumeRecord,
+    used: Iterable[str],
+    *,
+    folder_fallback: str,
+    firmware: str = "UEFI",
+) -> tuple[MountPlan, ...]:
+    """How to open a volume. mountvol /S is never the only step, and not the first.
+
+    Order: existing letter or folder, Add-PartitionAccessPath, diskpart assign, folder.
+    """
+    del firmware  # kept so callers record the mode they already detected
+    if volume.letter:
+        return (
+            MountPlan(
+                "reuse_letter",
+                f"{volume.letter.upper()[:1]}:",
+                volume.letter.upper()[:1],
+                False,
+                folder_fallback,
+            ),
+        )
+    folder = existing_folder(volume)
+    if folder:
+        return (MountPlan("reuse_folder", folder.rstrip("\\"), None, False, folder_fallback),)
+    if volume.dynamic:
+        return (MountPlan("folder", folder_fallback, None, True, folder_fallback),)
+    free = pick_free_letter(used)
+    steps: list[MountPlan] = []
+    if free:
+        steps.append(MountPlan("assign_letter", f"{free}:", free, True, folder_fallback))
+        steps.append(MountPlan("diskpart_assign", f"{free}:", free, True, folder_fallback))
+    steps.append(MountPlan("folder", folder_fallback, None, True, folder_fallback))
+    return tuple(steps)
+
+
+def _windows_disk(drive_map: DriveMap) -> int | None:
+    """Disk that holds Windows, including a secondary disk. Never assumed to be 0."""
+    if drive_map.windows_volume_guid:
+        want = normalize_guid(drive_map.windows_volume_guid)
+        for vol in drive_map.volumes:
+            if normalize_guid(vol.volume_guid) == want and vol.disk >= 0:
+                return vol.disk
+    for vol in drive_map.volumes:
+        if is_windows_volume(vol) and vol.disk >= 0:
+            return vol.disk
+    return drive_map.boot_disk if drive_map.boot_disk is not None and drive_map.boot_disk >= 0 else None
 
 
 def _on_boot_disk(drive_map: DriveMap, volume: VolumeRecord) -> bool:
     if drive_map.boot_disk is None:
         return volume.bus != "usb"
     return volume.disk == drive_map.boot_disk
+
+
+def _on_windows_disk(drive_map: DriveMap, volume: VolumeRecord) -> bool:
+    disk = _windows_disk(drive_map)
+    if disk is None:
+        return _on_boot_disk(drive_map, volume)
+    return volume.disk == disk
 
 
 def _esp_score(drive_map: DriveMap, volume: VolumeRecord, *, os_arch: str) -> int:
@@ -664,7 +763,9 @@ def _esp_pool(drive_map: DriveMap) -> list[VolumeRecord]:
         if is_gpt_esp(vol) or has_efi_tree(vol) or is_mbr_efi(vol):
             pool.append(vol)
     on_boot = [v for v in pool if _on_boot_disk(drive_map, v)]
-    return on_boot or []
+    if on_boot:
+        return on_boot
+    return [v for v in pool if _on_windows_disk(drive_map, v)]
 
 
 def _pick_scored(
@@ -694,7 +795,7 @@ def _mbr_pool(drive_map: DriveMap) -> list[VolumeRecord]:
     for vol in drive_map.volumes:
         if is_locked(vol) or content_inconsistent(vol):
             continue
-        if is_mbr_system(vol) and _on_boot_disk(drive_map, vol):
+        if is_mbr_system(vol) and _on_windows_disk(drive_map, vol):
             pool.append(vol)
     return pool
 
@@ -841,6 +942,7 @@ def decide(
     cpu_64: bool = True,
     secure_boot: str = "unknown",
     folder_fallback: str = "esp-mount",
+    request_conversion: bool = False,
 ) -> BootDecision:
     """Re-plan from this map. ``previous`` is the last scan, if any."""
     fw = _firmware(drive_map)
@@ -916,8 +1018,8 @@ def decide(
             explanation_bits.append("no safe ESP on the firmware boot disk")
         abort = True
         actions.append("abort")
-    elif fw == "BIOS" and target_srp is None and target_esp is None and opencore is None and openduet is None:
-        explanation_bits.append("no active system partition and no OpenCore/OpenDuet volume")
+    elif fw in ("BIOS", "unknown") and target_srp is None and target_esp is None and windows is None and opencore is None and openduet is None:
+        explanation_bits.append("no system partition, no Windows volume, and no OpenCore/OpenDuet volume")
         abort = True
         actions.append("abort")
 
@@ -943,11 +1045,39 @@ def decide(
             and not target_esp.content.has_bootx64
             and esp_bits != "x64"
         )
-        if fw == "BIOS":
-            if target_srp is not None or (target_esp is not None and style == "hybrid"):
-                strategy = "hybrid_mbr_gpt" if style == "hybrid" else "bios_mbr"
+        if fw in ("BIOS", "unknown"):
+            # Legacy boot: never mount or create an ESP. mbr2gpt only if the
+            # firmware can actually boot UEFI and the caller asked to convert.
+            if style == "gpt" and target_esp is None:
+                strategy = "bios_gpt"
                 bcd_mode = "BIOS"
                 boot_files = ("bootmgr",)
+                actions.append("bootsect_volume_only")
+                warnings.append(
+                    "GPT disk on a BIOS boot (protective MBR). No ESP is created. "
+                    "OpenDuet/OpenCore remains the UEFI chain for this firmware."
+                )
+            elif style == "hybrid":
+                strategy = "hybrid_mbr_gpt"
+                bcd_mode = "BIOS"
+                boot_files = ("bootmgr",)
+                actions.append("bootsect_nt60")
+            elif target_srp is not None or windows is not None or target_esp is not None:
+                strategy = "bios_mbr"
+                bcd_mode = "BIOS"
+                boot_files = ("bootmgr",)
+                actions.append("bootsect_nt60")
+                if target_srp is None and target_esp is None and windows is not None:
+                    actions.append("windows_is_boot_target")
+                    warnings.append(
+                        "No ESP and no System Reserved partition. "
+                        "BIOS boot files go on the Windows volume. An ESP is not created."
+                    )
+                if target_esp is not None and fw == "BIOS":
+                    warnings.append(
+                        "An ESP is present but this boot is legacy BIOS. "
+                        "mountvol /S is not used and UEFI boot files are not written."
+                    )
             elif openduet is not None:
                 strategy = "openduet"
                 bcd_mode = "NONE"
@@ -958,11 +1088,17 @@ def decide(
                 bcd_mode = "NONE"
                 boot_files = ("OpenCore.efi",)
                 actions.append("opencore_chain")
-            elif target_esp is not None:
-                strategy = "uefi64"
-                bcd_mode = "UEFI"
-                boot_files = ("bootx64.efi",)
-                warnings.append("Firmware looks like BIOS but an ESP is present; UEFI boot files are used.")
+            if drive_map.uefi_capable:
+                warnings.append(
+                    "Firmware can boot UEFI, but this session is BIOS. "
+                    "mbr2gpt runs only when conversion is explicitly requested."
+                )
+            else:
+                warnings.append("BIOS-only firmware: mbr2gpt and a new ESP are not used.")
+                actions.append("no_esp_on_bios")
+            if drive_map.uefi_capable and request_conversion:
+                allow_mbr2gpt = True
+                actions.append("mbr2gpt_explicit")
         elif style == "hybrid":
             strategy = "hybrid_mbr_gpt"
             bcd_mode = "UEFI"
@@ -1009,14 +1145,30 @@ def decide(
 
     write_target = None
     if not abort:
-        if strategy in ("bios_mbr",) or (strategy == "hybrid_mbr_gpt" and fw == "BIOS"):
-            write_target = target_srp or target_esp
+        if strategy in ("bios_mbr", "bios_gpt") or (
+            strategy == "hybrid_mbr_gpt" and fw in ("BIOS", "unknown")
+        ):
+            write_target = target_srp or (None if target_esp is not None and fw == "BIOS" else target_esp) or windows
         elif strategy in ("opencore", "openduet"):
             write_target = openduet if strategy == "openduet" else opencore
         elif strategy == "uefi_mbr_convert":
             write_target = target_srp or target_esp
         else:
             write_target = target_esp or target_srp
+
+    if not abort and fw in ("BIOS", "unknown"):
+        boot_vol = target_srp or windows
+        if boot_vol is not None and not boot_vol.is_active and not is_gpt_esp(boot_vol):
+            actions.append("mark_active")
+            warnings.append("No partition is marked active. The BIOS boot volume will be set active after bcdboot succeeds.")
+        win_disk = _windows_disk(drive_map)
+        if win_disk not in (None, 0):
+            actions.append("windows_secondary_disk")
+            notes.append(f"Windows is on disk {win_disk}, not disk 0")
+            explanation_bits.append(f"Windows is on disk {win_disk}, not disk 0")
+        if any(vol.dynamic for vol in drive_map.volumes if win_disk is None or vol.disk == win_disk):
+            actions.append("dynamic_disk")
+            warnings.append("Dynamic disk: no new ESP is created and diskpart will not assign a letter.")
 
     mount = None
     if write_target is not None and not abort:

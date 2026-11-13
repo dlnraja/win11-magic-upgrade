@@ -9,13 +9,16 @@ sys.path.insert(0, str(ROOT / "python"))
 
 from engine.drive_map import (  # noqa: E402
     GPT_ESP_GUID,
+    MOUNTVOL_UNSUPPORTED,
     BootDecision,
     DriveMap,
     MapPoller,
     MountPlan,
     VolumeContent,
     VolumeRecord,
+    access_chain,
     bcdboot_args,
+    classify_firmware,
     decide,
     drive_map_from_payload,
     format_drive_map,
@@ -23,8 +26,9 @@ from engine.drive_map import (  # noqa: E402
     make_volume,
     pick_free_letter,
     redact_serial,
+    uefi_supported,
 )
-from engine.esp_access import UnsafeTarget, apply_and_verify  # noqa: E402
+from engine.esp_access import UnsafeTarget, _apply, apply_and_verify  # noqa: E402
 
 
 def _win() -> VolumeContent:
@@ -610,6 +614,145 @@ def test_no_hardcoded_esp_letter_in_sources() -> None:
     assert hits == [], hits
 
 
+def test_firmware_detects_bios_before_mountvol() -> None:
+    assert classify_firmware(firmware_type="BIOS", env_var_present=False, bcd_loader="exe") == "BIOS"
+    assert classify_firmware(firmware_type="UEFI", env_var_present=False, bcd_loader=r"\Windows\system32\winload.exe") == "BIOS"
+    assert classify_firmware(firmware_type="BIOS", env_var_present=True, bcd_loader="efi") == "UEFI"
+    assert classify_firmware(firmware_type=None, env_var_present=None, bcd_loader="") == "unknown"
+    assert uefi_supported(firmware_type="BIOS", env_var_present=False, bcd_loader="exe") is False
+    assert uefi_supported(firmware_type="UEFI", bcd_loader="exe") is True
+    assert "legacy BIOS" in MOUNTVOL_UNSUPPORTED
+
+
+def test_bios_only_has_no_esp() -> None:
+    windows = _windows(style="MBR", disk=1, is_active=True, content=_win())
+    drive_map = DriveMap(
+        volumes=(windows,),
+        firmware="BIOS",
+        boot_disk=1,
+        windows_letter="C",
+        windows_volume_guid="win-1",
+        uefi_capable=False,
+    )
+    decision = decide(drive_map)
+    assert decision.abort is False
+    assert decision.strategy == "bios_mbr"
+    assert decision.bcd_mode == "BIOS"
+    assert decision.allow_mbr2gpt is False
+    assert decision.esp is None
+    assert "no_esp_on_bios" in decision.actions
+    assert "bootsect_nt60" in decision.actions
+    assert "windows_is_boot_target" in decision.actions
+    assert decision.mount is not None
+    assert decision.mount.action == "reuse_letter"
+    assert decision.mount.letter == "C"
+    assert "mountvol" not in decision.actions
+
+
+def test_mountvol_failure_uses_next_method() -> None:
+    volume = _esp(letter=None)
+    mountvol = MountPlan("mountvol", "E:", "E", True, "esp-mount")
+    assign = MountPlan("assign_letter", "E:", "E", True, "esp-mount")
+
+    class IO(_FakeIO):
+        def mountvol(self, volume, letter):  # noqa: ARG002
+            self.events.append(("mountvol-fail", letter))
+            return False
+
+    io = IO(VolumeContent(has_efi_dir=True, has_microsoft_boot=True, has_bootmgfw=True))
+    applied = _apply(volume, mountvol, io, attempts=(mountvol, assign))
+    assert applied.action == "assign_letter"
+    assert ("mountvol-fail", "E") in io.events
+    assert ("assign", "E") in io.events
+
+
+def test_letter_x_taken_and_esp_already_lettered() -> None:
+    taken = make_volume(
+        disk=0, partition=4, style="GPT", filesystem="NTFS", label="DATA",
+        letter="X", size_bytes=1024 ** 3, volume_guid="data-x",
+    )
+    bare = _esp(letter=None)
+    drive_map = _gpt(bare, taken)
+    chain = access_chain(bare, letters_in_use(drive_map), folder_fallback="esp-mount", firmware="UEFI")
+    assert [step.action for step in chain] == ["assign_letter", "diskpart_assign", "folder"]
+    assert all(step.letter != "X" for step in chain if step.letter)
+    assert "mountvol" not in [step.action for step in chain]
+    decision = decide(drive_map)
+    assert decision.mount is not None and decision.mount.letter != "X"
+
+    lettered = access_chain(_esp(letter="E"), {"C"}, folder_fallback="esp-mount", firmware="UEFI")
+    assert len(lettered) == 1
+    assert lettered[0].action == "reuse_letter"
+    assert lettered[0].letter == "E"
+    assert lettered[0].mounted_by_us is False
+
+
+def test_gpt_on_bios_dynamic_and_secondary_disk() -> None:
+    windows = _windows(style="GPT", disk=2, is_active=False)
+    protective = make_volume(
+        disk=2, partition=1, style="GPT", mbr_type=0xEE, label="GPT", volume_guid="protect",
+    )
+    bios_gpt = decide(
+        DriveMap(
+            volumes=(protective, windows),
+            firmware="BIOS",
+            boot_disk=2,
+            windows_letter="C",
+            windows_volume_guid="win-1",
+            uefi_capable=False,
+        )
+    )
+    assert bios_gpt.strategy == "bios_gpt"
+    assert bios_gpt.allow_mbr2gpt is False
+    assert bios_gpt.bcd_mode == "BIOS"
+    assert "bootsect_volume_only" in bios_gpt.actions
+    assert "no_esp_on_bios" in bios_gpt.actions
+
+    dynamic = _windows(dynamic=True, is_active=False)
+    dyn = decide(
+        DriveMap(
+            volumes=(dynamic,),
+            firmware="BIOS",
+            boot_disk=0,
+            windows_letter="C",
+            windows_volume_guid="win-1",
+        )
+    )
+    assert "dynamic_disk" in dyn.actions
+    assert dyn.mount is not None and dyn.mount.action == "reuse_letter"
+    unlettered = make_volume(
+        disk=0, partition=1, style="MBR", filesystem="NTFS", label="System Reserved",
+        is_system=True, is_active=False, dynamic=True, volume_guid="dyn-srp",
+        content=VolumeContent(has_bios_bootmgr=True, has_boot_bcd=True),
+    )
+    chain = access_chain(unlettered, {"C"}, folder_fallback="esp-mount", firmware="BIOS")
+    assert [step.action for step in chain] == ["folder"]
+
+    decoy = make_volume(
+        disk=0, partition=1, style="MBR", filesystem="NTFS", label="System Reserved",
+        is_system=True, is_active=True, volume_guid="decoy", letter="R",
+        content=VolumeContent(has_bios_bootmgr=True),
+    )
+    real = make_volume(
+        disk=3, partition=1, style="MBR", filesystem="NTFS", label="System Reserved",
+        is_system=True, is_active=False, volume_guid="real-srp", letter=None,
+        content=VolumeContent(has_bios_bootmgr=True, has_boot_bcd=True),
+    )
+    secondary = decide(
+        DriveMap(
+            volumes=(decoy, real, _windows(disk=3, style="MBR")),
+            firmware="BIOS",
+            boot_disk=0,
+            windows_letter="C",
+            windows_volume_guid="win-1",
+        )
+    )
+    assert secondary.abort is False
+    assert secondary.srp is not None and secondary.srp.volume_guid == "real-srp"
+    assert "windows_secondary_disk" in secondary.actions
+    assert "mark_active" in secondary.actions
+
+
 def test_decision_type_exports() -> None:
     assert BootDecision is not None
 
@@ -636,6 +779,11 @@ if __name__ == "__main__":
     test_bcdboot_uses_resolved_target()
     test_hybrid_mbr2gpt_and_openduet()
     test_inconsistent_esp_aborts()
+    test_firmware_detects_bios_before_mountvol()
+    test_bios_only_has_no_esp()
+    test_mountvol_failure_uses_next_method()
+    test_letter_x_taken_and_esp_already_lettered()
+    test_gpt_on_bios_dynamic_and_secondary_disk()
     test_decision_type_exports()
     test_no_hardcoded_esp_letter_in_sources()
     print("drive map logic OK")

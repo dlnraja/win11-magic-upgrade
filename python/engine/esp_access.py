@@ -13,14 +13,17 @@ from dataclasses import replace
 from pathlib import Path
 
 from .drive_map import (
+    MOUNTVOL_UNSUPPORTED,
     BootDecision,
     DriveMap,
     MapPoller,
     MountPlan,
     VolumeContent,
     VolumeRecord,
+    access_chain,
     access_root,
     bcdboot_args,
+    classify_firmware,
     drive_letter_of,
     drive_map_from_payload,
     fingerprint,
@@ -29,6 +32,7 @@ from .drive_map import (
     make_volume,
     pick_free_letter,
     plan_mount,
+    uefi_supported,
     verify_for_write,
 )
 from .logutil import STATE_DIR, log
@@ -98,6 +102,7 @@ def _secure_boot_hint() -> str:
 
 
 def _firmware_kind() -> str | None:
+    """GetFirmwareType / PEFirmwareType. 2 is UEFI, 1 is BIOS."""
     if os.name != "nt":
         return None
     try:
@@ -109,6 +114,57 @@ def _firmware_kind() -> str | None:
     except Exception:
         return None
     return None
+
+
+def _firmware_env_present() -> bool | None:
+    """GetFirmwareEnvironmentVariable exists only when this boot is UEFI.
+
+    ERROR_INVALID_FUNCTION (1) means legacy BIOS. Any other error means the
+    firmware API is present.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        kernel.SetLastError(0)
+        buffer = ctypes.create_unicode_buffer(8)
+        kernel.GetFirmwareEnvironmentVariableW(
+            "",
+            "{00000000-0000-0000-0000-000000000000}",
+            buffer,
+            8,
+        )
+        error = int(kernel.GetLastError())
+        if error == 1:
+            return False
+        return True
+    except Exception:
+        return None
+
+
+def _bcd_loader_kind() -> str:
+    """'efi' or 'exe' from the running Windows loader, else ''."""
+    code, out = _run(["bcdedit", "/enum", "{current}"], timeout=30)
+    text = (out or "").lower()
+    if code not in (0, 1) and "winload" not in text:
+        return ""
+    if "winload.efi" in text:
+        return "efi"
+    if "winload.exe" in text:
+        return "exe"
+    return ""
+
+
+def detect_firmware_mode() -> tuple[str, bool]:
+    """Return (BIOS|UEFI|unknown, uefi_capable) before any mountvol call."""
+    kind = _firmware_kind()
+    env_present = _firmware_env_present()
+    loader = _bcd_loader_kind()
+    mode = classify_firmware(firmware_type=kind, env_var_present=env_present, bcd_loader=loader)
+    capable = uefi_supported(firmware_type=kind, env_var_present=env_present, bcd_loader=loader)
+    return mode, capable
 
 
 def _folder() -> Path:
@@ -187,28 +243,51 @@ class VolumeIO:
         raise NotImplementedError
 
 
-def _apply(volume: VolumeRecord, plan: MountPlan, io: VolumeIO) -> MountPlan:
-    """Try the planned mount, then the next safe method. Returns what actually happened."""
-    attempts: list[MountPlan] = [plan]
-    if plan.action == "mountvol" and plan.letter:
-        attempts.append(MountPlan("assign_letter", f"{plan.letter}:", plan.letter, True, plan.folder_fallback))
-    if plan.action in ("mountvol", "assign_letter"):
-        attempts.append(MountPlan("folder", plan.folder_fallback, None, True, plan.folder_fallback))
+def _apply(
+    volume: VolumeRecord,
+    plan: MountPlan,
+    io: VolumeIO,
+    *,
+    attempts: tuple[MountPlan, ...] | None = None,
+) -> MountPlan:
+    """Open a volume. mountvol /S is never required and never the only attempt."""
+    chain = list(attempts) if attempts else [plan]
+    if not attempts:
+        extra = [step for step in access_chain(volume, set(), folder_fallback=plan.folder_fallback) if step.action != plan.action]
+        # Keep the caller's first step, then the remaining safe methods.
+        seen = {plan.action}
+        for step in extra:
+            if step.action not in seen:
+                chain.append(step)
+                seen.add(step.action)
     errors: list[str] = []
-    for item in attempts:
+    for item in chain:
         ok = False
         if item.action in ("reuse_letter", "reuse_folder"):
             ok = True
         elif item.action == "assign_letter" and item.letter:
             ok = bool(io.assign(volume, item.letter))
+            if not ok:
+                errors.append(f"Add-PartitionAccessPath {item.letter}: failed")
+        elif item.action == "diskpart_assign" and item.letter:
+            assigner = getattr(io, "diskpart_assign", None)
+            ok = bool(assigner(volume, item.letter)) if assigner else bool(io.assign(volume, item.letter))
+            if not ok:
+                errors.append(f"diskpart assign {item.letter}: failed")
         elif item.action == "mountvol" and item.letter:
             ok = bool(io.mountvol(volume, item.letter))
+            if not ok:
+                errors.append(MOUNTVOL_UNSUPPORTED)
         elif item.action == "folder":
             ok = bool(io.folder_mount(volume, item.path))
+            if not ok:
+                errors.append(f"folder mount {item.path}: failed")
         if ok:
             return item
-        errors.append(item.action)
-    raise UnsafeTarget("mount failed: " + ",".join(errors))
+        if item.action not in ("assign_letter", "diskpart_assign", "mountvol", "folder"):
+            errors.append(item.action)
+    detail = "; ".join(errors) or "no access method succeeded"
+    raise UnsafeTarget(detail)
 
 
 def apply_and_verify(
@@ -217,13 +296,20 @@ def apply_and_verify(
     io: VolumeIO,
     *,
     allow_empty: bool = False,
+    allow_windows_boot: bool = False,
+    attempts: tuple[MountPlan, ...] | None = None,
 ) -> tuple[str, MountPlan]:
     """Mount, check contents, and roll back only a path this call created."""
     applied: MountPlan | None = None
     try:
-        applied = _apply(volume, plan, io)
+        applied = _apply(volume, plan, io, attempts=attempts)
         content = io.probe(applied.path)
-        ok, reason = verify_for_write(volume, content, allow_empty=allow_empty)
+        ok, reason = verify_for_write(
+            volume,
+            content,
+            allow_empty=allow_empty,
+            allow_windows_boot=allow_windows_boot,
+        )
         if not ok:
             raise UnsafeTarget(reason)
         return applied.path, applied
@@ -470,9 +556,11 @@ def _parse_scan(raw: str) -> DriveMap:
         raise ScannerUnavailable("drive map JSON missing")
     payload = json.loads(raw[start:])
     drive_map = drive_map_from_payload(payload)
-    kind = _firmware_kind()
-    if kind:
-        drive_map = replace(drive_map, firmware=kind)
+    mode, capable = detect_firmware_mode()
+    if mode != "unknown":
+        drive_map = replace(drive_map, firmware=mode, uefi_capable=capable)
+    else:
+        drive_map = replace(drive_map, uefi_capable=capable)
     return _attach_content(drive_map)
 
 
@@ -504,13 +592,14 @@ def _map_from_diskpart() -> DriveMap:
             )
         )
     win = (os.environ.get("SystemDrive") or "")[:1].upper() or None
-    kind = _firmware_kind() or "UEFI"
+    mode, capable = detect_firmware_mode()
     drive_map = DriveMap(
         volumes=tuple(records),
-        firmware=kind,
+        firmware=mode if mode != "unknown" else "BIOS",
         boot_disk=disk,
         windows_letter=win,
         source="diskpart",
+        uefi_capable=capable,
     )
     return _attach_content(drive_map)
 
@@ -621,10 +710,38 @@ class WindowsVolumeIO(VolumeIO):
         return False
 
     def mountvol(self, volume: VolumeRecord | None, letter: str) -> bool:
+        """Optional UEFI-only attempt. Failure is not fatal; the caller falls through."""
         del volume
-        _run(["mountvol", f"{letter}:", "/d"])
-        code, _out = _run(["mountvol", f"{letter}:", "/s"])
-        return code == 0 and Path(f"{letter}:\\").exists()
+        code, out = _run(["mountvol", f"{letter}:", "/s"], timeout=60)
+        if code == 0 and Path(f"{letter}:\\").exists():
+            return True
+        log(f"mountvol {letter}: /S failed ({code}): {(out or '')[:240]}. {MOUNTVOL_UNSUPPORTED}", "WARN")
+        return False
+
+    def diskpart_assign(self, volume: VolumeRecord | None, letter: str) -> bool:
+        """Assign by diskpart volume index, not by a guessed disk number."""
+        from .diskpart_safe import assign_letter_to_volume, list_volumes
+
+        if Path(f"{letter.upper()[:1]}:\\").exists():
+            log(f"diskpart assign skipped: {letter}: is already in use", "WARN")
+            return False
+        rows = list_volumes()
+        chosen = None
+        for row in rows:
+            if row.letter:
+                continue
+            if volume is not None and volume.label and row.label:
+                if volume.label.lower() not in row.label.lower() and row.label.lower() not in volume.label.lower():
+                    continue
+            if volume is not None and (volume.filesystem or "").upper() in ("FAT32", "FAT", "NTFS"):
+                if row.fs and row.fs.upper() != (volume.filesystem or "").upper():
+                    continue
+            chosen = row
+            break
+        if chosen is None:
+            log("diskpart assign: no unlettered volume matched the drive map", "WARN")
+            return False
+        return assign_letter_to_volume(chosen.index, letter)
 
     def folder_mount(self, volume: VolumeRecord | None, folder: str) -> bool:
         if volume is None or volume.partition is None or volume.disk < 0:
@@ -676,29 +793,6 @@ class WindowsVolumeIO(VolumeIO):
         return probe_tree(path)
 
 
-def _legacy_mountvol() -> str | None:
-    if os.name != "nt":
-        return None
-    used: set[str] = set()
-    for code in range(ord("A"), ord("Z") + 1):
-        letter = chr(code)
-        if Path(f"{letter}:\\").exists():
-            used.add(letter)
-    letter = pick_free_letter(used)
-    if not letter:
-        log("No free drive letter for mountvol /S", "ERROR")
-        return None
-    io = WindowsVolumeIO()
-    if not io.mountvol(None, letter):
-        log(f"mountvol {letter}: /S failed", "WARN")
-        io.mountvol_delete(letter)
-        return None
-    plan = MountPlan("mountvol", f"{letter}:", letter, True, str(_folder()))
-    remember_mount(f"{letter}:", plan, None)
-    log(f"ESP mounted at {letter}: via mountvol /S", "OK")
-    return f"{letter}:"
-
-
 def mount_system_partition(*, role: str = "auto", prefer_letter: str | None = None) -> str | None:
     """Return 'E:' or a folder. Only a path we created is recorded for cleanup."""
     try:
@@ -707,30 +801,50 @@ def mount_system_partition(*, role: str = "auto", prefer_letter: str | None = No
         log(f"ESP mount scan failed: {exc}", "WARN")
         decision = None
     if decision is None:
-        if role == "srp":
-            return None
-        return _legacy_mountvol()
+        log(
+            "Drive map is unavailable, so mountvol /S is not used. "
+            "A system partition cannot be opened without a map.",
+            "ERROR",
+        )
+        return None
     if decision.abort and role == "auto":
+        log(decision.explanation or "no safe system partition", "ERROR")
         return None
     target = _target_for(decision, role)
     if target is None:
         log(decision.explanation or "no safe system partition", "ERROR")
         return None
     current = _poller().map
+    firmware = (current.firmware if current is not None else "unknown")
     used = set()
     if current is not None:
         from .drive_map import letters_in_use
 
         used = letters_in_use(current)
     folder = str(_folder())
-    allow = bool(target.is_system and is_gpt_esp(target))
-    plan = plan_mount(target, used, folder_fallback=folder, allow_mountvol=allow)
+    if firmware.upper() == "BIOS":
+        log("BIOS boot: mountvol /S is not attempted. Using the system or Windows volume.", "INFO")
+    chain = access_chain(target, used, folder_fallback=folder, firmware=firmware)
+    plan = chain[0]
     if prefer_letter and not target.letter:
         wanted = prefer_letter.strip().upper()[:1]
-        if wanted and wanted not in used and wanted not in ("A", "B"):
+        if wanted in used:
+            log(f"Requested letter {wanted}: is already taken. Choosing another free letter.", "WARN")
+        elif wanted and wanted not in ("A", "B"):
             plan = MountPlan("assign_letter", f"{wanted}:", wanted, True, folder)
+            chain = (plan,) + tuple(step for step in chain if step.action != "assign_letter")
+    windows_boot = bool(
+        decision.bcd_mode == "BIOS" and target.is_boot and not is_gpt_esp(target)
+    )
     try:
-        path, applied = apply_and_verify(target, plan, WindowsVolumeIO(), allow_empty=True)
+        path, applied = apply_and_verify(
+            target,
+            plan,
+            WindowsVolumeIO(),
+            allow_empty=True,
+            allow_windows_boot=windows_boot,
+            attempts=chain,
+        )
     except UnsafeTarget as exc:
         log(f"ESP check failed: {exc.reason}", "ERROR")
         return None

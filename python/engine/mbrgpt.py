@@ -151,7 +151,11 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
     target: str | None = None
     if mounted:
         target = bcdboot_target(access_root(mounted) or mounted)
-        log(f"ESP access path {target}", "OK")
+        log(f"Boot volume access path {target}", "OK")
+    elif step is not None and step.bcd_mode == "BIOS":
+        if step.mount is not None and step.mount.action in ("reuse_letter", "reuse_folder"):
+            target = step.mount.path
+        log("BIOS boot: mountvol /S is not used and no ESP is created.", "INFO")
     else:
         for volume in find_esp_candidates():
             if volume.letter:
@@ -208,6 +212,8 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
 
     if timed_out:
         return False
+    if ok and step is not None and target:
+        _finish_bios_boot(step, target)
     code, out = _run(["bcdedit", "/enum", "{bootmgr}"], timeout=90)
     bcd_ok = code == 0 and bool(out) and "cannot" not in (out or "").lower()
     if out:
@@ -219,6 +225,36 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
         log(reason, "ERROR")
         return False
     return ok
+
+
+def _finish_bios_boot(step: object, target: str) -> None:
+    """Write MBR boot code and, if needed, one active flag. Never creates an ESP."""
+    from .drive_map import drive_letter_of
+    from .proc_guard import run_bounded
+
+    actions = set(getattr(step, "actions", ()) or ())
+    letter = drive_letter_of(target)
+    if letter and ({"bootsect_nt60", "bootsect_volume_only"} & actions):
+        exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "bootsect.exe"
+        if not exe.is_file():
+            log("bootsect.exe is missing. The volume boot sector was left unchanged.", "WARN")
+        else:
+            cmd = [str(exe), "/nt60", f"{letter}:"]
+            if "bootsect_nt60" in actions:
+                cmd.append("/mbr")
+            result = run_bounded(cmd, timeout=60)
+            if result.ok:
+                log(f"bootsect {' '.join(cmd[1:])} ok", "OK")
+            else:
+                log(f"bootsect failed: {result.reason or result.output[:200]}", "WARN")
+    if letter and "mark_active" in actions:
+        from .diskpart_safe import run_diskpart
+
+        ok_act, out = run_diskpart(f"select volume {letter}\nactive\nexit\n", timeout=60)
+        if ok_act:
+            log(f"Marked {letter}: active after BIOS bcdboot", "OK")
+        else:
+            log(f"Could not mark {letter}: active: {(out or '')[:200]}", "WARN")
 
 
 def convert_mbr_to_gpt(disk_number: int) -> tuple[bool, int, str]:
