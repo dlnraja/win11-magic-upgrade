@@ -105,7 +105,14 @@ def end_session(*, success: bool = True) -> None:
         _session["indeterminate"] = False
         _session["detail"] = "Finished" if success else "Finished with errors"
         _session["override_eta"] = 0.0
+        step = str(_session.get("phase_label") or "")
     _emit()
+    try:
+        from .run_diag import finish_run
+
+        finish_run(mode="session", step=step)
+    except Exception:
+        pass
 
 
 def _phase_index(phase_id: str) -> int:

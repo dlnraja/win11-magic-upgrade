@@ -1466,6 +1466,8 @@ Env (selected):
   MAGIC_FORCE_MBR2GPT=1        Convert MBR even when firmware looks legacy-only
   MAGIC_OPENDUET_ALLOW_LARGE=1 Allow partitioning a USB larger than 128 GiB
   MAGIC_NO_DIALOG=1            Print errors instead of a modal dialog (set in CI)
+  MAGIC_SKIP_AUTO_DIAG=1      Do not scan logs or open an auto-diag issue at the end
+  MAGIC_AUTO_DIAG_GIST=1      Upload the redacted log zip with gh gist when logged in
 
 Docs: docs/ARCHITECTURE.md  docs/IMPROVEMENTS.md  docs/BLOCKER_APPS.md
 """.strip()
@@ -1729,3 +1731,11 @@ if __name__ == "__main__":
             except Exception:
                 pass
             raise SystemExit(3)
+    finally:
+        if not any(a.lower() in ("-h", "--help", "/?") for a in sys.argv[1:]):
+            try:
+                from engine.run_diag import finish_run  # type: ignore
+
+                finish_run(mode="process")
+            except Exception:
+                pass
