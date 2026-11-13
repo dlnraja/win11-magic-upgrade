@@ -403,11 +403,28 @@ def create_larger_esp(
         return None
     from .boot_safe import bcdboot_succeeded
 
-    code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "UEFI"], timeout=180)
+    from .drive_map import bcdboot_args, bcdboot_invalid_name, bcdboot_source_root
+
+    source = bcdboot_source_root(sys_root)
+    try:
+        argv = bcdboot_args(str(bcdboot), source or "", root, "UEFI") if source else None
+    except ValueError:
+        argv = None
+    if argv is None:
+        log("BCD UEFI failed, error 123: bcdboot /s needs a bare drive letter.", "ERROR")
+        return None
+    code, bout = _run(argv, timeout=180)
     log(f"bcdboot -> {code}: {bout[:300]}")
+    if bcdboot_invalid_name(code, bout):
+        log("BCD UEFI failed, error 123", "ERROR")
+        return None
     if not bcdboot_succeeded(code, bout):
-        code2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
+        argv_all = bcdboot_args(str(bcdboot), source, root, "ALL")
+        code2, bout2 = _run(argv_all, timeout=180)
         log(f"bcdboot ALL -> {code2}: {bout2[:300]}")
+        if bcdboot_invalid_name(code2, bout2):
+            log("BCD ALL failed, error 123", "ERROR")
+            return None
         if not bcdboot_succeeded(code2, bout2):
             log("bcdboot failed on new ESP - old ESP still present, boot should remain OK", "WARN")
             # Do NOT report success — caller must not mark expand ok
@@ -484,7 +501,17 @@ def create_larger_system_reserved_mbr(
 
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
-    code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "BIOS"])
+    from .drive_map import bcdboot_args, bcdboot_source_root
+
+    source = bcdboot_source_root(sys_root)
+    try:
+        argv = bcdboot_args(str(bcdboot), source or "", root, "BIOS") if source else None
+    except ValueError:
+        argv = None
+    if argv is None:
+        log("BCD BIOS failed, error 123: bcdboot /s needs a bare drive letter.", "ERROR")
+        return None
+    code, bout = _run(argv)
     log(f"bcdboot BIOS -> {code}: {bout[:300]}")
     from .boot_safe import bcdboot_succeeded
 

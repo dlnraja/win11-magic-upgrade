@@ -184,19 +184,19 @@ def _backup_and_trim_fonts(root: Path) -> bool:
 def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool:
     from .drive_map import (
         access_root,
-        bcdboot_letter_plan,
+        bare_bcdboot_letter,
+        bcdboot_123_remediation,
+        bcdboot_invalid_name,
         bcdboot_locale,
-        bcdboot_target,
+        bcdboot_source_root,
         BCD_MIN_FREE_BYTES,
         esp_bcdboot_space_plan,
         minimal_bcdboot_args,
-        normalize_volume_guid_path,
     )
-    from .esp_access import bcdboot_command, poll_if_due, prepare_boot_step, resolved_bcd_mode
+    from .esp_access import bcdboot_command, open_bcdboot_letter, poll_if_due, prepare_boot_step, resolved_bcd_mode
     from .proc_guard import GateState, PostState, probe_admin, precheck, postcheck
     from .secureboot_certs import efi_write_block_reason
     from .sysreserved import mount_esp, unmount_letter
-    from .diskpart_safe import assign_letter_to_volume, find_esp_candidates, free_letter, remove_letter_from_volume
 
     step = prepare_boot_step("bcdboot")
     if step is not None and step.abort:
@@ -219,58 +219,35 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
         log(why, "ERROR")
         return False
 
+    source = bcdboot_source_root(sys_root)
+    if not source:
+        log("BCD failed, error 123: %SystemRoot% is missing or quoted.", "ERROR")
+        return False
+
     mounted = mount_esp()
-    esp_vol_index: int | None = None
-    assigned_here = False
-    temp_mountvol = False
+    assigned_temp = False
     target: str | None = None
     if mounted:
         opened = access_root(mounted) or mounted
-        if normalize_volume_guid_path(opened):
-            plan = bcdboot_letter_plan(opened, ())
-            volume = str(plan.get("volume") or "")
-            letter_only = free_letter()
-            letter = f"{letter_only}:" if letter_only else str(plan.get("letter") or "")
-            if letter and volume:
-                code, out = _run(["mountvol", letter, volume], timeout=60)
-                if code == 0 and Path(letter + "\\").exists():
-                    target = letter
-                    temp_mountvol = True
-                    log(f"bcdboot uses temporary letter {letter} for {volume}", "OK")
-                else:
-                    log(f"Could not mount {volume} on {letter} for bcdboot ({code}): {(out or '')[:160]}", "ERROR")
-                    return False
-            else:
-                log(f"No free letter for bcdboot volume {volume}", "ERROR")
-                return False
-        else:
-            target = bcdboot_target(opened)
-        log(f"Boot volume access path {target}", "OK")
-    elif step is not None and step.bcd_mode == "BIOS":
-        if step.mount is not None and step.mount.action in ("reuse_letter", "reuse_folder"):
-            target = step.mount.path
+        target, assigned_temp = open_bcdboot_letter(opened, step)
+        if target:
+            log(f"Boot volume access path {target}", "OK")
+    elif step is not None and step.bcd_mode == "BIOS" and step.mount is not None:
+        target, assigned_temp = open_bcdboot_letter(step.mount.path, step)
         log("BIOS boot: mountvol /S is not used and no ESP is created.", "INFO")
     else:
-        for volume in find_esp_candidates():
-            if volume.letter:
-                target = f"{volume.letter}:"
-                break
-            letter = free_letter()
-            if not letter:
-                break
-            if assign_letter_to_volume(volume.index, letter):
-                target = f"{letter}:"
-                esp_vol_index = volume.index
-                assigned_here = True
-                log(f"ESP temporarily assigned {letter}: (vol {volume.index})", "OK")
-                break
+        target, assigned_temp = open_bcdboot_letter(None, step)
 
+    if target:
+        target = bare_bcdboot_letter(target)
     modes = resolved_bcd_mode(prefer_uefi, step)
     ok = False
     timed_out = False
     minimal = False
     space_root = Path((target or "") + "\\") if target and len(str(target)) == 2 and str(target)[1] == ":" else None
     try:
+        if not modes:
+            log("BCD skipped: firmware mode is unknown, so bcdboot /f ALL is not run.", "ERROR")
         if space_root is not None and space_root.exists():
             try:
                 free = shutil.disk_usage(space_root).free
@@ -290,14 +267,21 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
             if cert_reason:
                 log(cert_reason, "ERROR")
                 continue
-            if target and minimal:
-                cmd = minimal_bcdboot_args(str(bcdboot), sys_root, target, mode, bcdboot_locale())
-            elif target:
-                cmd = bcdboot_command(str(bcdboot), sys_root, target, mode)
-            else:
-                if mode == "ALL":
-                    continue
-                cmd = [str(bcdboot), sys_root, "/f", mode]
+            if not target:
+                log(f"BCD {mode} failed, error 123: /s is not a bare drive letter.", "ERROR")
+                for line in bcdboot_123_remediation():
+                    log(f"  {line}", "ERROR")
+                break
+            try:
+                if minimal:
+                    cmd = minimal_bcdboot_args(str(bcdboot), source, target, mode, bcdboot_locale())
+                else:
+                    cmd = bcdboot_command(str(bcdboot), source, target, mode)
+            except ValueError as exc:
+                log(f"BCD {mode} failed, error 123: {exc}", "ERROR")
+                for line in bcdboot_123_remediation():
+                    log(f"  {line}", "ERROR")
+                break
             code, out = _run(cmd, timeout=180)
             log(f"bcdboot {' '.join(cmd[1:])} -> {code}")
             for line in (out or "").splitlines()[:8]:
@@ -308,6 +292,11 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
                 break
             from .boot_safe import bcdboot_succeeded
 
+            if bcdboot_invalid_name(code, out or ""):
+                log(f"BCD {mode} failed, error 123", "ERROR")
+                for line in bcdboot_123_remediation():
+                    log(f"  {line}", "ERROR")
+                break
             if bcdboot_succeeded(code, out or ""):
                 ok = True
                 log(f"Boot Manager repaired ({mode})", "OK")
@@ -317,7 +306,7 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
                     log("NO-GO: ESP font backup failed after bcdboot error 112.", "ERROR")
                     break
                 minimal = True
-                cmd = minimal_bcdboot_args(str(bcdboot), sys_root, target, mode, bcdboot_locale())
+                cmd = minimal_bcdboot_args(str(bcdboot), source, target, mode, bcdboot_locale())
                 code, out = _run(cmd, timeout=180)
                 log(f"bcdboot {' '.join(cmd[1:])} -> {code}")
                 if bcdboot_succeeded(code, out or ""):
@@ -326,15 +315,11 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
                     break
             log(f"bcdboot {mode} failed (exit {code})", "ERROR")
     finally:
-        if temp_mountvol and target:
-            _run(["mountvol", str(target).rstrip("\\"), "/d"], timeout=60)
+        if assigned_temp and target:
+            _run(["mountvol", f"{target[:1]}:", "/d"], timeout=60)
             log(f"Removed temporary bcdboot letter {target}", "INFO")
-        elif mounted:
+        if mounted:
             unmount_letter(mounted)
-        elif assigned_here and esp_vol_index is not None and target:
-            letter = target.rstrip("\\").rstrip(":")[:1]
-            remove_letter_from_volume(esp_vol_index, letter)
-            log(f"Removed temporary letter {letter}: (vol {esp_vol_index})", "INFO")
 
     if timed_out:
         return False
@@ -342,8 +327,11 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
         _finish_bios_boot(step, target)
     code, out = _run(["bcdedit", "/enum", "{bootmgr}"], timeout=90)
     bcd_ok = code == 0 and bool(out) and "cannot" not in (out or "").lower()
+    log(f"re-verify bcdedit {{bootmgr}}: exit {code}", "OK" if bcd_ok and ok else "ERROR")
     if out:
         log("bcdedit {bootmgr}: " + out.splitlines()[0][:120])
+    if not bcd_ok:
+        ok = False
     passed, reason = postcheck(
         PostState(files_written=ok, bcd_present=bcd_ok if ok else None, esp_ok=True if ok else None)
     )

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 GPT_ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 MBR_EFI = 0xEF
@@ -96,28 +96,127 @@ def drive_letter_of(value: str | None) -> str | None:
     return None
 
 
-def bcdboot_target(value: str | None) -> str | None:
-    """bcdboot /s wants 'E:' or a mounted folder. A volume GUID is error 123."""
-    if normalize_volume_guid_path(value):
+def bare_bcdboot_letter(value: str | None) -> str | None:
+    """'S:' only. A trailing slash, quotes, a folder, or a volume GUID is error 123."""
+    if value is None:
         return None
-    root = access_root(value)
-    if not root:
+    text = str(value).strip()
+    if not text or text[0] in "\"'" or text[-1] in "\"'":
         return None
-    if len(root) == 3 and root[1] == ":" and root[2] == "\\":
+    if re.fullmatch(r"[A-Za-z]:", text):
+        return text.upper()
+    if normalize_volume_guid_path(text):
+        return None
+    root = access_root(text)
+    if root and len(root) == 3 and root[1] == ":" and root[2] == "\\":
         return root[:2]
-    return root.rstrip("\\")
+    return None
+
+
+def bcdboot_target(value: str | None) -> str | None:
+    """The only legal bcdboot /s value: a bare drive letter."""
+    return bare_bcdboot_letter(value)
+
+
+_BCD_ASSIGN_CHAIN = ("Add-PartitionAccessPath", "diskpart assign", "mountvol")
+
+
+def plan_bcdboot_letter(path: str | None, used: Iterable[str]) -> dict[str, object]:
+    """Use the live letter. A folder or volume GUID needs a temporary letter first."""
+    bare = bare_bcdboot_letter(path)
+    if bare:
+        return {
+            "letter": bare,
+            "temporary": False,
+            "needs_assign": False,
+            "volume": None,
+            "folder": None,
+            "chain": (),
+        }
+    volume = normalize_volume_guid_path(path)
+    root = None if volume else access_root(path)
+    folder = root if root and bare_bcdboot_letter(root) is None else None
+    free = pick_free_letter(used) if (volume or folder) else None
+    return {
+        "letter": f"{free}:" if free else None,
+        "temporary": bool(volume or folder),
+        "needs_assign": bool(volume or folder),
+        "volume": volume,
+        "folder": folder,
+        "chain": _BCD_ASSIGN_CHAIN if (volume or folder) else (),
+    }
+
+
+def assign_bcdboot_letter(
+    path: str | None,
+    used: Iterable[str],
+    steps: Mapping[str, Callable[[dict[str, object]], bool]],
+) -> tuple[str | None, tuple[str, ...]]:
+    """Try Storage, then diskpart, then mountvol. Stop at the first letter that opens."""
+    plan = plan_bcdboot_letter(path, used)
+    letter = plan.get("letter")
+    if isinstance(letter, str) and letter and not plan.get("needs_assign"):
+        return letter, ("existing",)
+    if not isinstance(letter, str) or not letter:
+        return None, ("no-free-letter",)
+    tried: list[str] = []
+    for name in plan.get("chain") or ():
+        step = steps.get(str(name))
+        tried.append(str(name))
+        if step is not None and step(plan):
+            return letter, tuple(tried)
+    return None, tuple(tried)
+
+
+def bcdboot_source_root(path: str | None, *, exists: Callable[[str], bool] | None = None) -> str | None:
+    """%SystemRoot% with the quotes removed. Missing directories are refused."""
+    text = (path or "").strip()
+    if not text or text[0] in "\"'" or text[-1] in "\"'" or "\"" in text:
+        return None
+    from pathlib import Path
+
+    checker = exists if exists is not None else (lambda candidate: Path(candidate).is_dir())
+    if not checker(text):
+        return None
+    return text
 
 
 def bcdboot_args(exe: str, windows_root: str, target: str, mode: str) -> list[str]:
     mode_u = (mode or "").upper()
     if mode_u not in ("UEFI", "BIOS", "ALL"):
         raise ValueError(f"bcdboot mode must be UEFI, BIOS, or ALL (got {mode!r})")
-    if normalize_volume_guid_path(target):
-        raise ValueError("bcdboot /s needs a drive letter; a volume GUID returns error 123")
-    tgt = bcdboot_target(target)
-    if not tgt:
-        raise ValueError("bcdboot target is empty")
-    return [str(exe), str(windows_root), "/s", tgt, "/f", mode_u]
+    source = str(windows_root).strip()
+    letter = bare_bcdboot_letter(target)
+    if source[:1] in "\"'" or "\"" in source or not letter:
+        raise ValueError("bcdboot /s needs a bare drive letter like S:; this target is error 123")
+    argv = [str(exe).strip().strip('"'), source, "/s", letter, "/f", mode_u]
+    if any("\"" in part or part.startswith("'") for part in argv):
+        raise ValueError("bcdboot arguments are a list of unquoted tokens")
+    return argv
+
+
+def bcdboot_invalid_name(code: int, output: str) -> bool:
+    """Exit 123 is ERROR_INVALID_NAME. It is never a successful bcdboot."""
+    if int(code) == 123:
+        return True
+    return bool(re.search(r"ERROR_INVALID_NAME|invalid name|nom de (fichier|r[eé]pertoire)", output or "", re.I))
+
+
+def bcdboot_123_remediation() -> list[str]:
+    """Repair order for exit 123, from the sourced error catalog."""
+    from pathlib import Path
+    import json
+
+    path = Path(__file__).resolve().parents[2] / "data" / "error_catalog.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    for entry in payload.get("entries") or []:
+        if int(entry.get("code") or 0) == 123 or entry.get("id") == "bcdboot-123":
+            order = entry.get("repair_order") or []
+            return [str(item) for item in order]
+    return []
 
 
 def bcdboot_locale(preferred: str | None = None) -> str:

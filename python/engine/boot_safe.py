@@ -147,8 +147,12 @@ def style_from_list_disk(text: str, disk_n: int) -> str:
 
 
 def bcdboot_succeeded(code: int, output: str) -> bool:
-    """Exit 32 and BcdOpenStore / BFSVC Error are failures even if other words look successful."""
+    """Exit 32, exit 123, and BcdOpenStore / BFSVC Error are failures."""
+    from .drive_map import bcdboot_invalid_name
+
     text = output or ""
+    if bcdboot_invalid_name(code, text):
+        return False
     if re.search(
         r"BcdOpenStore|BFSVC Error|unexpected error|erreur inattendue|failed with",
         text,

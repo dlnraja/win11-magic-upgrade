@@ -711,11 +711,25 @@ def dynamic_regenerate_boot_partition(
                 out["actions"].append(f"bcdboot_s_{mode}:cert_refused")
                 out["ok"] = False
             else:
-                c, o = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode], timeout=180)
-                out["actions"].append(f"bcdboot_s_{mode}:{c}")
-                from .boot_safe import bcdboot_succeeded
+                from .drive_map import bcdboot_args, bcdboot_invalid_name, bcdboot_source_root
+                from .esp_access import open_bcdboot_letter
 
-                out["ok"] = bcdboot_succeeded(c, o or "")
+                source = bcdboot_source_root(sys_root)
+                bare, _temp = open_bcdboot_letter(letter)
+                try:
+                    argv = bcdboot_args(str(bcdboot), source or "", bare or "", mode) if source and bare else None
+                except ValueError:
+                    argv = None
+                if argv is None:
+                    out["actions"].append("bcdboot_123")
+                    out["ok"] = False
+                    log("BCD failed, error 123: bcdboot /s needs a bare drive letter.", "ERROR")
+                else:
+                    c, o = _run(argv, timeout=180)
+                    out["actions"].append(f"bcdboot_s_{mode}:{c}")
+                    from .boot_safe import bcdboot_succeeded
+
+                    out["ok"] = bcdboot_succeeded(c, o or "") and not bcdboot_invalid_name(c, o or "")
 
     # Persist regenerate status
     try:

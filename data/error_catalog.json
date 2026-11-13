@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "bcdboot-123",
+      "code": 123,
+      "name": "ERROR_INVALID_NAME",
+      "patterns": [
+        "ERROR_INVALID_NAME",
+        "error 123",
+        "BCD ALL failed, error 123",
+        "BCD failed, error 123"
+      ],
+      "cause": "bcdboot received a /s target that is not a bare drive letter, a missing or quoted Windows directory, or /f ALL while the firmware mode is unknown.",
+      "detection": "bcdboot exits 123. The log says the filename, directory name, or volume label syntax is incorrect.",
+      "syntax": "bcdboot %SystemRoot% /s S: /f UEFI",
+      "repair_order": [
+        "Confirm %SystemRoot% exists and pass it as its own list item, with no extra quotes.",
+        "Read the live drive map and take the ESP or system volume letter.",
+        "If the volume is only a folder mount or a \\\\?\\Volume{GUID}\\ path, assign a temporary letter with Add-PartitionAccessPath, then diskpart assign letter=, then mountvol.",
+        "Pass /s as S: with no trailing slash and no quotes.",
+        "Do not pass /f ALL when the firmware mode is unknown.",
+        "Treat exit 123 as failure. Re-read bcdedit /enum {bootmgr} and the ESP files before any GO."
+      ],
+      "rollback": "Remove only the temporary letter this attempt assigned. Leave the previous boot files in place.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdboot",
+        "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-"
+      ]
+    }
+  ]
+}

@@ -908,20 +908,95 @@ def guard_write_letter(letter: str, *, expect_disk: int, step: str) -> None:
 
 
 def resolved_bcd_mode(prefer_uefi: bool, decision: BootDecision | None) -> list[str]:
-    """Modes to try, taken from the fresh plan when one exists."""
+    """Modes to try, taken from the fresh plan when one exists.
+
+    Unknown firmware does not get /f ALL. That flag with a bad /s is error 123.
+    """
     if decision is None:
-        return ["UEFI", "ALL"] if prefer_uefi else ["BIOS", "ALL"]
+        return ["UEFI"] if prefer_uefi else ["BIOS"]
     if decision.skip_loader_overwrite:
         return []
     mode = (decision.bcd_mode or "").upper()
+    if mode in ("", "NONE", "UNKNOWN"):
+        return []
     if mode == "BIOS":
         return ["BIOS", "ALL"]
     if mode == "UEFI":
         return ["UEFI", "ALL"] if prefer_uefi else ["ALL", "UEFI"]
     if mode == "ALL":
         return ["ALL", "UEFI" if prefer_uefi else "BIOS"]
-    return ["UEFI", "ALL"] if prefer_uefi else ["BIOS", "ALL"]
+    return []
 
 
 def bcdboot_command(exe: str, windows_root: str, target: str, mode: str) -> list[str]:
     return bcdboot_args(exe, windows_root, target, mode)
+
+
+def open_bcdboot_letter(path: str | None, decision: BootDecision | None = None) -> tuple[str | None, bool]:
+    """Return a bare 'S:' for bcdboot /s.
+
+    An existing letter is reused. A folder mount or volume GUID is given a
+    temporary letter: Storage, then diskpart, then mountvol.
+    """
+    from .drive_map import assign_bcdboot_letter, letters_in_use, normalize_volume_guid_path
+
+    used: set[str] = set()
+    current = None
+    try:
+        current = _poller().map
+    except Exception:
+        current = None
+    if current is not None:
+        used = letters_in_use(current)
+    volume = None
+    if decision is not None:
+        volume = decision.esp or decision.srp
+    wanted = normalize_volume_guid_path(path)
+    if volume is None and current is not None:
+        folded = (path or "").rstrip("\\").lower()
+        for item in current.volumes:
+            guid = normalize_volume_guid_path(item.volume_guid) or ""
+            if wanted and guid and wanted.lower() == guid.lower():
+                volume = item
+                break
+            if folded and any(folded == str(one).rstrip("\\").lower() for one in item.access_paths):
+                volume = item
+                break
+
+    def _storage(plan: dict[str, object]) -> bool:
+        letter = str(plan.get("letter") or "")
+        if volume is None or not letter:
+            return False
+        return bool(WindowsVolumeIO().assign(volume, letter[:1]))
+
+    def _diskpart(plan: dict[str, object]) -> bool:
+        from .diskpart_safe import assign_letter_to_volume, find_esp_candidates
+
+        letter = str(plan.get("letter") or "")[:1]
+        if not letter:
+            return False
+        for row in find_esp_candidates():
+            if row.letter:
+                continue
+            if assign_letter_to_volume(row.index, letter):
+                return True
+        return False
+
+    def _mountvol(plan: dict[str, object]) -> bool:
+        guid = plan.get("volume")
+        letter = str(plan.get("letter") or "")
+        if not guid or not letter:
+            return False
+        code, _out = _run(["mountvol", letter, str(guid)], timeout=60)
+        return code == 0 and Path(f"{letter}\\").exists()
+
+    letter, tried = assign_bcdboot_letter(
+        path,
+        used,
+        {
+            "Add-PartitionAccessPath": _storage,
+            "diskpart assign": _diskpart,
+            "mountvol": _mountvol,
+        },
+    )
+    return letter, bool(letter) and "existing" not in tried
