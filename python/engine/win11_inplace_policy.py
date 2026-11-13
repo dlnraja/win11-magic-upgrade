@@ -20,6 +20,17 @@ _BOOT = re.compile(r"bootmgr|\\bcd\b|\besp\b|efi system|0x20017|boot configurati
 _ROLLBACK = re.compile(r"\$WINDOWS\.~BT\\Sources\\Rollback|rollback", re.I)
 
 
+_EFI_ACTIONS = ("esp_repair", "bcdboot_uefi", "bcd_fix")
+_BIOS_ACTIONS = ("srp_active", "bcdboot_bios", "bootsect_nt60")
+
+
+@dataclass(frozen=True)
+class FailureAssessment:
+    cause: str
+    architecture: str
+    actions: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class OneClickPlan:
     path: str  # full_migration | health_check_only | cumulative_update | inplace_least
@@ -102,26 +113,76 @@ def official_setup_args(*, quiet: bool = True, bypass: bool = False) -> list[str
 
 
 def classify_setup_failure(exit_code: int, text: str) -> str:
-    blob = f"{exit_code}\n{text or ''}".upper()
+    return assess_failure(exit_code, text).cause
+
+
+def detect_boot_architecture(text: str, firmware: str = "") -> str:
+    """uefi, bios, or hybrid. Unknown firmware is not guessed from silence."""
     raw = text or ""
-    if _BOOT.search(raw) or "0X20017" in blob:
-        return "boot"
-    if _DRIVER in blob:
-        return "driver"
-    if any(code in blob for code in _COMPAT):
-        return "compat"
-    if _ROLLBACK.search(raw) and not any(code in blob for code in _COMPAT):
-        return "unknown"
+    fw = (firmware or "").strip().upper()
+    uefi = fw in ("UEFI", "EFI") or bool(
+        re.search(r"\bUEFI\b|\\EFI\\|bootmgfw|winload\.efi|bcdboot\s+/f\s+UEFI", raw, re.I)
+    )
+    bios = fw in ("BIOS", "LEGACY", "MBR") or bool(
+        re.search(
+            r"\bBIOS\b|winload\.exe|System Reserved|bootsect|bcdboot\s+/f\s+BIOS",
+            raw,
+            re.I,
+        )
+    )
+    if uefi and bios:
+        return "hybrid"
+    if uefi:
+        return "uefi"
+    if bios:
+        return "bios"
     return "unknown"
 
 
-def next_remediation(cause: str, *, used: set[str], attempt: int) -> str | None:
-    """One matching remediation, then stop. Unknown failures do not escalate."""
+def actions_for_failure(cause: str, architecture: str) -> tuple[str, ...]:
+    """Only the actions that match the cause and the boot architecture."""
+    if cause == "compat":
+        return ("requirements_bypass",)
+    if cause == "driver":
+        return ("driver_cleanup",)
+    if cause != "boot":
+        return ()
+    if architecture == "uefi":
+        return _EFI_ACTIONS
+    if architecture == "bios":
+        return _BIOS_ACTIONS
+    if architecture == "hybrid":
+        return _EFI_ACTIONS + _BIOS_ACTIONS
+    return ()
+
+
+def assess_failure(exit_code: int, text: str, *, firmware: str = "") -> FailureAssessment:
+    blob = f"{exit_code}\n{text or ''}".upper()
+    raw = text or ""
+    if _BOOT.search(raw) or "0X20017" in blob:
+        cause = "boot"
+    elif _DRIVER in blob:
+        cause = "driver"
+    elif any(code in blob for code in _COMPAT):
+        cause = "compat"
+    else:
+        cause = "unknown"
+    architecture = detect_boot_architecture(raw, firmware)
+    return FailureAssessment(
+        cause=cause,
+        architecture=architecture,
+        actions=actions_for_failure(cause, architecture),
+    )
+
+
+def next_remediation(cause: str, *, used: set[str], attempt: int, architecture: str = "") -> tuple[str, ...] | None:
+    """One matching action list, then stop. Unknown failures do not escalate."""
     if attempt >= MAX_INPLACE_ATTEMPTS or cause in used or cause == "unknown":
         return None
-    if cause in ("compat", "driver", "boot"):
-        return cause
-    return None
+    actions = actions_for_failure(cause, architecture)
+    if not actions:
+        return None
+    return actions
 
 
 def run_inplace_attempts(
@@ -130,8 +191,9 @@ def run_inplace_attempts(
     read_text,
     remediate,
     quiet: bool = True,
+    firmware: str = "",
 ) -> int:
-    """Official upgrade first. At most one cause-matched retry."""
+    """Official upgrade first. No bypass or boot action until a logged failure."""
     used: set[str] = set()
     bypass = False
     last = 2
@@ -139,11 +201,22 @@ def run_inplace_attempts(
         last = int(launch(official_setup_args(quiet=quiet, bypass=bypass)))
         if last in (0, 3010, 3011):
             return 0
-        cause = classify_setup_failure(last, read_text() or "")
-        step = next_remediation(cause, used=used, attempt=attempt)
-        if step is None:
+        assessment = assess_failure(last, read_text() or "", firmware=firmware)
+        actions = next_remediation(
+            assessment.cause,
+            used=used,
+            attempt=attempt,
+            architecture=assessment.architecture,
+        )
+        if not actions:
             return last if last else 2
-        used.add(step)
-        remediate(step)
-        bypass = step == "compat"
+        used.add(assessment.cause)
+        remediate(
+            FailureAssessment(
+                cause=assessment.cause,
+                architecture=assessment.architecture,
+                actions=actions,
+            )
+        )
+        bypass = "requirements_bypass" in actions
     return last if last else 2

@@ -66,9 +66,23 @@ def test_failure_picks_one_matching_retry() -> None:
     assert classify_setup_failure(1, "0xC1900101 driver rollback") == "driver"
     assert classify_setup_failure(1, "0xC1900101-0x20017 boot configuration") == "boot"
     assert classify_setup_failure(1, r"C:\$WINDOWS.~BT\Sources\Rollback\setuperr.log") == "unknown"
-    assert next_remediation("compat", used=set(), attempt=1) == "compat"
+    assert next_remediation("compat", used=set(), attempt=1) == ("requirements_bypass",)
     assert next_remediation("compat", used={"compat"}, attempt=1) is None
     assert next_remediation("unknown", used=set(), attempt=1) is None
+    assert next_remediation("boot", used=set(), attempt=1, architecture="uefi") == (
+        "esp_repair",
+        "bcdboot_uefi",
+        "bcd_fix",
+    )
+    assert next_remediation("boot", used=set(), attempt=1, architecture="bios") == (
+        "srp_active",
+        "bcdboot_bios",
+        "bootsect_nt60",
+    )
+    hybrid = next_remediation("boot", used=set(), attempt=1, architecture="hybrid")
+    assert hybrid is not None
+    assert "bcdboot_uefi" in hybrid and "bootsect_nt60" in hybrid
+    assert next_remediation("boot", used=set(), attempt=1, architecture="unknown") is None
     calls: list[list[str]] = []
     steps: list[str] = []
 
@@ -81,13 +95,23 @@ def test_failure_picks_one_matching_retry() -> None:
     code = run_inplace_attempts(
         launch=launch,
         read_text=lambda: "0xC1900200",
-        remediate=steps.append,
+        remediate=lambda item: steps.append(item.cause),
     )
     assert code == 0
     assert steps == ["compat"]
     assert "IgnoreWarning" not in calls[0]
     assert "IgnoreWarning" in calls[1]
     assert "/Product" not in calls[1]
+
+    boot_actions: list[tuple[str, ...]] = []
+    run_inplace_attempts(
+        launch=lambda _args: 1,
+        read_text=lambda: "UEFI bootmgfw EFI\\Microsoft\\Boot\\BCD missing",
+        remediate=lambda item: boot_actions.append(item.actions),
+        firmware="UEFI",
+    )
+    assert boot_actions[0] == ("esp_repair", "bcdboot_uefi", "bcd_fix")
+    assert "bcdboot_bios" not in boot_actions[0]
 
 
 def main() -> None:

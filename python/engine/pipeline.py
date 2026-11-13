@@ -576,23 +576,10 @@ def _execute_step(
             persist_media_center_eligibility(report)
         except Exception as e:
             log(f"Legacy host prep: {e}", "WARN")
-        # Full unlock: Win8 migration + Media Center/DVD markers + LabConfig HW bypass
-        # (Win10 hop + Win11 on unsupported TPM/CPU/SB/RAM — every Setup launch)
-        try:
-            from .unlock_pack import apply_full_unlock_pack
-
-            build_now = int(getattr(report, "build", 0) or 0)
-            phase = "after_win10" if (win == "11" and build_now >= 10240) else "pre_setup"
-            apply_full_unlock_pack(report, phase=phase)
-        except Exception as e:
-            log(f"Unlock pack: {e}", "WARN")
-            try:
-                from .compat import make_system_win11_compatible
-
-                make_system_win11_compatible(report)
-            except Exception as e2:
-                log(f"Pre-Setup compat refresh: {e2}", "WARN")
-                apply_hardware_bypass(report)
+        log(
+            "Happy path: official Setup first. Bypass and boot changes wait for a logged failure.",
+            "INFO",
+        )
         if getattr(step, "iso_path", None):
             iso = Path(step.iso_path)
             if not iso.is_file():
@@ -669,23 +656,54 @@ def _execute_step(
                     root = _mount(iso)
             else:
                 raise
-        # Writable stage + Appraiser neutralize; legacy/Media Center ei.cfg on Win10 hops
         try:
             from .legacy_os import prepare_legacy_setup_media
 
             root = str(prepare_legacy_setup_media(root, report, win=win))
         except Exception as e:
             log(f"Setup media prep skipped: {e}", "WARN")
-            if win == "11":
-                try:
-                    from .media_bypass import prepare_setup_root
+        from .win11_inplace_policy import assess_failure, official_setup_args
 
-                    root = str(prepare_setup_root(root, win11=True))
-                except Exception as e2:
-                    log(f"Media Appraiser bypass stage skipped: {e2}", "WARN")
-        # Win11 always uses /product server + IgnoreWarning; Win10/8.1 IgnoreWarning
-        use_server = bool(step.use_server_product) or win == "11"
-        return _run_setup(root, use_server=use_server, quiet=quiet)
+        code = _run_setup(
+            root,
+            use_server=False,
+            quiet=quiet,
+            args_override=official_setup_args(quiet=quiet, bypass=False),
+            skip_side_effects=True,
+        )
+        if code in SETUP_OK_CODES:
+            return code
+        chunks = []
+        for path in (
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Panther" / "setuperr.log",
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Panther" / "setupact.log",
+            Path(r"C:\$WINDOWS.~BT\Sources\Panther\setuperr.log"),
+            Path(r"C:\$WINDOWS.~BT\Sources\Rollback\setuperr.log"),
+        ):
+            try:
+                if path.is_file():
+                    chunks.append(path.read_text(encoding="utf-8", errors="replace")[-20000:])
+            except OSError:
+                continue
+        firmware = "UEFI" if getattr(report, "is_uefi", False) else "BIOS"
+        assessment = assess_failure(code, "\n".join(chunks), firmware=firmware)
+        log(
+            f"Setup failed ({assessment.cause}, {assessment.architecture}): {', '.join(assessment.actions) or 'no matching action'}",
+            "WARN",
+        )
+        if not assessment.actions:
+            return code
+        _apply_failure_actions(assessment.actions)
+        return _run_setup(
+            root,
+            use_server=False,
+            quiet=quiet,
+            args_override=official_setup_args(
+                quiet=quiet,
+                bypass="requirements_bypass" in assessment.actions,
+            ),
+            skip_side_effects=True,
+        )
 
     return None
 
@@ -1051,6 +1069,32 @@ def _prefetch_chain_isos(
     return cached
 
 
+def _apply_failure_actions(actions: tuple[str, ...] | list[str]) -> None:
+    """Apply only the actions selected from the failure logs. No extra boot path."""
+    chosen = set(actions)
+    if "driver_cleanup" in chosen:
+        try:
+            from .patches import audit_filter_drivers
+
+            audit_filter_drivers()
+        except Exception as exc:
+            log(f"Driver cleanup skipped: {exc}", "WARN")
+    if "bcdboot_uefi" in chosen or "bcd_fix" in chosen or "esp_repair" in chosen:
+        try:
+            from .mbrgpt import repair_boot_manager
+
+            repair_boot_manager(prefer_uefi=True)
+        except Exception as exc:
+            log(f"EFI boot repair skipped: {exc}", "WARN")
+    if "bcdboot_bios" in chosen or "bootsect_nt60" in chosen or "srp_active" in chosen:
+        try:
+            from .mbrgpt import repair_boot_manager
+
+            repair_boot_manager(prefer_uefi=False)
+        except Exception as exc:
+            log(f"BIOS boot repair skipped: {exc}", "WARN")
+
+
 def _maybe_win11_least(report, target, *, dry_run: bool, quiet: bool) -> int | None:
     """Return an exit code when One-Click must not use the full migration path."""
     from .win11_inplace_policy import decide_oneclick, run_inplace_attempts
@@ -1107,22 +1151,12 @@ def _maybe_win11_least(report, target, *, dry_run: bool, quiet: bool) -> int | N
                 continue
         return "\n".join(chunks)
 
-    def remediate(kind: str) -> None:
-        log(f"In-place failure cause {kind}: one matching remediation, then one retry", "WARN")
-        if kind == "driver":
-            try:
-                from .patches import audit_filter_drivers
-
-                audit_filter_drivers()
-            except Exception as exc:
-                log(f"Driver cleanup skipped: {exc}", "WARN")
-        elif kind == "boot":
-            try:
-                from .boot_guard import verify_and_heal_boot
-
-                verify_and_heal_boot(force=False)
-            except Exception as exc:
-                log(f"Boot remediation skipped: {exc}", "WARN")
+    def remediate(assessment) -> None:
+        log(
+            f"Failure {assessment.cause} on {assessment.architecture}: {', '.join(assessment.actions)}",
+            "WARN",
+        )
+        _apply_failure_actions(assessment.actions)
 
     def launch(args: list[str]) -> int:
         if plan.path == "cumulative_update":
