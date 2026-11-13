@@ -40,6 +40,8 @@ from .logutil import STATE_DIR, log
 
 _POLL_SEC = 15.0
 _LEDGER: dict[str, tuple[MountPlan, VolumeRecord | None]] = {}
+_HELD_PATH: str | None = None
+_HELD_COUNT = 0
 _POLLER: MapPoller | None = None
 
 
@@ -146,8 +148,16 @@ def _firmware_env_present() -> bool | None:
 
 
 def _bcd_loader_kind() -> str:
-    """'efi' or 'exe' from the running Windows loader, else ''."""
-    code, out = _run(["bcdedit", "/enum", "{current}"], timeout=30)
+    """'efi' or 'exe' from the real Windows loader, else ''."""
+    code, out = _run(["bcdedit", "/enum", "all"], timeout=30)
+    try:
+        from .boot_safe import resolve_loader_guid
+
+        guid = resolve_loader_guid(out or "")
+    except Exception:
+        guid = "{default}"
+    if guid.lower() != "{current}":
+        code, out = _run(["bcdedit", "/enum", guid], timeout=30)
     text = (out or "").lower()
     if code not in (0, 1) and "winload" not in text:
         return ""
@@ -207,8 +217,16 @@ def _rollback(plan: MountPlan, volume: VolumeRecord | None, io: "VolumeIO") -> N
 
 def release_access(path: str | None) -> bool:
     """Drop a path this process mounted. A pre-existing letter is left alone."""
+    global _HELD_PATH, _HELD_COUNT
     if not path:
         return False
+    if _HELD_PATH and _ledger_key(path) == _ledger_key(_HELD_PATH) and _HELD_COUNT > 1:
+        _HELD_COUNT -= 1
+        log(f"ESP access still cached at {_HELD_PATH}", "INFO")
+        return True
+    if _HELD_PATH and _ledger_key(path) == _ledger_key(_HELD_PATH):
+        _HELD_COUNT = 0
+        _HELD_PATH = None
     item = _LEDGER.pop(_ledger_key(path), None)
     if item is None:
         return False
@@ -794,8 +812,24 @@ class WindowsVolumeIO(VolumeIO):
         return probe_tree(path)
 
 
+def _held_still_open(path: str) -> bool:
+    from .drive_map import access_root
+
+    root = access_root(path) or path
+    try:
+        return Path(root).exists()
+    except OSError:
+        return False
+
+
 def mount_system_partition(*, role: str = "auto", prefer_letter: str | None = None) -> str | None:
     """Return 'E:' or a folder. Only a path we created is recorded for cleanup."""
+    global _HELD_PATH, _HELD_COUNT
+    if _HELD_PATH and _HELD_COUNT > 0 and _held_still_open(_HELD_PATH):
+        _HELD_COUNT += 1
+        shown = _HELD_PATH if not (letter := drive_letter_of(_HELD_PATH)) else f"{letter}:"
+        log(f"ESP access reused at {shown} for this operation", "INFO")
+        return _HELD_PATH
     try:
         decision = prepare_boot_step(f"mount-{role}")
     except Exception as exc:
@@ -869,11 +903,13 @@ def mount_system_partition(*, role: str = "auto", prefer_letter: str | None = No
     shown = path if not (letter := drive_letter_of(path)) else f"{letter}:"
     log(f"ESP opened at {shown} via {method}.{cleanup}", "OK")
     if letter and (access_root(path) or "").upper() == f"{letter}:\\":
-        return f"{letter}:"
-    guid = normalize_volume_guid_path(path)
-    if guid:
-        return guid
-    return path.rstrip("\\")
+        opened = f"{letter}:"
+    else:
+        guid = normalize_volume_guid_path(path)
+        opened = guid or path.rstrip("\\")
+    _HELD_PATH = opened
+    _HELD_COUNT = 1
+    return opened
 
 
 def guard_write_letter(letter: str, *, expect_disk: int, step: str) -> None:

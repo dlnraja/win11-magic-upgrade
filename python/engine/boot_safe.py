@@ -14,11 +14,13 @@ official media + human instructions when native expand fails.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -379,6 +381,32 @@ def _bcdedit(*args: str, timeout: int = 90) -> tuple[int, str]:
     return _run(["bcdedit", *args], timeout=timeout)
 
 
+def resolve_loader_guid(enum_text: str) -> str:
+    """The Windows loader identifier. {current} is only used when that entry is the loader."""
+    text = enum_text or ""
+    blocks = re.split(r"\n\s*\n", text)
+    current = ""
+    for block in blocks:
+        match = re.search(
+            r"identifier\s+(\{[0-9a-fA-F-]+\}|\{current\}|\{default\})",
+            block,
+            re.I,
+        )
+        ident = match.group(1) if match else ""
+        if not re.search(r"winload\.(efi|exe)", block, re.I):
+            continue
+        if ident.lower() in ("{bootmgr}", "{fwbootmgr}", ""):
+            continue
+        if ident.lower() == "{current}":
+            current = ident
+            continue
+        return ident
+    default = re.search(r"default\s+(\{[0-9a-fA-F-]+\})", text, re.I)
+    if default and default.group(1).lower() not in ("{bootmgr}", "{fwbootmgr}", "{current}"):
+        return default.group(1)
+    return current or "{default}"
+
+
 def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
     """
     Intelligent bcdedit repairs that avoid leaving a broken {default}/{current}.
@@ -391,6 +419,9 @@ def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
     winload = r"\Windows\system32\winload.efi" if uefi else r"\Windows\system32\winload.exe"
 
     log("BCD heal — bcdedit store repair...", "STEP")
+    invalidate_postflight_cache()
+    _code_all, enum_all = _bcdedit("/enum", "all")
+    loader = resolve_loader_guid(enum_all)
 
     # Export a fresh backup before mutating BCD further
     if backup_bcd():
@@ -408,8 +439,8 @@ def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
     for args, tag in (
         (("/set", "{bootmgr}", "timeout", "10"), "timeout10"),
         (("/set", "{bootmgr}", "displaybootmenu", "Yes"), "bootmenu"),
-        (("/set", "{current}", "bootstatuspolicy", "IgnoreAllFailures"), "ignore_boot_failures"),
-        (("/set", "{current}", "recoveryenabled", "Yes"), "recovery_enabled"),
+        (("/set", loader, "bootstatuspolicy", "IgnoreAllFailures"), "ignore_boot_failures"),
+        (("/set", loader, "recoveryenabled", "Yes"), "recovery_enabled"),
         (("/set", "{default}", "bootstatuspolicy", "IgnoreAllFailures"), "default_ignore_fail"),
     ):
         c, o = _bcdedit(*args)
@@ -421,7 +452,11 @@ def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
 
     # Point OS loader device at SystemDrive when broken (common after ESP swap)
     # device partition=C:  /  osdevice partition=C:  /  path winload
-    for ident in ("{current}", "{default}"):
+    idents: list[str] = []
+    for ident in (loader, "{default}"):
+        if ident not in idents:
+            idents.append(ident)
+    for ident in idents:
         for name, value in (
             ("device", f"partition={drive}"),
             ("osdevice", f"partition={drive}"),
@@ -437,7 +472,7 @@ def heal_bcd_store(*, prefer_uefi: bool | None = None) -> list[str]:
                     log(f"bcdedit set {ident} {name}: {(o or '')[:100]}", "INFO")
 
     # Describe for logs (sanitized later)
-    c2, enum_out = _bcdedit("/enum", "{current}")
+    c2, enum_out = _bcdedit("/enum", loader)
     if c2 == 0 and enum_out:
         actions.append("enum_current_ok")
         try:
@@ -569,7 +604,8 @@ def stage_temporary_winre_ramdisk_boot(*, one_shot: bool = True) -> dict[str, An
             log(f"reagentc /boottore failed: {(o or '')[:200]}", "WARN")
 
     # Also ensure recovery sequence is linked (multi-fallback)
-    _bcdedit("/set", "{current}", "recoveryenabled", "Yes")
+    _loader_code, _loader_text = _bcdedit("/enum", "all")
+    _bcdedit("/set", resolve_loader_guid(_loader_text), "recoveryenabled", "Yes")
     result["actions"].append("recoveryenabled_yes")
 
     # Write operator guide
@@ -611,6 +647,7 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
       bcdedit heal → bootrec → deep verify → emergency (no double-restore) →
       WinRE or WinPE one-shot (only if still not bootable / forced)
     """
+    invalidate_postflight_cache()
     uefi = prefer_uefi if prefer_uefi is not None else (_firmware() == "UEFI")
     log("=" * 60, "STEP")
     log("INTELLIGENT BOOT REPAIR — multi-tool fallbacks", "STEP")
@@ -1252,14 +1289,99 @@ def assess_postflight(
     return {"issues": issues, "needs_boot_repair": repair, "ok": not issues and bcd_ok}
 
 
+_POSTFLIGHT_MAX = 3
+_POSTFLIGHT_BUDGET_S = 90
+_postflight_gen = 0
+
+
+def invalidate_postflight_cache() -> None:
+    """A real boot edit may change the ESP. The next postflight may mount once more."""
+    global _postflight_gen
+    _postflight_gen += 1
+
+
+def _postflight_fingerprint(firmware: str, disk: int | None, issues: list[str]) -> str:
+    payload = f"{firmware}|{disk}|{','.join(sorted(issues))}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_postflight_ledger(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"attempts": 0, "started": None, "fingerprint": "", "verdict": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"attempts": 0, "started": None, "fingerprint": "", "verdict": ""}
+    return {
+        "attempts": int(data.get("attempts") or 0),
+        "started": data.get("started"),
+        "fingerprint": str(data.get("fingerprint") or ""),
+        "verdict": str(data.get("verdict") or ""),
+    }
+
+
+def _save_postflight_ledger(path: Path, ledger: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(ledger), encoding="utf-8")
+
+
 def postflight_boot_edit(
     *,
     expect_uefi: bool | None = None,
     system_disk: int | None = None,
+    mount=None,
+    unmount=None,
+    ledger_path: Path | None = None,
+    now: float | None = None,
+    run_deep: bool = True,
 ) -> dict[str, Any]:
-    """Validate boot layout after edits."""
+    """Validate boot layout after edits. The ESP is mounted at most once."""
     log("BOOT POSTFLIGHT — validating...", "STEP")
     from .sysreserved import mount_esp, unmount_letter
+
+    clock = time.time() if now is None else now
+    ledger_file = ledger_path or (STATE_DIR / "postflight-loop.json")
+    ledger = _load_postflight_ledger(ledger_file)
+    firmware_hint = "UEFI" if expect_uefi else ("BIOS" if expect_uefi is False else _firmware())
+    disk_hint = system_disk
+    started = ledger.get("started")
+    over_budget = (
+        started is not None
+        and clock - float(started) > _POSTFLIGHT_BUDGET_S
+        and int(ledger.get("attempts") or 0) > 0
+        and int(ledger.get("gen") or 0) == _postflight_gen
+    )
+    if int(ledger.get("attempts") or 0) >= _POSTFLIGHT_MAX or over_budget:
+        verdict = ledger.get("verdict") or "NO-GO"
+        log(f"Postflight {verdict} — mount cap reached, not opening the ESP again", "ERROR" if verdict != "GO" else "OK")
+        return {
+            "ok": verdict == "GO",
+            "verdict": verdict,
+            "firmware": firmware_hint,
+            "disk_number": disk_hint,
+            "issues": ["postflight_loop_stopped"],
+            "mounts": 0,
+            "stopped": "budget" if over_budget else "max-attempts",
+        }
+    probe = _postflight_fingerprint(firmware_hint, disk_hint, [])
+    if (
+        ledger.get("fingerprint") == probe
+        and ledger.get("verdict")
+        and int(ledger.get("gen") or 0) == _postflight_gen
+    ):
+        verdict = str(ledger["verdict"])
+        log(f"Postflight {verdict} — identical state, ESP left unchanged", "OK" if verdict == "GO" else "ERROR")
+        return {
+            "ok": verdict == "GO",
+            "verdict": verdict,
+            "firmware": firmware_hint,
+            "disk_number": disk_hint,
+            "issues": [] if verdict == "GO" else ["postflight_repeated_state"],
+            "mounts": 0,
+            "stopped": "repeated-state",
+        }
+    if ledger.get("started") is None:
+        ledger["started"] = clock
 
     result: dict[str, Any] = {
         "ok": False,
@@ -1281,22 +1403,29 @@ def postflight_boot_edit(
         result["issues"].append("bcd_bootmgr_missing")
 
     mounted = None
+    mounts = 0
     has_esp = result["firmware"] == "UEFI"
     methods_exhausted = False
-    try:
-        from .esp_access import _poller
+    open_esp = mount or mount_esp
+    close_esp = unmount or unmount_letter
+    decision = None
+    drive_map = None
+    if mount is None:
+        try:
+            from .esp_access import _poller
 
-        decision = _poller().decision if _poller() is not None else None
-        drive_map = _poller().map if _poller() is not None else None
-    except Exception:
-        decision = None
-        drive_map = None
+            decision = _poller().decision if _poller() is not None else None
+            drive_map = _poller().map if _poller() is not None else None
+        except Exception:
+            decision = None
+            drive_map = None
     if drive_map is not None and (drive_map.firmware or "").upper() in ("BIOS", "LEGACY", "MBR"):
         result["firmware"] = "BIOS"
     if decision is not None:
         has_esp = decision.esp is not None
     try:
-        mounted = mount_esp()
+        mounted = open_esp()
+        mounts = 1 if mounted else 0
         if drive_map is not None and (drive_map.firmware or "").upper() in ("BIOS", "LEGACY", "MBR"):
             result["firmware"] = "BIOS"
             has_esp = bool(decision and decision.esp)
@@ -1328,30 +1457,46 @@ def postflight_boot_edit(
         )
         result["issues"] = assessed["issues"]
         result["needs_boot_repair"] = assessed["needs_boot_repair"]
+        if run_deep:
+            from .boot_emergency import deep_boot_verification
+
+            deep = deep_boot_verification(prefer_uefi=expect_uefi, mounted=mounted or "")
+            result["deep"] = {
+                "ok": deep.get("ok"),
+                "score": deep.get("score"),
+                "max_score": deep.get("max_score"),
+                "issues": deep.get("issues"),
+                "warnings": deep.get("warnings"),
+            }
+    except Exception as exc:
+        result["issues"].append("postflight_error")
+        result["deep_error"] = type(exc).__name__
+        log(f"Postflight check failed: {exc}", "ERROR")
     finally:
         if mounted:
             try:
-                unmount_letter(mounted)
+                close_esp(mounted)
             except Exception:
                 pass
 
     result["ok"] = len(result["issues"]) == 0
     result["needs_boot_repair"] = bool(result.get("needs_boot_repair"))
-    # Deep verification scorecard (informational — intelligent_boot_repair acts on it)
-    try:
-        from .boot_emergency import deep_boot_verification
+    result["mounts"] = mounts
 
-        deep = deep_boot_verification(prefer_uefi=expect_uefi)
-        result["deep"] = {
-            "ok": deep.get("ok"),
-            "score": deep.get("score"),
-            "max_score": deep.get("max_score"),
-            "issues": deep.get("issues"),
-            "warnings": deep.get("warnings"),
-        }
-    except Exception as e:
-        result["deep_error"] = type(e).__name__
-
+    result["verdict"] = "GO" if result["ok"] else "NO-GO"
+    fingerprint = _postflight_fingerprint(
+        str(result.get("firmware") or firmware_hint),
+        result.get("disk_number") if isinstance(result.get("disk_number"), int) else disk_hint,
+        list(result.get("issues") or []),
+    )
+    # The pre-mount key stops the next identical call before it assigns a letter.
+    ledger["fingerprint"] = probe
+    ledger["detail"] = fingerprint
+    ledger["verdict"] = result["verdict"]
+    ledger["gen"] = _postflight_gen
+    ledger["attempts"] = int(ledger.get("attempts") or 0) + 1
+    _save_postflight_ledger(ledger_file, ledger)
+    log(f"Postflight {result['verdict']}", "OK" if result["ok"] else "ERROR")
     if result["ok"]:
         log("Postflight OK — boot files / BCD look healthy", "OK")
     else:
