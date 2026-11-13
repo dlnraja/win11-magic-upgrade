@@ -412,11 +412,11 @@ def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
     assert "NO-GO" in verdict_message("NO-GO", r"C:\Users\Alice\zip")
     assert "GO" in verdict_message("GO", "")
     source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
-    assert "auto_action = \"oneclick\"" in source
     assert "repair_before_reboot(uefi=default_uefi())" in source
     assert "upgrade_allowed" in source
-    # startup self-update still runs before the GUI
-    assert source.index("startup_update(argv)") < source.index("if not argv and auto_action is None")
+    assert "console_countdown" in source
+    # Self-update still runs before the no-args countdown and the official update.
+    assert source.index("startup_update(argv)") < source.index("console_countdown")
 
 
 def main() -> None:
