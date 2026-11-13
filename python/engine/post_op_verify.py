@@ -13,6 +13,18 @@ from .logutil import log
 
 _ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 _MBR_BOOT_TYPES = {"07", "7", "0x07", "06", "6", "0x06", "0c", "0x0c", "ef", "0xef"}
+MAX_REGEN_ATTEMPTS = 4
+_REGEN: dict[str, tuple[str, ...]] = {
+    "drive-map": ("rescan-map",),
+    "esp-type": ("bcdboot-uefi", "bcdboot-uefi-clean"),
+    "mbr-active": ("mark-active", "bootsect-nt60-mbr"),
+    "bootsect-signature": ("bootsect-nt60-mbr",),
+    "file:bootmgfw.efi": ("copy-bootmgfw", "bcdboot-uefi", "bcdboot-uefi-clean"),
+    "file:bootmgr": ("copy-bootmgr", "bcdboot-bios", "bcdboot-all"),
+    "file:BCD": ("bcdedit-import", "bcdedit-createstore", "bcdboot-all"),
+    "bcd-enum": ("fix-device-refs", "bcdedit-import", "bcdedit-createstore"),
+    "firmware-bootmgr": ("bcdboot-uefi", "bcdboot-uefi-clean"),
+}
 
 
 def sha256_hex(data: bytes) -> str:
@@ -232,12 +244,118 @@ def collect_post_op_evidence(*, scopes: tuple[str, ...] = ("uefi",), root: str |
     return evidence
 
 
+def attempt_regeneration(
+    strategy: str,
+    *,
+    windows: str | None = None,
+    target: str = "S",
+    locale: str = "en-us",
+    backup: str = "",
+) -> bool:
+    """Run one regeneration command. A timeout or a non-zero exit does not verify."""
+    windows_root = windows or os.environ.get("SystemRoot", r"C:\Windows")
+    if strategy in ("copy-bootmgfw", "copy-bootmgr"):
+        return _copy_loader(strategy, windows_root, target)
+    if strategy == "rescan-map":
+        from .diskpart_safe import run_diskpart
+
+        ok, _out = run_diskpart("rescan\nexit", timeout=60)
+        return ok
+    command = strategy_command(strategy, windows=windows_root, target=target, locale=locale, backup=backup)
+    if not command or os.name != "nt" or command[0] == "diskpart":
+        return False
+    from .proc_guard import run_bounded
+
+    result = run_bounded(command, timeout=180)
+    return result.code == 0 and not result.timed_out
+
+
+def _copy_loader(strategy: str, windows_root: str, target: str) -> bool:
+    import shutil
+    from pathlib import Path
+
+    root = Path(windows_root)
+    letter = target.strip().rstrip("\\").rstrip(":")[:1]
+    if strategy == "copy-bootmgfw":
+        sources = (root / "Boot" / "EFI" / "bootmgfw.efi",)
+        dest = Path(f"{letter}:\\EFI\\Microsoft\\Boot\\bootmgfw.efi")
+    else:
+        sources = (root / "Boot" / "PCAT" / "bootmgr",)
+        dest = Path(f"{letter}:\\bootmgr")
+    source = next((path for path in sources if path.is_file()), None)
+    if source is None:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    return dest.is_file()
+
+
 def gate_after_boot_work(*, scopes: tuple[str, ...], root: str | None = None) -> bool:
     """Windows-only gate. Tests pass evidence straight to mandatory_post_op_verify."""
     if os.name != "nt":
         return True
-    report = mandatory_post_op_verify(evidence=collect_post_op_evidence(scopes=scopes, root=root), scopes=scopes)
+    letter = (root or "S").strip().rstrip("\\").rstrip(":")[:1] or "S"
+    report = mandatory_post_op_verify(
+        evidence=collect_post_op_evidence(scopes=scopes, root=root),
+        scopes=scopes,
+        attempt=lambda strategy: attempt_regeneration(strategy, target=letter),
+    )
     return report.get("verdict") == "GO"
+
+
+def regeneration_plan(checks: list[dict[str, Any]]) -> list[str]:
+    """Ordered strategies for the checks that failed. Capped so a loop cannot grow."""
+    plan: list[str] = []
+    for check in checks:
+        if check.get("ok"):
+            continue
+        for strategy in _REGEN.get(str(check.get("name") or ""), ()):
+            if strategy not in plan:
+                plan.append(strategy)
+            if len(plan) >= MAX_REGEN_ATTEMPTS:
+                return plan
+    return plan
+
+
+def strategy_command(
+    strategy: str,
+    *,
+    windows: str = r"C:\Windows",
+    target: str = "S",
+    locale: str = "en-us",
+    backup: str = "",
+    device: str = "partition=C:",
+) -> list[str]:
+    """The exact command a strategy runs. The letter passed to /s has no extra colon."""
+    letter = target.strip().rstrip("\\").rstrip(":")[:1] or "S"
+    bcdboot = str(windows).rstrip("\\") + r"\System32\bcdboot.exe"
+    bcdedit = str(windows).rstrip("\\") + r"\System32\bcdedit.exe"
+    bootsect = str(windows).rstrip("\\") + r"\System32\bootsect.exe"
+    if strategy == "bcdboot-uefi":
+        return [bcdboot, windows, "/s", f"{letter}:", "/f", "UEFI", "/l", locale]
+    if strategy == "bcdboot-uefi-clean":
+        return [bcdboot, windows, "/s", f"{letter}:", "/f", "UEFI", "/l", locale, "/c"]
+    if strategy == "bcdboot-bios":
+        return [bcdboot, windows, "/s", f"{letter}:", "/f", "BIOS", "/l", locale]
+    if strategy == "bcdboot-all":
+        return [bcdboot, windows, "/s", f"{letter}:", "/f", "ALL", "/l", locale]
+    if strategy == "bcdedit-import":
+        return [bcdedit, "/import", backup or "pre-op-bcd"]
+    if strategy == "bcdedit-createstore":
+        return [bcdedit, "/createstore", backup or "new-bcd"]
+    if strategy == "fix-device-refs":
+        return [bcdedit, "/set", "{default}", "osdevice", device]
+    if strategy == "bootsect-nt60-mbr":
+        return [bootsect, "/nt60", f"{letter}:", "/mbr"]
+    if strategy == "copy-bootmgfw":
+        return ["copy", "bootmgfw.efi", f"{letter}:\\EFI\\Microsoft\\Boot\\bootmgfw.efi"]
+    if strategy == "copy-bootmgr":
+        return ["copy", "bootmgr", f"{letter}:\\bootmgr"]
+    if strategy == "mark-active":
+        return ["diskpart", "active"]
+    if strategy == "rescan-map":
+        return ["diskpart", "rescan"]
+    return []
 
 
 def mandatory_post_op_verify(
@@ -246,15 +364,52 @@ def mandatory_post_op_verify(
     scopes: tuple[str, ...] = ("uefi",),
     rollback: Callable[[str], bool] | None = None,
     reread: Callable[[], dict[str, Any]] | None = None,
+    attempt: Callable[[str], bool] | None = None,
     backup: str = "pre-op",
 ) -> dict[str, Any]:
-    """Run the checks. On failure, roll back, re-check, and return NO-GO."""
+    """Run the checks. On failure, try the matching repairs, then roll back if they do not verify."""
     current = evidence if evidence is not None else collect_post_op_evidence(scopes=scopes)
     checks = evaluate_post_op(current, scopes=scopes)
     _log_checks("post-op", checks)
     if all(item.get("ok") for item in checks):
-        return {"verdict": "GO", "rollback": False, "restored": True, "checks": checks, "after_rollback": []}
-    log("post-op verification failed. Rolling back from the pre-op backup.", "ERROR")
+        return {
+            "verdict": "GO",
+            "rollback": False,
+            "restored": True,
+            "checks": checks,
+            "after_rollback": [],
+            "decision": [],
+        }
+    plan = regeneration_plan(checks)
+    failed = [str(item.get("name")) for item in checks if not item.get("ok")]
+    log(f"post-op decision: failed={','.join(failed)} plan={','.join(plan)}", "WARN")
+    decision: list[dict[str, Any]] = []
+    for index, strategy in enumerate(plan, start=1):
+        log(f"post-op attempt {index}/{MAX_REGEN_ATTEMPTS} {strategy}", "INFO")
+        try:
+            ran = bool(attempt(strategy)) if attempt is not None else False
+        except Exception as exc:
+            log(f"post-op attempt {strategy} failed: {exc}", "ERROR")
+            ran = False
+        verified = False
+        if ran and reread is not None:
+            current = reread()
+            checks = evaluate_post_op(current, scopes=scopes)
+            _log_checks(f"post-op after {strategy}", checks)
+            verified = all(item.get("ok") for item in checks)
+        decision.append({"strategy": strategy, "ran": ran, "verified": verified})
+        if verified:
+            log(f"post-op attempt {strategy} verified", "OK")
+            return {
+                "verdict": "GO",
+                "rollback": False,
+                "restored": True,
+                "checks": checks,
+                "after_rollback": [],
+                "decision": decision,
+            }
+        log(f"post-op attempt {strategy} did not verify", "WARN")
+    log("post-op regeneration exhausted. Rolling back to the last known-good backup.", "ERROR")
     try:
         rolled = bool(rollback(backup)) if rollback is not None else _default_rollback()
     except Exception as exc:
@@ -275,4 +430,5 @@ def mandatory_post_op_verify(
         "restored": all(item.get("ok") for item in again),
         "checks": checks,
         "after_rollback": again,
+        "decision": decision,
     }
