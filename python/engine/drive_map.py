@@ -202,8 +202,17 @@ def bcdboot_invalid_name(code: int, output: str) -> bool:
     return bool(re.search(r"ERROR_INVALID_NAME|invalid name|nom de (fichier|r[eé]pertoire)", output or "", re.I))
 
 
-def bcdboot_123_remediation() -> list[str]:
-    """Repair order for exit 123, from the sourced error catalog."""
+def bcdboot_disk_full(code: int, output: str) -> bool:
+    """Exit 112 is ERROR_DISK_FULL. A 96 MB ESP hits this when fonts and locales fill it."""
+    if int(code) == 112:
+        return True
+    return bool(
+        re.search(r"ERROR_DISK_FULL|not enough space|espace insuffisant|disk full|espace disque", output or "", re.I)
+    )
+
+
+def bcdboot_remediation(code: int) -> list[str]:
+    """Repair order for a bcdboot exit code, from the sourced error catalog."""
     from pathlib import Path
     import json
 
@@ -212,18 +221,54 @@ def bcdboot_123_remediation() -> list[str]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         payload = {}
+    wanted = int(code)
     for entry in payload.get("entries") or []:
-        if int(entry.get("code") or 0) == 123 or entry.get("id") == "bcdboot-123":
-            order = entry.get("repair_order") or []
-            return [str(item) for item in order]
+        if int(entry.get("code") or 0) == wanted or entry.get("id") == f"bcdboot-{wanted}":
+            return [str(item) for item in (entry.get("repair_order") or [])]
     return []
+
+
+def bcdboot_123_remediation() -> list[str]:
+    return bcdboot_remediation(123)
 
 
 def bcdboot_locale(preferred: str | None = None) -> str:
     text = (preferred or "").strip().replace("_", "-")
+    text = text.split(".")[0].split("@")[0]
     if re.fullmatch(r"[A-Za-z]{2}(-[A-Za-z]{2})?", text):
         return text
     return "en-us"
+
+
+_LOCALE_DIR = re.compile(r"^[A-Za-z]{2}-[A-Za-z]{2}$")
+
+
+def kept_bcd_locales(ui: str | None) -> set[str]:
+    """en-US stays, and so does the current UI locale."""
+    return {"en-us", bcdboot_locale(ui).lower()}
+
+
+def locale_dirs_to_drop(names: Iterable[str], ui: str | None) -> list[str]:
+    keep = kept_bcd_locales(ui)
+    drop: list[str] = []
+    for name in names:
+        if not _LOCALE_DIR.fullmatch(name or ""):
+            continue
+        if name.lower() in keep:
+            continue
+        drop.append(name)
+    return drop
+
+
+def is_our_esp_junk(relative: str) -> bool:
+    """Temp and backup files this tool wrote under EFI\\MagicUpgrade. Boot files are kept."""
+    text = (relative or "").replace("\\", "/").strip("/").lower()
+    if not text.startswith("efi/magicupgrade/"):
+        return False
+    base = text.rsplit("/", 1)[-1]
+    if base in {"bcd", "bootmgfw.efi", "bootmgr", "bootmgr.efi", "bootx64.efi", "bootia32.efi"}:
+        return False
+    return base.endswith((".tmp", ".bak", ".old", ".backup"))
 
 
 def minimal_bcdboot_args(exe: str, windows_root: str, letter: str, mode: str, locale: str | None = None) -> list[str]:
@@ -243,17 +288,37 @@ def bcdboot_letter_plan(target: str | None, used: Iterable[str]) -> dict[str, st
     return {"letter": f"{free}:" if free else None, "temporary": True, "volume": volume}
 
 
-def esp_bcdboot_space_plan(free_bytes: int, font_bytes: int, *, need_bytes: int = BCD_MIN_FREE_BYTES) -> dict[str, bool]:
-    """Trim fonts only when the ESP cannot hold bcdboot, and only after a backup."""
+def esp_bcdboot_space_plan(
+    free_bytes: int,
+    font_bytes: int,
+    *,
+    need_bytes: int = BCD_MIN_FREE_BYTES,
+    locale_bytes: int = 0,
+    junk_bytes: int = 0,
+) -> dict[str, bool]:
+    """Decide how to make room. This plan never resizes a partition."""
     free = max(0, int(free_bytes))
     fonts = max(0, int(font_bytes))
+    locales = max(0, int(locale_bytes))
+    junk = max(0, int(junk_bytes))
     if free >= need_bytes:
-        return {"trim_fonts": False, "minimal": False, "enough": True, "backup_required": False}
+        return {
+            "trim_fonts": False,
+            "minimal": False,
+            "enough": True,
+            "backup_required": False,
+            "drop_locales": False,
+            "clear_junk": False,
+            "resize": False,
+        }
     return {
         "trim_fonts": fonts > 0,
         "minimal": True,
-        "enough": free + fonts >= need_bytes,
-        "backup_required": True,
+        "enough": free + fonts + locales + junk >= need_bytes,
+        "backup_required": fonts > 0 or locales > 0 or junk > 0,
+        "drop_locales": locales > 0,
+        "clear_junk": junk > 0,
+        "resize": False,
     }
 
 

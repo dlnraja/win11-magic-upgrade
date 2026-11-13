@@ -22,7 +22,11 @@ from engine.drive_map import (  # noqa: E402
     assign_bcdboot_letter,
     bare_bcdboot_letter,
     bcdboot_123_remediation,
+    bcdboot_disk_full,
     bcdboot_invalid_name,
+    bcdboot_remediation,
+    is_our_esp_junk,
+    locale_dirs_to_drop,
     bcdboot_letter_plan,
     bcdboot_source_root,
     plan_bcdboot_letter,
@@ -607,6 +611,23 @@ def test_bcdboot_uses_resolved_target() -> None:
     assert letter == "Z:"
     assert tried == ("Add-PartitionAccessPath", "diskpart assign")
     assert calls == ["Add-PartitionAccessPath", "diskpart assign"]
+    assert bcdboot_disk_full(112, "") is True
+    assert bcdboot_disk_full(0, "Boot files successfully created") is False
+    full = esp_bcdboot_space_plan(
+        4 * 1024 * 1024,
+        12 * 1024 * 1024,
+        locale_bytes=8 * 1024 * 1024,
+        junk_bytes=1024 * 1024,
+    )
+    assert full["minimal"] is True and full["trim_fonts"] is True
+    assert full["drop_locales"] is True and full["clear_junk"] is True
+    assert full["resize"] is False and full["backup_required"] is True
+    assert locale_dirs_to_drop(["en-US", "fr-FR", "de-DE", "Fonts"], "fr-FR") == ["de-DE"]
+    assert is_our_esp_junk(r"EFI\MagicUpgrade\stage.tmp") is True
+    assert is_our_esp_junk(r"EFI\Microsoft\Boot\bootmgfw.efi") is False
+    order_112 = bcdboot_remediation(112)
+    assert any("/l" in line for line in order_112)
+    assert any("MAGIC_ESP_EXPAND" in line for line in order_112)
 
 
 def test_hybrid_mbr2gpt_and_openduet() -> None:
