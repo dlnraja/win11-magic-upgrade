@@ -355,14 +355,32 @@ Write-Output ("OK|" + $letter + "|" + $partStyle + "|" + $diskN)
                 result["actions"].append(f"bcdboot_{mode}:cert_refused")
                 result["ok"] = False
                 return result
-            c2, o2 = _run([str(bcdboot), sys_root, "/s", f"{letter}:", "/f", mode], timeout=180)
+            from .drive_map import bcdboot_args, bcdboot_invalid_name, bcdboot_source_root
+
+            source = bcdboot_source_root(sys_root)
+            bare = f"{letter}:" if letter and len(str(letter)) == 1 else None
+            try:
+                argv = bcdboot_args(str(bcdboot), source or "", bare or "", mode) if source and bare else None
+            except ValueError:
+                argv = None
+            if argv is None:
+                result["ok"] = False
+                result["actions"].append("bcdboot_123")
+                log("BCD failed, error 123: bcdboot /s needs a bare drive letter.", "ERROR")
+                return result
+            c2, o2 = _run(argv, timeout=180)
             result["actions"].append(f"bcdboot_{mode}:{c2}")
-            if c2 != 0:
-                c3, o3 = _run([str(bcdboot), sys_root, "/s", f"{letter}:", "/f", "ALL"], timeout=180)
+            if bcdboot_invalid_name(c2, o2 or ""):
+                result["ok"] = False
+                result["actions"].append("bcdboot_123")
+                log(f"BCD {mode} failed, error 123", "ERROR")
+            elif c2 != 0 and mode != "ALL":
+                argv_all = bcdboot_args(str(bcdboot), source, bare, "ALL")
+                c3, o3 = _run(argv_all, timeout=180)
                 result["actions"].append(f"bcdboot_ALL:{c3}")
-                result["ok"] = c3 == 0
+                result["ok"] = c3 == 0 and not bcdboot_invalid_name(c3, o3 or "")
             else:
-                result["ok"] = True
+                result["ok"] = c2 == 0
         else:
             result["ok"] = False
             result["actions"].append("bcdboot_missing")

@@ -292,15 +292,30 @@ def repair_bootmgr_to_os_arch(prefer_uefi: bool = True) -> bool:
                 log(cert_reason, "ERROR")
                 unmount_letter(letter)
                 return False
-            code, out = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode])
-            log(f"bcdboot /s {letter} /f {mode} -> {code}: {out[:250]}")
+            from .drive_map import bcdboot_args, bcdboot_source_root
+            from .esp_access import open_bcdboot_letter
+
+            source = bcdboot_source_root(sys_root)
+            bare, _temp = open_bcdboot_letter(letter)
+            if not source or not bare:
+                log("BCD failed, error 123: bcdboot /s needs a bare drive letter.", "ERROR")
+                unmount_letter(letter)
+                return False
+            try:
+                argv = bcdboot_args(str(bcdboot), source, bare, mode)
+            except ValueError as exc:
+                log(f"BCD failed, error 123: {exc}", "ERROR")
+                unmount_letter(letter)
+                return False
+            code, out = _run(argv)
+            log(f"bcdboot {' '.join(argv[1:])} -> {code}: {out[:250]}")
             # Verify PE
-            bootmgfw = Path(letter + "\\") / "EFI" / "Microsoft" / "Boot" / "bootmgfw.efi"
+            bootmgfw = Path(bare + "\\") / "EFI" / "Microsoft" / "Boot" / "bootmgfw.efi"
             lab = machine_label(pe_machine(bootmgfw)) if bootmgfw.exists() else None
             if lab:
                 log(f"bootmgfw.efi now {lab}", "OK" if lab == "x64" else "WARN")
             # If IA32 leftover confuses some firmware, keep bootia32 but ensure bootx64 exists
-            bootx64 = Path(letter + "\\") / "EFI" / "Boot" / "bootx64.efi"
+            bootx64 = Path(bare + "\\") / "EFI" / "Boot" / "bootx64.efi"
             if prefer_uefi and bootmgfw.exists() and not bootx64.exists():
                 try:
                     bootx64.parent.mkdir(parents=True, exist_ok=True)
@@ -310,6 +325,10 @@ def repair_bootmgr_to_os_arch(prefer_uefi: bool = True) -> bool:
                     log("Copied bootmgfw -> EFI\\Boot\\bootx64.efi", "OK")
                 except Exception as e:
                     log(f"bootx64 copy: {e}", "WARN")
+            from .drive_map import bare_bcdboot_letter as _bare
+
+            if _bare(letter) != bare:
+                _run(["mountvol", bare, "/d"])
             unmount_letter(letter)
             from .boot_safe import bcdboot_succeeded
 

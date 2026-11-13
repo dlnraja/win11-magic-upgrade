@@ -739,26 +739,46 @@ def fix_boot_for_new_layout(
     if not bcdboot.is_file():
         out["actions"].append("bcdboot_missing")
     elif targets:
+        from .drive_map import bcdboot_args, bcdboot_invalid_name, bcdboot_source_root
+        from .esp_access import open_bcdboot_letter
+
+        source = bcdboot_source_root(sys_root)
         for t in targets:
-            # bcdboot requires "Y:" form (drive + colon, no trailing slash)
-            c, o = _run([str(bcdboot), sys_root, "/s", t, "/f", mode], timeout=180)
-            out["actions"].append(f"bcdboot_{mode}_{t}:{c}")
-            out["bcdboot"] = {"code": c, "out": (o or "")[:200], "target": t, "mode": mode}
-            if c != 0:
-                c2, o2 = _run([str(bcdboot), sys_root, "/s", t, "/f", "ALL"], timeout=180)
-                out["actions"].append(f"bcdboot_ALL_{t}:{c2}")
-                out["ok"] = c2 == 0
-                out["bcdboot"] = {"code": c2, "out": (o2 or "")[:200], "target": t, "mode": "ALL"}
+            letter, _temp = open_bcdboot_letter(t)
+            if not source or not letter:
+                out["actions"].append(f"bcdboot_123:{t}")
+                out["ok"] = False
+                log("BCD failed, error 123: bcdboot /s needs a bare drive letter and a real Windows directory.", "ERROR")
+                continue
+            try:
+                argv = bcdboot_args(str(bcdboot), source, letter, mode)
+            except ValueError as exc:
+                out["actions"].append(f"bcdboot_123:{exc}")
+                out["ok"] = False
+                continue
+            c, o = _run(argv, timeout=180)
+            out["actions"].append(f"bcdboot_{mode}_{letter}:{c}")
+            out["bcdboot"] = {"code": c, "out": (o or "")[:200], "target": letter, "mode": mode}
+            if bcdboot_invalid_name(c, o or ""):
+                out["ok"] = False
+                log(f"BCD {mode} failed, error 123", "ERROR")
+                continue
+            if c != 0 and mode != "ALL":
+                try:
+                    argv_all = bcdboot_args(str(bcdboot), source, letter, "ALL")
+                except ValueError:
+                    out["ok"] = False
+                    continue
+                c2, o2 = _run(argv_all, timeout=180)
+                out["actions"].append(f"bcdboot_ALL_{letter}:{c2}")
+                out["ok"] = c2 == 0 and not bcdboot_invalid_name(c2, o2 or "")
+                out["bcdboot"] = {"code": c2, "out": (o2 or "")[:200], "target": letter, "mode": "ALL"}
             else:
-                out["ok"] = True
+                out["ok"] = c == 0
     else:
-        c, o = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
-        out["actions"].append(f"bcdboot_default_{mode}:{c}")
-        out["ok"] = c == 0
-        if not out["ok"]:
-            c2, _ = _run([str(bcdboot), sys_root, "/f", "ALL"], timeout=180)
-            out["actions"].append(f"bcdboot_default_ALL:{c2}")
-            out["ok"] = c2 == 0
+        out["actions"].append("bcdboot_123:no-letter")
+        out["ok"] = False
+        log("BCD failed, error 123: no bare drive letter for /s.", "ERROR")
 
     try:
         from .boot_safe import heal_bcd_store
@@ -1138,10 +1158,24 @@ def create_boot_in_unallocated(
         log(cert_reason, "ERROR")
         return None
     if bcdboot.is_file():
-        c, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", mode], timeout=180)
-        if c != 0:
-            c2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
-            if c2 != 0:
+        from .drive_map import bcdboot_args, bcdboot_invalid_name, bcdboot_source_root
+
+        source = bcdboot_source_root(sys_root)
+        try:
+            argv = bcdboot_args(str(bcdboot), source or "", root, mode) if source else None
+        except ValueError:
+            argv = None
+        if argv is None:
+            log("BCD failed, error 123: bcdboot /s needs a bare drive letter.", "ERROR")
+            return None
+        c, bout = _run(argv, timeout=180)
+        if bcdboot_invalid_name(c, bout or ""):
+            log(f"BCD {mode} failed, error 123", "ERROR")
+            return None
+        if c != 0 and mode != "ALL":
+            argv_all = bcdboot_args(str(bcdboot), source, root, "ALL")
+            c2, bout2 = _run(argv_all, timeout=180)
+            if c2 != 0 or bcdboot_invalid_name(c2, bout2 or ""):
                 log(
                     f"bcdboot failed on unallocated-created boot partition: {(bout2 or bout or '')[:160]}",
                     "WARN",

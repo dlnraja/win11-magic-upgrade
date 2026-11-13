@@ -19,7 +19,13 @@ from engine.drive_map import (  # noqa: E402
     access_chain,
     access_root,
     bcdboot_args,
+    assign_bcdboot_letter,
+    bare_bcdboot_letter,
+    bcdboot_123_remediation,
+    bcdboot_invalid_name,
     bcdboot_letter_plan,
+    bcdboot_source_root,
+    plan_bcdboot_letter,
     esp_bcdboot_space_plan,
     minimal_bcdboot_args,
     normalize_volume_guid_path,
@@ -547,14 +553,60 @@ def test_volume_guid_is_unescaped_and_bcdboot_uses_a_letter() -> None:
 
 def test_bcdboot_uses_resolved_target() -> None:
     command = bcdboot_args(r"C:\Windows\System32\bcdboot.exe", r"C:\Windows", "E:", "ALL")
-    assert command[1:] == [r"C:\Windows", "/s", "E:", "/f", "ALL"]
-    bios = bcdboot_args("bcdboot.exe", r"D:\Windows", r"E:\esp-mount", "BIOS")
-    assert "/s" in bios and r"E:\esp-mount" in bios and "/f" in bios and "BIOS" in bios
+    assert command == [r"C:\Windows\System32\bcdboot.exe", r"C:\Windows", "/s", "E:", "/f", "ALL"]
+    assert bare_bcdboot_letter("E:\\") == "E:"
+    assert bare_bcdboot_letter('"E:"') is None
+    for bad in (r"E:\esp-mount", "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\", "", "E:\\"):
+        try:
+            bcdboot_args("bcdboot.exe", r"D:\Windows", bad if bad != "E:\\" else bad, "BIOS")
+        except ValueError:
+            if bad == "E:\\":
+                raise AssertionError("E:\\ should normalize to E:")
+            continue
+        if bad != "E:\\":
+            raise AssertionError(f"bad /s target was accepted: {bad}")
+    assert bcdboot_args("bcdboot.exe", r"D:\Windows", "E:\\", "BIOS")[3] == "E:"
     try:
         bcdboot_args("bcdboot.exe", r"C:\Windows", "E:", "MAYBE")
         raise AssertionError("bad mode accepted")
     except ValueError:
         pass
+    assert bcdboot_invalid_name(123, "ERROR_INVALID_NAME") is True
+    assert bcdboot_invalid_name(0, "Boot files successfully created") is False
+    order = bcdboot_123_remediation()
+    assert order and "Add-PartitionAccessPath" in order[2]
+    assert bcdboot_source_root(r"C:\Windows", exists=lambda _path: False) is None
+    assert bcdboot_source_root(r'"C:\Windows"', exists=lambda _path: True) is None
+    assert bcdboot_source_root(r"C:\Windows", exists=lambda _path: True) == r"C:\Windows"
+    guid = "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\"
+    plan = plan_bcdboot_letter(guid, {"C"})
+    assert plan["needs_assign"] is True
+    assert plan["chain"] == ("Add-PartitionAccessPath", "diskpart assign", "mountvol")
+    calls: list[str] = []
+
+    def _fail(name: str):
+        def step(_plan: dict) -> bool:
+            calls.append(name)
+            return False
+
+        return step
+
+    def _diskpart(plan: dict) -> bool:
+        calls.append("diskpart assign")
+        return plan.get("letter") == "Z:"
+
+    letter, tried = assign_bcdboot_letter(
+        guid,
+        {"C"},
+        {
+            "Add-PartitionAccessPath": _fail("Add-PartitionAccessPath"),
+            "diskpart assign": _diskpart,
+            "mountvol": _fail("mountvol"),
+        },
+    )
+    assert letter == "Z:"
+    assert tried == ("Add-PartitionAccessPath", "diskpart assign")
+    assert calls == ["Add-PartitionAccessPath", "diskpart assign"]
 
 
 def test_hybrid_mbr2gpt_and_openduet() -> None:
