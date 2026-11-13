@@ -864,4 +864,10 @@ def run_emergency_repair_suite(
         f"safe_path={summary['safe_reboot_path']}",
         "OK" if summary["safe_reboot_path"] else "ERROR",
     )
+    try:
+        from .run_diag import finish_run
+
+        finish_run(mode="rescue", step="emergency")
+    except Exception:
+        pass
     return summary
