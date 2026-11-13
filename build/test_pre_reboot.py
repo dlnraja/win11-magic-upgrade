@@ -414,9 +414,10 @@ def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
     source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
     assert "repair_before_reboot(uefi=default_uefi())" in source
     assert "upgrade_allowed" in source
-    assert "console_countdown" in source
+    body = source.split("def _main_after_no_args", 1)[1]
+    assert "console_countdown(" in body
     # Self-update still runs before the no-args countdown and the official update.
-    assert source.index("startup_update(argv)") < source.index("console_countdown")
+    assert body.index("startup_update(argv)") < body.index("console_countdown(")
 
 
 def main() -> None:
