@@ -191,8 +191,8 @@ def test_history_is_redacted_capped_and_sent_once() -> None:
     assert result["history"]["attached"] is True
     assert result["history"]["upload"] == "https://gist.github.com/example/abc"
     assert result["history"]["new"] >= 1
-    bundle = zipfile.ZipFile(result["history"]["bundle"])
-    blob = " ".join(bundle.read(name).decode("utf-8", "replace") for name in bundle.namelist())
+    with zipfile.ZipFile(result["history"]["bundle"]) as bundle:
+        blob = " ".join(bundle.read(name).decode("utf-8", "replace") for name in bundle.namelist())
     assert "SECRET-HIVE" not in blob
     assert "alice" not in blob.lower()
     assert "gist.github.com/example/abc" in Path(result["filed"][0]["file"]).read_text(encoding="utf-8")
