@@ -30,37 +30,17 @@ FREEDOS_ISO_URL = (
 
 
 def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return 124, "TIMEOUT"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout)
+    return result.code, result.output or result.reason
 
 
 def _ps(script: str, timeout: int = 240) -> tuple[int, str]:
-    """Run a PowerShell snippet; returns (code, stdout+stderr)."""
-    return _run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
-        timeout=timeout,
-    )
+    """Run a PowerShell snippet with UTF-8 pipes; returns (code, stdout+stderr)."""
+    from .proc_guard import powershell_command
+
+    return _run(powershell_command(script), timeout=timeout)
 
 
 def _firmware() -> str:
@@ -133,8 +113,7 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]
         mounted = mount_esp()
         try:
             if mounted:
-                letter = mounted.rstrip(":\\")[:1]
-                files = inspect_boot_files_on_letter(letter)
+                files = inspect_boot_files_on_letter(mounted)
                 report["checks"]["esp_files"] = files
                 if uefi:
                     _check(
@@ -151,13 +130,18 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]
                             or files.get("efi_ms_bootmgfw")
                         ),
                     )
-                # BCD store file on ESP/BIOS
-                bcd_path = Path(f"{letter}:\\EFI\\Microsoft\\Boot\\BCD") if uefi else Path(f"{letter}:\\Boot\\BCD")
-                alt = Path(f"{letter}:\\EFI\\Microsoft\\Boot\\BCD")
-                present = bcd_path.is_file() or alt.is_file() or Path(f"{letter}:\\Boot\\BCD").is_file()
+                from .drive_map import access_root
+
+                root = Path(access_root(mounted) or mounted)
+                present = (root / "EFI" / "Microsoft" / "Boot" / "BCD").is_file() or (
+                    root / "Boot" / "BCD"
+                ).is_file()
                 _check("esp_bcd_file", present, warn=True)
+                _check("esp_mountable", True)
             else:
-                _check("esp_mountable", False)
+                # mount_esp already tried Storage, diskpart, and a folder.
+                # A BIOS machine with no ESP is not a failure.
+                _check("esp_mountable", not uefi, warn=not uefi)
         finally:
             if mounted:
                 try:
@@ -319,7 +303,7 @@ if ($partStyle -eq 'GPT') {{
   $np = New-Partition -DiskNumber $diskN -Size $need -MbrType 0x0C
 }}
 $letter = $null
-foreach ($L in 83..90) {{
+foreach ($L in 90..68) {{
   $ch = [char]$L
   if (-not (Test-Path ("$ch" + ':\\'))) {{ $letter = "$ch"; break }}
 }}
@@ -382,32 +366,10 @@ Write-Output ("OK|" + $letter + "|" + $partStyle + "|" + $diskN)
 
 
 def ps_mount_esp_letter() -> str | None:
-    """Mount ESP via Storage Add-PartitionAccessPath (no diskpart)."""
-    script = r"""
-$ErrorActionPreference = 'Stop'
-$esp = Get-Partition | Where-Object {
-  $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -or $_.IsSystem -eq $true
-} | Select-Object -First 1
-if (-not $esp) { throw 'No ESP/system partition' }
-if ($esp.DriveLetter) { Write-Output ($esp.DriveLetter.ToString() + ':'); exit 0 }
-$letter = $null
-foreach ($L in 83..90) {
-  $ch = [char]$L
-  if (-not (Test-Path ("$ch" + ':\'))) { $letter = "$ch"; break }
-}
-if (-not $letter) { throw 'No free letter' }
-Add-PartitionAccessPath -DiskNumber $esp.DiskNumber -PartitionNumber $esp.PartitionNumber -AccessPath ($letter + ':')
-Write-Output ($letter + ':')
-"""
-    code, out = _ps(script, timeout=120)
-    if code != 0:
-        return None
-    for line in (out or "").splitlines():
-        line = line.strip()
-        if re.fullmatch(r"[A-Z]:", line):
-            log(f"ESP mounted via Storage → {line}", "OK")
-            return line
-    return None
+    """Open the ESP from the fresh drive map. Storage assign comes before mountvol /S."""
+    from .esp_access import mount_system_partition
+
+    return mount_system_partition()
 
 
 # ---------------------------------------------------------------------------
@@ -437,10 +399,12 @@ def emergency_regenerate_bcd(*, prefer_uefi: bool | None = None) -> dict[str, An
         mounted = mount_esp()
         try:
             if mounted:
-                letter = mounted.rstrip(":\\")[:1]
+                from .drive_map import access_root
+
+                root = Path(access_root(mounted) or mounted)
                 candidates = [
-                    Path(f"{letter}:\\EFI\\Microsoft\\Boot\\BCD"),
-                    Path(f"{letter}:\\Boot\\BCD"),
+                    root / "EFI" / "Microsoft" / "Boot" / "BCD",
+                    root / "Boot" / "BCD",
                 ]
                 for p in candidates:
                     if not p.is_file():
@@ -485,7 +449,9 @@ def emergency_regenerate_bcd(*, prefer_uefi: bool | None = None) -> dict[str, An
                 continue
             c, o = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
             out["actions"].append(f"bcdboot_{mode}:{c}")
-            if c == 0 or "successfully" in (o or "").lower():
+            from .boot_safe import bcdboot_succeeded
+
+            if bcdboot_succeeded(c, o or ""):
                 break
 
     out["actions"].extend(heal_bcd_store(prefer_uefi=uefi))

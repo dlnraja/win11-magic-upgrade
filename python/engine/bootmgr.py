@@ -27,21 +27,10 @@ IMAGE_FILE_MACHINE_AMD64 = 0x8664
 
 
 def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return 124, f"TIMEOUT after {timeout}s"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout)
+    return result.code, result.output or result.reason
 
 
 def pe_machine(path: Path) -> int | None:
@@ -322,7 +311,9 @@ def repair_bootmgr_to_os_arch(prefer_uefi: bool = True) -> bool:
                 except Exception as e:
                     log(f"bootx64 copy: {e}", "WARN")
             unmount_letter(letter)
-            ok = code == 0 or "successfully" in out.lower()
+            from .boot_safe import bcdboot_succeeded
+
+            ok = bcdboot_succeeded(code, out or "")
     return ok
 
 

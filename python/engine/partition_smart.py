@@ -67,6 +67,11 @@ def _norm_letter(value: str | None) -> str | None:
 
 
 def _letter_root(value: str | None) -> str | None:
+    from .drive_map import access_root, bcdboot_target
+
+    target = bcdboot_target(access_root(value) if value else None)
+    if target:
+        return target
     L = _norm_letter(value)
     return f"{L}:" if L else None
 
@@ -154,19 +159,10 @@ def _allow_data_shrink() -> bool:
 
 
 def _run(cmd: list[str], timeout: int = 180) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout)
+    return result.code, result.output or result.reason
 
 
 def _ps(script: str, timeout: int = 240) -> tuple[int, str]:
@@ -828,8 +824,8 @@ If Linux no longer boots
 
 Windows recovery if Windows entry missing
 -----------------------------------------
-  bcdboot %SystemRoot% /s S: /f UEFI
-  (S: = mounted ESP)
+  mount the ESP on any free letter (or a folder), then:
+  bcdboot %SystemRoot% /s <ESP> /f UEFI
 
 Env: MAGIC_GRUB_PRESERVE=0 to skip GRUB detection scripts (not recommended).
 """

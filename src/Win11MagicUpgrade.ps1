@@ -52,6 +52,7 @@ foreach ($m in @(
     "Logging.ps1",
     "SystemDetect.ps1",
     "BypassChecks.ps1",
+    "EspAccess.ps1",
     "MbrToGpt.ps1",
     "CommonFixes.ps1",
     "MigrationPatches.ps1",

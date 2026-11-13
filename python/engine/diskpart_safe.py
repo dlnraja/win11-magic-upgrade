@@ -60,22 +60,10 @@ class VolumeInfo:
 
 
 def _run(cmd: list[str], input_text: str | None = None, timeout: int = 300) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return 124, "TIMEOUT"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout, input_text=input_text)
+    return result.code, result.output or result.reason
 
 
 def diskpart_failed(out: str) -> bool:
@@ -443,8 +431,25 @@ def find_system_reserved_candidates() -> list[VolumeInfo]:
     return out
 
 
-def free_letter(candidates: tuple[str, ...] = ("Y", "X", "W", "V", "U", "S", "T", "R", "Q")) -> str | None:
-    for L in candidates:
-        if not Path(f"{L}:\\").exists():
-            return L
-    return None
+def free_letter(candidates: tuple[str, ...] | None = None) -> str | None:
+    """Any free letter. A caller may pass a short list; the default scans Z..D."""
+    from .drive_map import pick_free_letter
+
+    if candidates:
+        used = {chr(c) for c in range(ord("A"), ord("Z") + 1)}
+        for letter in candidates:
+            token = (letter or "").upper()[:1]
+            if token and not Path(f"{token}:\\").exists():
+                used.discard(token)
+        # Prefer the caller's order when they passed one, still skip letters that exist.
+        for letter in candidates:
+            token = (letter or "").upper()[:1]
+            if token and token not in ("A", "B") and not Path(f"{token}:\\").exists():
+                return token
+        return None
+    used = set()
+    for code in range(ord("A"), ord("Z") + 1):
+        letter = chr(code)
+        if Path(f"{letter}:\\").exists():
+            used.add(letter)
+    return pick_free_letter(used)

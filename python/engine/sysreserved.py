@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from .diskpart_safe import (
@@ -25,7 +24,6 @@ from .diskpart_safe import (
     find_esp_candidates,
     find_system_reserved_candidates,
     find_volume_by_letter,
-    free_letter as _dp_free_letter,
     get_system_disk_number,
     remove_letter_from_volume,
     run_diskpart,
@@ -38,27 +36,25 @@ MIN_FREE_MB = 50
 TARGET_ESP_MB = 512
 MIN_SIZE_MB_COMFORTABLE = 260
 
-LETTER_CANDIDATES = ["Y", "X", "W", "V", "U", "S"]
+def _free_letter() -> str | None:
+    """Any free letter from the live volumes. Nothing is preferred, including X:."""
+    from .drive_map import pick_free_letter
+
+    used = set()
+    for code in range(ord("A"), ord("Z") + 1):
+        letter = chr(code)
+        if Path(f"{letter}:\\").exists():
+            used.add(letter)
+    return pick_free_letter(used)
 
 
 def _run(cmd: list[str], input_text: str | None = None, timeout: int = 300) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        log(f"Command timed out ({timeout}s): {cmd[0] if cmd else '?'}", "ERROR")
-        return 124, "TIMEOUT"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout, input_text=input_text)
+    if result.timed_out:
+        log(result.reason or f"Command timed out ({timeout}s): {cmd[0] if cmd else '?'}", "ERROR")
+    return result.code, result.output or result.reason
 
 
 def _diskpart(script: str) -> str:
@@ -67,8 +63,6 @@ def _diskpart(script: str) -> str:
     return out
 
 
-def _free_letter() -> str | None:
-    return _dp_free_letter(tuple(LETTER_CANDIDATES))
 
 
 def _mb(path: str | Path) -> tuple[float, float]:
@@ -90,24 +84,19 @@ def _is_uefi() -> bool:
 
 
 def mount_esp(letter: str | None = None) -> str | None:
-    """Mount EFI System Partition via mountvol /s. Returns 'Y:' or None."""
-    letter = letter or _free_letter()
-    if not letter:
-        log("No free drive letter to mount ESP", "ERROR")
-        return None
-    # Dismount if leftover
-    _run(["mountvol", f"{letter}:", "/d"])
-    code, out = _run(["mountvol", f"{letter}:", "/s"])
-    if code != 0 or not Path(f"{letter}:\\").exists():
-        log(f"mountvol {letter}: /s failed: {out}", "WARN")
-        _run(["mountvol", f"{letter}:", "/d"])
-        return None
-    log(f"ESP mounted at {letter}:", "OK")
-    return f"{letter}:"
+    """Open the firmware system partition. The letter is chosen at runtime."""
+    from .esp_access import mount_system_partition
+
+    return mount_system_partition(prefer_letter=letter)
 
 
 def find_system_reserved_letter() -> str | None:
-    """Find MBR System Reserved / boot partition and assign a letter (EN+FR diskpart)."""
+    """Find the MBR system partition from the drive map and assign a free letter."""
+    from .esp_access import mount_system_partition
+
+    mounted = mount_system_partition(role="srp")
+    if mounted:
+        return mounted
     cands = find_system_reserved_candidates()
     if not cands:
         log("No System Reserved candidate in list volume (EN/FR)", "WARN")
@@ -152,15 +141,27 @@ def cleanup_boot_volume(root: str) -> dict:
     Deletes only known-safe expendable files (fonts, OEM firmware payloads).
     Never deletes BCD, bootmgfw.efi, or bootmgr.
     """
-    base = Path(root + "\\")
+    base = Path(str(root).rstrip("\\") + "\\")
+    if (base / "Windows" / "System32" / "ntoskrnl.exe").is_file():
+        log("Boot target is the Windows volume. ESP cleanup is skipped so user files stay put.", "WARN")
+        total, free = _mb(base)
+        return {
+            "total_mb": total,
+            "free_mb": free,
+            "freed_mb": 0.0,
+            "actions": ["skip_cleanup_windows_volume"],
+        }
     freed_files = 0
     actions = []
 
     before_t, before_f = _mb(base)
 
-    # EFI fonts (Microsoft documented fix)
+    # EFI fonts are removed only when MAGIC_ESP_FONT_CLEANUP=1, after a backup exists.
     fonts = base / "EFI" / "Microsoft" / "Boot" / "Fonts"
-    if fonts.is_dir():
+    if fonts.is_dir() and not font_cleanup_opt_in():
+        actions.append("font_cleanup_skipped_needs_MAGIC_ESP_FONT_CLEANUP")
+        log("Leaving EFI\\Microsoft\\Boot\\Fonts in place (cleanup is opt-in)", "INFO")
+    elif fonts.is_dir():
         n = 0
         for f in fonts.rglob("*"):
             if f.is_file() and f.suffix.lower() in {".ttf", ".otf", ".ttc"}:
@@ -186,6 +187,19 @@ def cleanup_boot_volume(root: str) -> dict:
         freed_files += n
         if n:
             actions.append(f"Deleted {n} BIOS Boot\\Fonts files")
+
+    # OEM payloads and leftover logs stay unless the same opt-in is set.
+    # One-Click must not delete ESP files on its own.
+    if not font_cleanup_opt_in():
+        actions.append("esp_file_cleanup_skipped_needs_opt_in")
+        log("Leaving other ESP files in place (deletion is opt-in)", "INFO")
+        after_t, after_f = _mb(base)
+        return {
+            "total_mb": after_t,
+            "free_mb": after_f,
+            "freed_mb": after_f - before_f,
+            "actions": actions,
+        }
 
     # OEM firmware / recovery dumps often stuffed into ESP (HP, Dell, Lenovo, Acer, Asus, Toshiba...)
     # Policy is brand-aware via oem_adapt (keep .efi loaders; drop bulky capsules).
@@ -256,12 +270,20 @@ def cleanup_boot_volume(root: str) -> dict:
 
 def unmount_letter(letter_root: str) -> None:
     """
-    Safely hide a temporary ESP/SRP letter.
-    Order matters: resolve volume WHILE letter exists, remove via volume index,
-    then mountvol /d. Never `select volume L` after the letter is already gone
-    (causes FR: Aucun volume n'a été sélectionné).
+    Remove a temporary ESP/SRP path this process created.
+    A letter that was already on the volume is left in place.
     """
-    L = letter_root.rstrip("\\").rstrip(":").upper()[:1]
+    from .esp_access import release_access
+
+    if release_access(letter_root):
+        return
+    # Legacy callers assigned a letter outside the helper. Only then strip it.
+    from .drive_map import access_root, drive_letter_of
+
+    root = access_root(letter_root)
+    if root and drive_letter_of(root) is None:
+        return
+    L = (drive_letter_of(root) or letter_root).rstrip("\\").rstrip(":").upper()[:1]
     if not L:
         return
 
@@ -288,6 +310,15 @@ def unmount_letter(letter_root: str) -> None:
     _run(["mountvol", f"{L}:", "/d"])
 
 
+def destructive_esp_opt_in() -> bool:
+    """Shrink, new ESP, and format stay off unless the operator sets MAGIC_ESP_EXPAND=1."""
+    return os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes")
+
+
+def font_cleanup_opt_in() -> bool:
+    return os.environ.get("MAGIC_ESP_FONT_CLEANUP", "").strip().lower() in ("1", "true", "yes")
+
+
 def create_larger_esp(
     size_mb: int = TARGET_ESP_MB,
     *,
@@ -298,7 +329,14 @@ def create_larger_esp(
     Then bcdboot Windows onto it. Does not wipe user data on C:.
     Refuses to proceed if system disk cannot be verified (no silent disk 0).
     """
-    log(f"Creating new {size_mb} MB EFI System Partition (shrink C:, no data wipe)...", "STEP")
+    if not destructive_esp_opt_in():
+        log(
+            "Refusing to shrink C: or create an ESP. One-Click does not do this. "
+            "Set MAGIC_ESP_EXPAND=1 only after a verified backup and a reviewed plan.",
+            "WARN",
+        )
+        return None
+    log(f"Creating new {size_mb} MB EFI System Partition (opt-in, shrink C:, no data wipe)...", "STEP")
     try:
         from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
 
@@ -363,12 +401,14 @@ def create_larger_esp(
     if cert_reason:
         log(cert_reason, "ERROR")
         return None
+    from .boot_safe import bcdboot_succeeded
+
     code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "UEFI"], timeout=180)
     log(f"bcdboot -> {code}: {bout[:300]}")
-    if code != 0 and "successfully" not in bout.lower() and "reussi" not in bout.lower().replace("é", "e"):
+    if not bcdboot_succeeded(code, bout):
         code2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
         log(f"bcdboot ALL -> {code2}: {bout2[:300]}")
-        if code2 != 0:
+        if not bcdboot_succeeded(code2, bout2):
             log("bcdboot failed on new ESP - old ESP still present, boot should remain OK", "WARN")
             # Do NOT report success — caller must not mark expand ok
             return None
@@ -387,7 +427,14 @@ def create_larger_system_reserved_mbr(
     then bcdboot /f BIOS. Old System Reserved left intact as fallback.
     Does NOT set `active` until bcdboot succeeds (avoids stealing boot flag on failure).
     """
-    log(f"Creating new {size_mb} MB System partition (MBR/BIOS path)...", "STEP")
+    if not destructive_esp_opt_in():
+        log(
+            "Refusing to shrink C: or create a System Reserved partition. "
+            "Set MAGIC_ESP_EXPAND=1 to opt in.",
+            "WARN",
+        )
+        return None
+    log(f"Creating new {size_mb} MB System partition (opt-in MBR/BIOS path)...", "STEP")
     try:
         from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
 
@@ -439,7 +486,9 @@ def create_larger_system_reserved_mbr(
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "BIOS"])
     log(f"bcdboot BIOS -> {code}: {bout[:300]}")
-    if code != 0 and "successfully" not in bout.lower():
+    from .boot_safe import bcdboot_succeeded
+
+    if not bcdboot_succeeded(code, bout):
         log("bcdboot BIOS failed — leaving new partition without active flag (old SRP intact)", "WARN")
         return None
 
@@ -562,10 +611,7 @@ def inspect_and_fix_system_reserved(
         else:
             result["mode"] = "SystemReserved"
             mounted = find_system_reserved_letter()
-            if not mounted:
-                mounted = mount_esp()
-                if mounted:
-                    result["mode"] = "EFI"
+            # BIOS-only machines have no ESP. Do not fall through to mountvol /S.
 
         if not mounted:
             log("Could not mount system/EFI partition - skip SRP fix", "WARN")
@@ -579,6 +625,14 @@ def inspect_and_fix_system_reserved(
 
         space_tight = info["free_mb"] < MIN_FREE_MB or info["total_mb"] < MIN_SIZE_MB_COMFORTABLE
         need_expand = space_tight or (force_expand and not prior_expanded and space_tight)
+        if need_expand and not destructive_esp_opt_in():
+            log(
+                "ESP space is tight. One-Click will not shrink C: or create a second ESP. "
+                "Set MAGIC_ESP_EXPAND=1 to opt in after reviewing the plan.",
+                "WARN",
+            )
+            result["actions"].append("expand_refused_no_opt_in")
+            need_expand = False
         if force_expand and not prior_expanded and not space_tight:
             log("Historical SRP error in logs but ESP space OK after cleanup — skip expand", "OK")
             need_expand = False
@@ -655,8 +709,11 @@ def inspect_and_fix_system_reserved(
                 else:
                     new_root = create_larger_system_reserved_mbr(TARGET_ESP_MB, system_disk=disk_n)
                     if not new_root:
-                        log("MBR system create failed - trying EFI create fallback", "WARN")
-                        new_root = create_larger_esp(TARGET_ESP_MB, system_disk=disk_n)
+                        log(
+                            "MBR system partition was not created. "
+                            "BIOS-only firmware: an ESP is not created unless UEFI conversion was requested.",
+                            "ERROR",
+                        )
 
                 if new_root:
                     result["expanded"] = True

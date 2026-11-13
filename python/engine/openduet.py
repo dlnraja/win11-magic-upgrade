@@ -517,23 +517,41 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _opencore_identity() -> tuple[str, str, str]:
+    version, sha = OPENCORE_VERSION, OPENCORE_SHA256
+    try:
+        from .self_update import pin_opencore
+
+        pin = pin_opencore()
+        if pin:
+            version, sha = pin
+    except Exception:
+        pass
+    url = (
+        "https://github.com/acidanthera/OpenCorePkg/releases/download/"
+        f"{version}/OpenCore-{version}-RELEASE.zip"
+    )
+    return version, sha, url
+
+
 def ensure_opencore_zip(cache_dir: Path | None = None) -> Path:
     cache_dir = cache_dir or (STATE_DIR / "openduet")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    dest = cache_dir / OPENCORE_ZIP_NAME
-    if dest.is_file() and _sha256(dest) == OPENCORE_SHA256:
+    version, expected, url = _opencore_identity()
+    dest = cache_dir / f"OpenCore-{version}-RELEASE.zip"
+    if dest.is_file() and _sha256(dest) == expected:
         return dest
-    log(f"Downloading OpenCorePkg {OPENCORE_VERSION} RELEASE (pinned)...", "STEP")
-    req = urllib.request.Request(OPENCORE_URL, headers={"User-Agent": USER_AGENT})
+    log(f"Downloading OpenCorePkg {version} RELEASE (pinned)...", "STEP")
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=180) as resp:
         dest.write_bytes(resp.read())
     got = _sha256(dest)
-    if got != OPENCORE_SHA256:
+    if got != expected:
         dest.unlink(missing_ok=True)
         raise OpenDuetError(
-            f"OpenCore zip sha256 mismatch (got {got}, expected {OPENCORE_SHA256})"
+            f"OpenCore zip sha256 mismatch (got {got}, expected {expected})"
         )
-    log(f"OpenCore {OPENCORE_VERSION} cached ({dest.stat().st_size} bytes)", "OK")
+    log(f"OpenCore {version} cached ({dest.stat().st_size} bytes)", "OK")
     return dest
 
 
@@ -717,12 +735,22 @@ def write_openduet_disk(
     staged = prepare_openduet_stick(bless_path=bless_path, zip_path=zip_path)
     letter = volume_letter.upper()[:1]
     if partition:
-        letter = letter or "Y"
+        from .diskpart_safe import free_letter
+
+        letter = letter or free_letter() or ""
+        if not letter:
+            raise OpenDuetError("no free drive letter for the OpenDuet volume")
         script = diskpart_create_gpt_fat32(disk, letter)
         ok, out = run_diskpart(script)
         log(f"diskpart GPT+FAT32 → {ok}: {out[:300]}", "OK" if ok else "ERROR")
         if not ok:
             raise OpenDuetError("diskpart failed; disk was not assumed to be an OpenDuet stick")
+    try:
+        from .esp_access import GuardError, guard_write_letter
+
+        guard_write_letter(letter, expect_disk=int(disk), step="openduet")
+    except GuardError as exc:
+        raise DiskWriteRefused(str(exc)) from exc
     _copy_tree_to_volume(staged, Path(f"{letter}:\\"))
     _splice_live_sectors(
         disk=disk,

@@ -161,7 +161,9 @@ def _copy_tree_filtered(src: Path, dst: Path) -> tuple[int, int]:
                 shutil.copy2(sp, tp)
                 files += 1
                 nbytes += sp.stat().st_size
-            except Exception:
+            except Exception as exc:
+                # Error 32 (file in use) is a warning. It is not a reason to shrink or recreate an ESP.
+                log(f"Backup skipped locked file {name}: {exc}", "WARN")
                 continue
     return files, nbytes
 
@@ -195,7 +197,13 @@ def _try_capture_wim(src_letter: str, wim_path: Path, name: str) -> bool:
     if code == 0 and wim_path.is_file() and wim_path.stat().st_size > 1000:
         log(f"WIM captured: {wim_path.name} ({wim_path.stat().st_size // (1024*1024)} MB)", "OK")
         return True
-    log(f"WIM capture failed/skipped: {(out or '')[:160]}", "INFO")
+    tail = (out or "")[:200]
+    if "1005" in tail or "recognized file system" in tail.lower() or "système de fichiers" in tail.lower():
+        log("WIM skipped: volume has no recognized filesystem (RAW/MSR). Not a boot failure.", "WARN")
+    elif "error 32" in tail.lower() or "being used by another process" in tail.lower():
+        log("WIM skipped: a file is in use (error 32). Not a reason to change partitions.", "WARN")
+    else:
+        log(f"WIM capture failed/skipped: {tail[:160]}", "INFO")
     try:
         wim_path.unlink(missing_ok=True)
     except Exception:
@@ -237,7 +245,7 @@ def _mount_letter_for_meta(meta: dict[str, Any]) -> str | None:
     script = f"""
 $ErrorActionPreference = 'Stop'
 $letter = $null
-foreach ($L in 83..90) {{
+foreach ($L in 90..68) {{
   $ch = [char]$L
   if (-not (Test-Path ("$ch" + ':\\'))) {{ $letter = "$ch"; break }}
 }}
@@ -326,6 +334,7 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
     if not metas:
         # Fallback: mount ESP via existing helper and treat as single unknown partition
         try:
+            from .drive_map import access_root
             from .sysreserved import mount_esp, unmount_letter
 
             mounted = mount_esp()
@@ -334,9 +343,10 @@ def backup_boot_partitions(*, system_disk: int | None = None) -> dict[str, Any]:
                     {
                         "DiskNumber": system_disk,
                         "PartitionNumber": None,
-                        "DriveLetter": mounted.rstrip(":\\")[:1],
+                        "DriveLetter": "",
+                        "AccessPath": mounted,
                         "Role": "ESP" if _firmware() == "UEFI" else "SRP",
-                        "Size": shutil.disk_usage(f"{mounted.rstrip(':\\')}:\\").total,
+                        "Size": shutil.disk_usage(str(Path(access_root(mounted) or mounted))).total,
                         "PartitionStyle": "Unknown",
                         "GptType": GPT_ESP_TYPE if _firmware() == "UEFI" else "",
                         "_mounted_via_helper": True,
@@ -703,7 +713,9 @@ def dynamic_regenerate_boot_partition(
             else:
                 c, o = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode], timeout=180)
                 out["actions"].append(f"bcdboot_s_{mode}:{c}")
-                out["ok"] = c == 0 or "successfully" in (o or "").lower()
+                from .boot_safe import bcdboot_succeeded
+
+                out["ok"] = bcdboot_succeeded(c, o or "")
 
     # Persist regenerate status
     try:

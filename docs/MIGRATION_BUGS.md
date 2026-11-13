@@ -169,7 +169,7 @@ Classic setup failure when the EFI System Partition (UEFI) or System Reserved (B
 
 Safe strategy (no third-party Partition Magic GUI auto-run):
 
-1. Mount ESP (`mountvol /s`) or assign a letter to System Reserved  
+1. Mount the ESP or System Reserved on whatever free letter or folder the drive map chooses (`mountvol <letter> /S` only for the firmware system partition)  
 2. Free space: `EFI\Microsoft\Boot\Fonts\*.ttf`, OEM firmware folders under `EFI\<OEM>\`, temp/logs  
 3. If still under ~50 MB free or partition under ~260 MB — **smart planner** (`partition_smart.py`):
    - Grow ESP/SRP in-place into adjacent free space when possible  

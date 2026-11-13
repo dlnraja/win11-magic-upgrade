@@ -139,6 +139,25 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     setup = root / "setup.exe"
     prep = root / "sources" / "setupprep.exe"
     try:
+        from .esp_access import prepare_boot_step
+        from .proc_guard import GateState, precheck, probe_admin
+
+        step = prepare_boot_step("setup")
+        if step is not None and step.abort:
+            raise RuntimeError(step.explanation or "drive map refused Setup")
+        bitlocker = "unknown"
+        if step is not None and step.windows is not None:
+            bitlocker = step.windows.bitlocker or "unknown"
+        ok_pre, why = precheck(
+            GateState(is_admin=probe_admin(), target_exists=root.exists(), bitlocker=bitlocker)
+        )
+        if not ok_pre:
+            raise RuntimeError(why)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        log(f"Setup drive-map pre-check skipped: {exc}", "WARN")
+    try:
         from .secureboot_certs import setup_media_block_reason
 
         cert_reason = setup_media_block_reason(root)
@@ -341,7 +360,7 @@ def _execute_step(
         except Exception as e:
             log(f"Boot remediation bot: {e}", "WARN")
         res = run_esp_srp_with_restore(
-            force_expand=force or True,
+            force_expand=os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes"),
             system_disk=disk,
             retries=3,
             report=rep if isinstance(rep, dict) else None,
@@ -855,7 +874,7 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
         from .boot_safe import run_esp_srp_with_restore
 
         result = run_esp_srp_with_restore(
-            force_expand=force or True,
+            force_expand=os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes"),
             system_disk=disk,
             retries=3,
             report=report_dict,

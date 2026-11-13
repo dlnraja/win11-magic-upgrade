@@ -198,18 +198,10 @@ PREVENTIVE_SERVICES = {
 
 
 def _run(cmd: list[str]) -> str:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return ((r.stdout or "") + (r.stderr or "")).strip()
-    except Exception as e:
-        return str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=180)
+    return result.output or result.reason
 
 
 def _hive(name: str):

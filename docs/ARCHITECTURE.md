@@ -18,6 +18,9 @@ python/gui_panel.py                Checkbox options → MAGIC_* env (persisted)
               ├── errfix.py       SetupDiag-class extra fixes
               ├── enrich.py        Forum enrichments + DISM heal
               ├── support.py       SupportGuide.txt checklist
+              ├── drive_map.py    Full disk map, content probe, adaptive boot plan
+              ├── esp_access.py    Mount ESP by GPT/MBR type; clean up only our mount
+              ├── proc_guard.py    Timeouts, kill-on-hang, pre/post checks
               ├── sysreserved.py   ESP / System Reserved cleanup + enlarge
               ├── bootmgr.py       PE bitness + bcdboot / hybrid handoff
               ├── firmware_matrix.py  UEFI/BIOS/CSM/bitness/partition decision
@@ -44,6 +47,7 @@ python/gui_panel.py                Checkbox options → MAGIC_* env (persisted)
               ├── rollback_scan.py Prior SafeOS Rollback folder analysis
               ├── preflight_power.py AC power + sleep timeouts for Setup
               ├── version_planner.py  Host/ISO build evaluation + smart skip logic
+              ├── self_update.py  GitHub release check, staged swap, pin refresh
               ├── logutil.py       Panther logs + MigrationReport + state.json
               └── pipeline.py      Orchestration + quiet setup + resume
 ```

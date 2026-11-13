@@ -73,8 +73,9 @@ def _run(cmd: list[str], *, timeout: int = 180) -> tuple[int, str]:
 
 
 def _letter_root(mounted: str) -> Path:
-    L = mounted.rstrip(":\\").rstrip(":")
-    return Path(f"{L}:\\")
+    from .drive_map import access_root
+
+    return Path(access_root(mounted) or mounted)
 
 
 def snapshot_linux_efi_trees() -> dict[str, Any]:

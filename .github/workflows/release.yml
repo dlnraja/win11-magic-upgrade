@@ -22,6 +22,7 @@ concurrency:
 
 jobs:
   build-portable:
+    timeout-minutes: 45
     runs-on: windows-latest
     # Optional hardening: in GitHub -> Settings -> Environments, create `release`
     # with required reviewers, then uncomment:

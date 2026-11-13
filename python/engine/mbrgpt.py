@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from pathlib import Path
 
 from .diskpart_safe import (
@@ -31,22 +30,10 @@ CODES = {
 
 
 def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        out = ((r.stdout or "") + (r.stderr or "")).strip()
-        return r.returncode, out
-    except subprocess.TimeoutExpired:
-        return 124, f"TIMEOUT after {timeout}s"
-    except Exception as e:
-        return 1, str(e)
+    from .proc_guard import run_bounded
+
+    result = run_bounded(cmd, timeout=timeout)
+    return result.code, result.output or result.reason
 
 
 def suspend_bitlocker() -> None:
@@ -122,8 +109,14 @@ def prepare_layout_for_mbr2gpt(disk_number: int) -> None:
 def repair_boot_manager(prefer_uefi: bool = True) -> bool:
     """
     Rebuild Windows Boot Manager / BCD without formatting.
-    Prefer mountvol /s (safe), else diskpart ESP assign with verified volume index.
+    The ESP path comes from a fresh drive map. A timeout or failed check
+    unmounts only what this call mounted.
     """
+    from .drive_map import access_root, bcdboot_target
+    from .esp_access import bcdboot_command, poll_if_due, prepare_boot_step, resolved_bcd_mode
+    from .proc_guard import GateState, PostState, probe_admin, precheck, postcheck
+    from .secureboot_certs import efi_write_block_reason
+
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     if not bcdboot.exists():
@@ -131,81 +124,182 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
         return False
 
     log("Repairing Windows Boot Manager (bcdboot, no format)...", "STEP")
+    from .self_update import boot_critical_section
 
-    esp_letter: str | None = None
-    esp_vol_index: int | None = None
-    used_mountvol = False
+    with boot_critical_section():
+        return _repair_boot_locked(prefer_uefi, sys_root, bcdboot)
 
-    # 1) Preferred: mountvol /s
+
+def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool:
+    from .drive_map import access_root, bcdboot_target
+    from .esp_access import bcdboot_command, poll_if_due, prepare_boot_step, resolved_bcd_mode
+    from .proc_guard import GateState, PostState, probe_admin, precheck, postcheck
+    from .secureboot_certs import efi_write_block_reason
+    from .sysreserved import mount_esp, unmount_letter
+    from .diskpart_safe import assign_letter_to_volume, find_esp_candidates, free_letter, remove_letter_from_volume
+
+    step = prepare_boot_step("bcdboot")
+    if step is not None and step.abort:
+        return False
+    if step is not None and step.skip_loader_overwrite:
+        log(step.explanation or "ESP loader is newer; not overwriting", "WARN")
+        return True
+
+    bitlocker = "unknown"
+    if step is not None and step.esp is not None:
+        bitlocker = step.esp.bitlocker or "unknown"
+    ok_pre, why = precheck(
+        GateState(
+            is_admin=probe_admin(),
+            target_exists=bcdboot.is_file() and Path(sys_root).is_dir(),
+            bitlocker=bitlocker,
+        )
+    )
+    if not ok_pre:
+        log(why, "ERROR")
+        return False
+
     mounted = mount_esp()
+    esp_vol_index: int | None = None
+    assigned_here = False
+    target: str | None = None
     if mounted:
-        esp_letter = mounted.rstrip(":\\")[:1]
-        used_mountvol = True
-        log(f"ESP via mountvol /s → {esp_letter}:", "OK")
+        target = bcdboot_target(access_root(mounted) or mounted)
+        log(f"Boot volume access path {target}", "OK")
+    elif step is not None and step.bcd_mode == "BIOS":
+        if step.mount is not None and step.mount.action in ("reuse_letter", "reuse_folder"):
+            target = step.mount.path
+        log("BIOS boot: mountvol /S is not used and no ESP is created.", "INFO")
     else:
-        # 2) diskpart FAT32/ESP candidates (EN+FR)
-        for v in find_esp_candidates():
-            if v.letter:
-                esp_letter = v.letter
-                esp_vol_index = v.index
+        for volume in find_esp_candidates():
+            if volume.letter:
+                target = f"{volume.letter}:"
                 break
-            letter = free_letter(("S", "T", "R", "Q", "Y", "X"))
+            letter = free_letter()
             if not letter:
                 break
-            if assign_letter_to_volume(v.index, letter):
-                esp_letter = letter
-                esp_vol_index = v.index
-                log(f"ESP temporarily assigned {letter}: (vol {v.index})", "OK")
+            if assign_letter_to_volume(volume.index, letter):
+                target = f"{letter}:"
+                esp_vol_index = volume.index
+                assigned_here = True
+                log(f"ESP temporarily assigned {letter}: (vol {volume.index})", "OK")
                 break
 
-    modes = ["UEFI", "ALL"] if prefer_uefi else ["ALL", "UEFI", "BIOS"]
+    modes = resolved_bcd_mode(prefer_uefi, step)
     ok = False
-    from .secureboot_certs import efi_write_block_reason
-
-    for mode in modes:
-        cert_reason = efi_write_block_reason(mode)
-        if cert_reason:
-            log(cert_reason, "ERROR")
-            continue
-        if esp_letter:
-            cmd = [str(bcdboot), sys_root, "/s", f"{esp_letter}:", "/f", mode]
-        else:
-            cmd = [str(bcdboot), sys_root, "/f", mode]
-            if mode == "ALL":
+    timed_out = False
+    try:
+        for mode in modes:
+            fresh = poll_if_due("bcdboot")
+            if fresh is not None and fresh.abort:
+                log(fresh.explanation, "ERROR")
+                return False
+            cert_reason = efi_write_block_reason(mode)
+            if cert_reason:
+                log(cert_reason, "ERROR")
                 continue
-        code, out = _run(cmd)
-        log(f"bcdboot {' '.join(cmd[1:])} -> {code}")
-        for line in out.splitlines()[:8]:
-            log(f"  {line}")
-        if code == 0 or "successfully" in out.lower() or "BFSVC" in out:
-            ok = True
-            log(f"Boot Manager repaired ({mode})", "OK")
-            break
-
-    # Remove temporary letter safely
-    if esp_letter:
-        if used_mountvol:
-            unmount_letter(f"{esp_letter}:")
-        elif esp_vol_index is not None:
-            remove_letter_from_volume(esp_vol_index, esp_letter)
-            log(f"Removed temporary letter {esp_letter}: (vol {esp_vol_index})", "INFO")
-        else:
-            # Resolve by letter then remove
-            v = find_volume_by_letter(esp_letter)
-            if v:
-                remove_letter_from_volume(v.index, esp_letter)
+            if target:
+                cmd = bcdboot_command(str(bcdboot), sys_root, target, mode)
             else:
-                unmount_letter(f"{esp_letter}:")
+                if mode == "ALL":
+                    continue
+                cmd = [str(bcdboot), sys_root, "/f", mode]
+            code, out = _run(cmd, timeout=180)
+            log(f"bcdboot {' '.join(cmd[1:])} -> {code}")
+            for line in (out or "").splitlines()[:8]:
+                log(f"  {line}")
+            if code == 124 or "timeout" in (out or "").lower()[:80]:
+                timed_out = True
+                log(out or "bcdboot timed out", "ERROR")
+                break
+            from .boot_safe import bcdboot_succeeded
 
-    code, out = _run(["bcdedit", "/enum", "{bootmgr}"])
+            if bcdboot_succeeded(code, out or ""):
+                ok = True
+                log(f"Boot Manager repaired ({mode})", "OK")
+                break
+            log(f"bcdboot {mode} failed (exit {code})", "ERROR")
+    finally:
+        if mounted:
+            unmount_letter(mounted)
+        elif assigned_here and esp_vol_index is not None and target:
+            letter = target.rstrip("\\").rstrip(":")[:1]
+            remove_letter_from_volume(esp_vol_index, letter)
+            log(f"Removed temporary letter {letter}: (vol {esp_vol_index})", "INFO")
+
+    if timed_out:
+        return False
+    if ok and step is not None and target:
+        _finish_bios_boot(step, target)
+    code, out = _run(["bcdedit", "/enum", "{bootmgr}"], timeout=90)
+    bcd_ok = code == 0 and bool(out) and "cannot" not in (out or "").lower()
     if out:
         log("bcdedit {bootmgr}: " + out.splitlines()[0][:120])
+    passed, reason = postcheck(
+        PostState(files_written=ok, bcd_present=bcd_ok if ok else None, esp_ok=True if ok else None)
+    )
+    if ok and not passed:
+        log(reason, "ERROR")
+        return False
     return ok
 
 
+def _finish_bios_boot(step: object, target: str) -> None:
+    """Write MBR boot code and, if needed, one active flag. Never creates an ESP."""
+    from .drive_map import drive_letter_of
+    from .proc_guard import run_bounded
+
+    actions = set(getattr(step, "actions", ()) or ())
+    letter = drive_letter_of(target)
+    if letter and ({"bootsect_nt60", "bootsect_volume_only"} & actions):
+        exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "bootsect.exe"
+        if not exe.is_file():
+            log("bootsect.exe is missing. The volume boot sector was left unchanged.", "WARN")
+        else:
+            cmd = [str(exe), "/nt60", f"{letter}:"]
+            if "bootsect_nt60" in actions:
+                cmd.append("/mbr")
+            result = run_bounded(cmd, timeout=60)
+            if result.ok:
+                log(f"bootsect {' '.join(cmd[1:])} ok", "OK")
+            else:
+                log(f"bootsect failed: {result.reason or result.output[:200]}", "WARN")
+    if letter and "mark_active" in actions:
+        from .diskpart_safe import run_diskpart
+
+        ok_act, out = run_diskpart(f"select volume {letter}\nactive\nexit\n", timeout=60)
+        if ok_act:
+            log(f"Marked {letter}: active after BIOS bcdboot", "OK")
+        else:
+            log(f"Could not mark {letter}: active: {(out or '')[:200]}", "WARN")
+
+
 def convert_mbr_to_gpt(disk_number: int) -> tuple[bool, int, str]:
+    from .esp_access import prepare_boot_step
+    from .proc_guard import GateState, precheck, probe_admin
+
+    step = prepare_boot_step("mbr2gpt")
+    if step is not None and step.abort:
+        return False, -1, step.explanation or "drive map has no safe mbr2gpt target"
+    if step is not None and step.strategy in ("hybrid_mbr_gpt", "bios_mbr", "opencore", "openduet", "ia32_hybrid"):
+        return False, -1, step.explanation or f"mbr2gpt does not match the current boot plan ({step.strategy})"
+    if step is not None and step.windows is not None and not step.windows_ambiguous:
+        if int(step.windows.disk) >= 0 and int(step.windows.disk) != int(disk_number):
+            log(
+                f"Windows volume is on disk {step.windows.disk} after rescan "
+                f"(argument was {disk_number}). Using the fresh map.",
+                "WARN",
+            )
+            disk_number = int(step.windows.disk)
     if disk_number is None or int(disk_number) < 0:
         return False, -1, "system disk # unknown — refuse mbr2gpt (safety)"
+
+    bitlocker = "unknown"
+    if step is not None and step.windows is not None:
+        bitlocker = step.windows.bitlocker or "unknown"
+    ok_pre, why = precheck(GateState(is_admin=probe_admin(), bitlocker=bitlocker, target_exists=True))
+    if not ok_pre:
+        return False, -1, why
 
     mbr2gpt = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "mbr2gpt.exe"
     if not mbr2gpt.exists():
