@@ -21,8 +21,6 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
-
 from .logutil import LOG_DIR, SETUPACT, SETUPERR, STATE_DIR, log
 
 _PROCESS_START = time.time()
@@ -443,8 +441,14 @@ def _allow_new_issue(state: Path, now: float) -> bool:
 
 
 def _prefilled_url(title: str, body: str) -> str:
-    query = urlencode({"title": title[:180], "body": body[:1500], "labels": "auto-diag"})
-    return f"https://github.com/dlnraja/win11-magic-upgrade/issues/new?{query}"
+    from .issue_url import prefilled_issue_url
+
+    return prefilled_issue_url(
+        "dlnraja/win11-magic-upgrade",
+        title,
+        body,
+        labels="auto-diag",
+    )
 
 
 def _write_paste(state: Path, signature: str, title: str, body: str) -> Path:
@@ -502,6 +506,13 @@ class IssueClient:
 
     def upload_bundle(self, zip_path: Path) -> str | None:
         return None
+
+
+def finish_run_async(**kwargs) -> None:
+    """File diagnostics without delaying startup or the migration."""
+    from .issue_url import run_in_background
+
+    run_in_background(lambda: finish_run(**kwargs), name="auto-diag")
 
 
 def finish_run(
@@ -568,11 +579,45 @@ def finish_run(
             actor.comment(existing, body)
             filed.append({"signature": finding.signature, "action": "comment", "url": existing})
             continue
-        url = _prefilled_url(title, _with_history(_report_body(finding, facts, mode)[1], summary))
+        from .issue_url import bundle_text_files, file_report, short_issue_body
+
+        full_body = _with_history(_report_body(finding, facts, mode)[1], summary)
+        paste = _write_paste(state, finding.signature, title, full_body)
+        report_path = str(history_note.get("bundle") or paste)
+        if client is None:
+            try:
+                filed_now = file_report(
+                    title=title,
+                    body=full_body,
+                    files=bundle_text_files(full_body, history_note.get("bundle") or None),
+                )
+            except Exception as exc:
+                filed_now = None
+                log(f"auto-diag issue failed: {exc}", "WARN")
+            if filed_now and filed_now.get("url"):
+                filed.append(
+                    {
+                        "signature": finding.signature,
+                        "action": "create",
+                        "url": filed_now["url"],
+                        "file": str(paste),
+                        "gist": filed_now.get("gist") or "",
+                    }
+                )
+                log(f"auto-diag filed: {filed_now['url']}", "INFO")
+                continue
+        url = _prefilled_url(
+            title,
+            short_issue_body(
+                fingerprint=finding.signature,
+                version=facts["app_version"],
+                error=finding.redacted,
+                context=f"{facts['step']} {mode} {finding.catalog_id or finding.kind}",
+                report_path=redact_diag(report_path),
+            ),
+        )
         if not issue_hint:
             issue_hint = url
-            body = _with_history(_report_body(finding, facts, mode)[1], compact_summary(fresh, bundle=bundle_note, issue=url))
-        paste = _write_paste(state, finding.signature, title, body)
         if not actor.has_credentials():
             filed.append({"signature": finding.signature, "action": "paste", "url": url, "file": str(paste)})
             log(f"auto-diag saved for paste: {paste}", "INFO")
@@ -584,12 +629,7 @@ def finish_run(
         created = actor.create(title, body)
         filed.append({"signature": finding.signature, "action": "create", "url": created or url, "file": str(paste)})
     if open_browser and filed and filed[0].get("action") == "paste":
-        try:
-            import webbrowser
-
-            webbrowser.open(filed[0]["url"])
-        except Exception:
-            pass
+        log(f"auto-diag report is local. Open when ready: {filed[0].get('url')}", "INFO")
     if filed and fresh:
         save_uploaded(state, uploaded | {item.identity for item in fresh})
         history_note["attached"] = True

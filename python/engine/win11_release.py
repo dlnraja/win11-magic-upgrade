@@ -441,7 +441,7 @@ def _cache_beats_floor(cache: ReleaseTarget, floor: ReleaseTarget) -> bool:
     return cache.ubr >= floor.ubr
 
 
-def _fetch_url(url: str, timeout: int = 25) -> str:
+def _fetch_url(url: str, timeout: int = 5) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"})
     with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
@@ -574,6 +574,15 @@ def nudge_cumulative_update(target_key: str) -> dict[str, Any]:
 
     system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "UsoClient.exe"
     result: dict[str, Any] = {"ok": False, "target": target_key}
+    from .offline import explain_network, probe_host
+
+    try:
+        probe_host("windowsupdate.microsoft.com")
+    except Exception as exc:
+        log(f"Windows Update skipped: {explain_network(exc)}", "WARN")
+        result["reason"] = "offline"
+        result["detail"] = explain_network(exc)
+        return result
     if not system.is_file():
         log("UsoClient.exe is not on this OS — cumulative update left to Windows Update.", "WARN")
         result["reason"] = "no-usoclient"
@@ -589,7 +598,10 @@ def nudge_cumulative_update(target_key: str) -> dict[str, Any]:
                 creationflags=flags,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            log(f"UsoClient {verb}: {exc}", "WARN")
+            log(f"Windows Update skipped: {verb} did not respond ({exc})", "WARN")
+            result["reason"] = "offline"
+            result["detail"] = str(exc)
+            return result
     result["ok"] = True
     save_state({"CumulativeNudgedFor": target_key})
     log(f"Windows Update nudged for cumulative {target_key}", "OK")

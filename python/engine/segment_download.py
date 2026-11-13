@@ -636,6 +636,16 @@ def download_image(
         if have == expected:
             logger(f"SHA-256 matches, using {target.name}", "OK")
             return target
+    if opener is None:
+        from .offline import OfflineSkip, explain_network, host_of, probe_host
+
+        try:
+            host, port = host_of(url)
+            probe_host(host, port)
+        except OfflineSkip as exc:
+            message = f"ISO download skipped: {explain_network(exc)}. A local ISO still works."
+            logger(message, "WARN")
+            raise OfflineSkip(message) from exc
     last = ""
     for attempt in range(1, attempts + 1):
         _download_once(
