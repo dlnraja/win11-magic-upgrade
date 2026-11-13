@@ -1024,13 +1024,55 @@ def open_bcdboot_letter(path: str | None, decision: BootDecision | None = None) 
         code, _out = _run(argv, timeout=60)
         return code == 0 and Path(f"{letter}\\").exists()
 
-    letter, tried = assign_bcdboot_letter(
-        path,
-        used,
+    from .drive_map import judge_mount, open_checked_mount, plan_bcdboot_letter
+
+    plan = plan_bcdboot_letter(path, used)
+    if plan.get("letter") and not plan.get("needs_assign"):
+        return str(plan["letter"]), False
+
+    def _free(letter: str) -> bool:
+        return not Path(f"{str(letter)[:1]}:\\").exists()
+
+    def _verify(item: dict) -> str:
+        letter = str(item.get("letter") or "")
+        root = f"{letter[:1]}:\\"
+        observed: dict[str, object] = {
+            "exists": Path(root).exists(),
+            "readable": False,
+            "guid": None,
+            "disk": None,
+            "partition": None,
+            "filesystem": None,
+        }
+        if observed["exists"]:
+            try:
+                os.listdir(root)
+                observed["readable"] = True
+            except OSError:
+                observed["readable"] = False
+        expected: dict[str, object] = {"guid": item.get("volume"), "esp": bool(item.get("volume"))}
+        if volume is not None:
+            expected["disk"] = volume.disk
+            expected["partition"] = volume.partition
+        return judge_mount(observed, expected)
+
+    def _release(item: dict) -> None:
+        letter = str(item.get("letter") or "")[:1]
+        if letter:
+            _run(["mountvol", f"{letter}:", "/d"], timeout=30)
+
+    result = open_checked_mount(
+        plan,
         {
+            "mountvol": _mountvol,
             "Add-PartitionAccessPath": _storage,
             "diskpart assign": _diskpart,
-            "mountvol": _mountvol,
         },
+        letter_free=_free,
+        verify=_verify,
+        release=_release,
     )
-    return letter, bool(letter) and "existing" not in tried
+    if not result.get("ok"):
+        log(f"NO-GO: temporary mount failed ({result.get('reason')})", "ERROR")
+        return None, False
+    return str(result.get("letter") or ""), True

@@ -95,6 +95,135 @@ def letter_root_for_io(access: str | None, assign: Callable[[str], str | None]) 
     return root
 
 
+def path_format_problem(value: str | None, *, trailing_slash: bool = False) -> str:
+    """Reject quotes and doubled backslashes. Volume paths keep one trailing slash."""
+    text = str(value or "")
+    if not text:
+        return "empty path"
+    if '"' in text or text[0] in "\"'" or text[-1] in "\"'":
+        return "stray quotes"
+    if has_doubled_backslash_run(text):
+        return "doubled backslashes"
+    guid = normalize_volume_guid_path(text)
+    if guid is not None:
+        if text != guid:
+            return "volume path is not canonical"
+        if trailing_slash and not text.endswith("\\"):
+            return "trailing backslash required"
+    elif trailing_slash and len(text) >= 2 and text[1] == ":" and not text.endswith("\\"):
+        return "trailing backslash required"
+    return ""
+
+
+def checked_directory(path: str, *, exists: Callable[[str], bool]) -> str:
+    """A directory path that is well formed and present."""
+    problem = path_format_problem(path, trailing_slash=True)
+    if problem:
+        raise ValueError(problem)
+    if not exists(path):
+        raise ValueError(f"path does not exist: {path}")
+    return path
+
+
+def tool_arg_problem(argv: list[str], input_text: str | None = None) -> str:
+    """Format check for diskpart, bcdboot, bcdedit, and mountvol before they start."""
+    if not argv:
+        return "empty command"
+    name = str(argv[0]).replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    if name not in {"diskpart", "diskpart.exe", "bcdboot", "bcdboot.exe", "bcdedit", "bcdedit.exe", "mountvol", "mountvol.exe"}:
+        return ""
+    parts = [str(part) for part in argv]
+    if input_text:
+        parts.append(str(input_text))
+    for part in parts:
+        if has_doubled_backslash_run(part):
+            return "doubled backslashes"
+        if '"' in part:
+            return "stray quotes"
+    if name.startswith("mountvol") and len(argv) >= 3 and normalize_volume_guid_path(str(argv[-1])):
+        problem = path_format_problem(str(argv[-1]), trailing_slash=True)
+        if problem:
+            return problem
+    if name.startswith("bcdboot") and "/s" in argv:
+        index = argv.index("/s")
+        target = argv[index + 1] if index + 1 < len(argv) else ""
+        if bare_bcdboot_letter(str(target)) != str(target).upper():
+            return "bcdboot /s must be a bare drive letter"
+    return ""
+
+
+def judge_mount(observed: Mapping[str, object], expected: Mapping[str, object]) -> str:
+    """Empty string means the letter is the expected readable partition."""
+    if not observed.get("exists"):
+        return "missing"
+    if not observed.get("readable"):
+        return "unreadable"
+    seen_guid = normalize_volume_guid_path(str(observed.get("guid") or "")) if observed.get("guid") else None
+    want_guid = normalize_volume_guid_path(str(expected.get("guid") or "")) if expected.get("guid") else None
+    if want_guid and seen_guid and seen_guid != want_guid:
+        return "wrong-guid"
+    if expected.get("disk") is not None and observed.get("disk") is not None and int(observed["disk"]) != int(expected["disk"]):
+        return "wrong-disk"
+    if (
+        expected.get("partition") is not None
+        and observed.get("partition") is not None
+        and int(observed["partition"]) != int(expected["partition"])
+    ):
+        return "wrong-partition"
+    if expected.get("esp") and observed.get("filesystem") not in (None, "", "FAT32"):
+        return "not-fat32"
+    return ""
+
+
+_MOUNT_CHAIN = ("mountvol", "Add-PartitionAccessPath", "diskpart assign")
+
+
+def open_checked_mount(
+    plan: Mapping[str, object],
+    steps: Mapping[str, Callable[[Mapping[str, object]], bool]],
+    *,
+    letter_free: Callable[[str], bool],
+    verify: Callable[[Mapping[str, object]], str],
+    release: Callable[[Mapping[str, object]], None],
+) -> dict[str, object]:
+    """Try mountvol, then Storage, then diskpart. A failed check is unmounted before the next try."""
+    letter = str(plan.get("letter") or "")
+    if bare_bcdboot_letter(letter) is None:
+        return {"ok": False, "letter": None, "method": "", "verdict": "NO-GO", "tried": (), "reason": "bad-letter"}
+    tried: list[str] = []
+    for name in _MOUNT_CHAIN:
+        step = steps.get(name)
+        if step is None:
+            continue
+        if not letter_free(letter):
+            tried.append(f"{name}:letter-busy")
+            continue
+        assigned = False
+        keep = False
+        try:
+            assigned = bool(step(plan))
+            if not assigned:
+                tried.append(f"{name}:assign-failed")
+                continue
+            problem = verify(plan) or ""
+            if problem:
+                tried.append(f"{name}:{problem}")
+                continue
+            keep = True
+            return {"ok": True, "letter": letter, "method": name, "verdict": "GO", "tried": tuple(tried), "reason": ""}
+        finally:
+            if assigned and not keep:
+                release(plan)
+    return {
+        "ok": False,
+        "letter": None,
+        "method": "",
+        "verdict": "NO-GO",
+        "tried": tuple(tried),
+        "reason": "mount-checks-failed",
+    }
+
+
 def mountvol_assign_args(letter: str, volume: str) -> list[str]:
     """mountvol argv. The volume argument is a real ``\\\\?\\Volume{GUID}\\`` path."""
     guid = normalize_volume_guid_path(volume)
@@ -160,7 +289,7 @@ def bcdboot_target(value: str | None) -> str | None:
     return bare_bcdboot_letter(value)
 
 
-_BCD_ASSIGN_CHAIN = ("Add-PartitionAccessPath", "diskpart assign", "mountvol")
+_BCD_ASSIGN_CHAIN = _MOUNT_CHAIN
 
 
 def plan_bcdboot_letter(path: str | None, used: Iterable[str]) -> dict[str, object]:

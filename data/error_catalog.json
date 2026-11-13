@@ -37,7 +37,7 @@
       "repair_order": [
         "Confirm %SystemRoot% exists and pass it as its own list item, with no extra quotes.",
         "Read the live drive map and take the ESP or system volume letter.",
-        "If the volume is only a folder mount or a \\\\?\\Volume{GUID}\\ path, assign a temporary letter with Add-PartitionAccessPath, then diskpart assign letter=, then mountvol.",
+        "If the volume is only a folder mount or a \\\\?\\Volume{GUID}\\ path, assign a temporary letter with mountvol, then Add-PartitionAccessPath, then diskpart assign letter=.",
         "Pass /s as S: with no trailing slash and no quotes.",
         "Do not pass /f ALL when the firmware mode is unknown.",
         "Treat exit 123 as failure. Re-read bcdedit /enum {bootmgr} and the ESP files before any GO."

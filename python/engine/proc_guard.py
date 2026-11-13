@@ -266,6 +266,11 @@ def run_bounded(
     """Run one command. On timeout the child is killed and the result is not ok."""
     if not cmd or not str(cmd[0]).strip():
         return ExtResult(code=1, output="", ok=False, reason="empty command")
+    from .drive_map import tool_arg_problem
+
+    problem = tool_arg_problem([str(part) for part in cmd], input_text)
+    if problem:
+        return ExtResult(code=1, output="", ok=False, reason=problem)
     limit = timeout_for(cmd, timeout)
     launcher = popen or subprocess.Popen
     try:
@@ -361,6 +366,12 @@ def copy_bounded(
     """Copy one file. A hung copy is reported as a timeout and not as success."""
     source = str(src)
     dest = str(dst)
+    from .drive_map import path_format_problem
+
+    for label, path in (("source", source), ("target", dest)):
+        problem = path_format_problem(path)
+        if problem:
+            return ExtResult(code=1, output="", ok=False, reason=f"pre-check failed: {label} {problem}")
     if not Path(source).is_file():
         return ExtResult(code=1, output="", ok=False, reason=f"pre-check failed: source missing {source}")
     worker = copier or shutil.copy2
