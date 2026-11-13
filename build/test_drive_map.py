@@ -17,7 +17,13 @@ from engine.drive_map import (  # noqa: E402
     VolumeContent,
     VolumeRecord,
     access_chain,
+    access_root,
     bcdboot_args,
+    bcdboot_letter_plan,
+    esp_bcdboot_space_plan,
+    minimal_bcdboot_args,
+    normalize_volume_guid_path,
+    partition_backup_verdict,
     classify_firmware,
     decide,
     drive_map_from_payload,
@@ -511,6 +517,34 @@ def test_poller_sees_letter_change() -> None:
     assert poller.refreshes == 2
 
 
+def test_volume_guid_is_unescaped_and_bcdboot_uses_a_letter() -> None:
+    guid = "11111111-2222-3333-4444-555555555555"
+    doubled = "\\\\\\\\?\\\\Volume{" + guid + "}\\\\"
+    fixed = "\\\\?\\Volume{" + guid + "}\\"
+    assert normalize_volume_guid_path(doubled) == fixed
+    assert access_root(doubled) == fixed
+    assert normalize_volume_guid_path("\\\\?\\Volume{" + guid + "}") == fixed
+    plan = bcdboot_letter_plan(doubled, {"C"})
+    assert plan["temporary"] is True
+    assert plan["volume"] == fixed
+    assert plan["letter"] == "Z:"
+    try:
+        bcdboot_args("bcdboot.exe", r"C:\Windows", doubled, "UEFI")
+        raise AssertionError("volume GUID was passed to bcdboot /s")
+    except ValueError:
+        pass
+    cmd = minimal_bcdboot_args("bcdboot.exe", r"C:\Windows", "Z:", "UEFI", "fr-FR")
+    assert cmd[cmd.index("/s") + 1] == "Z:"
+    assert "/l" in cmd and "fr-FR" in cmd
+    roomy = esp_bcdboot_space_plan(64 * 1024 * 1024, 8 * 1024 * 1024)
+    assert roomy["trim_fonts"] is False and roomy["minimal"] is False
+    tight = esp_bcdboot_space_plan(1 * 1024 * 1024, 40 * 1024 * 1024)
+    assert tight["trim_fonts"] is True and tight["minimal"] is True and tight["backup_required"] is True
+    assert partition_backup_verdict({"ok": False, "actions": ["ESP_mount_fail"]}) == "NO-GO"
+    assert partition_backup_verdict({"ok": True, "actions": []}) == "GO"
+    assert partition_backup_verdict({"ok": False, "actions": ["partition_backup_disabled"]}) == "GO"
+
+
 def test_bcdboot_uses_resolved_target() -> None:
     command = bcdboot_args(r"C:\Windows\System32\bcdboot.exe", r"C:\Windows", "E:", "ALL")
     assert command[1:] == [r"C:\Windows", "/s", "E:", "/f", "ALL"]
@@ -780,6 +814,7 @@ if __name__ == "__main__":
     test_no_free_letter_uses_folder()
     test_log_redacts_serial_and_lists_content()
     test_poller_sees_letter_change()
+    test_volume_guid_is_unescaped_and_bcdboot_uses_a_letter()
     test_bcdboot_uses_resolved_target()
     test_hybrid_mbr2gpt_and_openduet()
     test_inconsistent_esp_aborts()

@@ -30,6 +30,7 @@ from .drive_map import (
     format_drive_map,
     is_gpt_esp,
     make_volume,
+    normalize_volume_guid_path,
     pick_free_letter,
     plan_mount,
     uefi_supported,
@@ -869,6 +870,9 @@ def mount_system_partition(*, role: str = "auto", prefer_letter: str | None = No
     log(f"ESP opened at {shown} via {method}.{cleanup}", "OK")
     if letter and (access_root(path) or "").upper() == f"{letter}:\\":
         return f"{letter}:"
+    guid = normalize_volume_guid_path(path)
+    if guid:
+        return guid
     return path.rstrip("\\")
 
 

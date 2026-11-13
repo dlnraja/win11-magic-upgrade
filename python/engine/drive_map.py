@@ -37,8 +37,39 @@ def redact_serial(serial: str | None) -> str:
     return f"{s[:2]}…{s[-2:]}"
 
 
+_VOLUME_GUID = re.compile(
+    r"(?i)^\\\\\?\\volume\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}\\*$"
+)
+BCD_MIN_FREE_BYTES = 32 * 1024 * 1024
+
+
+def normalize_volume_guid_path(value: str | None) -> str | None:
+    """Turn a JSON-escaped ``\\\\?\\Volume{...}`` into ``\\\\?\\Volume{...}\\``.
+
+    The returned path has the Win32 prefix and exactly one trailing slash.
+    A doubled prefix is what produces WinError 3.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().strip('"').strip("'").replace("/", "\\")
+    if not text:
+        return None
+    for _ in range(4):
+        if re.match(r"(?i)^\\\\{2,}\?\\{2,}volume\{", text):
+            text = text.replace("\\\\", "\\")
+        else:
+            break
+    match = _VOLUME_GUID.match(text)
+    if not match:
+        return None
+    return "\\\\?\\Volume{" + match.group(1).lower() + "}\\"
+
+
 def access_root(value: str | None) -> str | None:
     """'s', 'S:', 'S:\\\\' → 'S:\\\\'. A folder mount is returned with a trailing slash."""
+    guid = normalize_volume_guid_path(value)
+    if guid:
+        return guid
     if value is None:
         return None
     s = str(value).strip().replace("/", "\\")
@@ -66,7 +97,9 @@ def drive_letter_of(value: str | None) -> str | None:
 
 
 def bcdboot_target(value: str | None) -> str | None:
-    """bcdboot /s wants 'E:' or a mounted folder, never a hard-coded letter."""
+    """bcdboot /s wants 'E:' or a mounted folder. A volume GUID is error 123."""
+    if normalize_volume_guid_path(value):
+        return None
     root = access_root(value)
     if not root:
         return None
@@ -79,10 +112,63 @@ def bcdboot_args(exe: str, windows_root: str, target: str, mode: str) -> list[st
     mode_u = (mode or "").upper()
     if mode_u not in ("UEFI", "BIOS", "ALL"):
         raise ValueError(f"bcdboot mode must be UEFI, BIOS, or ALL (got {mode!r})")
+    if normalize_volume_guid_path(target):
+        raise ValueError("bcdboot /s needs a drive letter; a volume GUID returns error 123")
     tgt = bcdboot_target(target)
     if not tgt:
         raise ValueError("bcdboot target is empty")
     return [str(exe), str(windows_root), "/s", tgt, "/f", mode_u]
+
+
+def bcdboot_locale(preferred: str | None = None) -> str:
+    text = (preferred or "").strip().replace("_", "-")
+    if re.fullmatch(r"[A-Za-z]{2}(-[A-Za-z]{2})?", text):
+        return text
+    return "en-us"
+
+
+def minimal_bcdboot_args(exe: str, windows_root: str, letter: str, mode: str, locale: str | None = None) -> list[str]:
+    """One locale, so a full ESP (error 112) is not asked to store every language."""
+    return bcdboot_args(exe, windows_root, letter, mode) + ["/l", bcdboot_locale(locale)]
+
+
+def bcdboot_letter_plan(target: str | None, used: Iterable[str]) -> dict[str, str | bool | None]:
+    """Use the bare letter. A volume GUID is mounted on a free letter first."""
+    letter = drive_letter_of(target)
+    if letter:
+        return {"letter": f"{letter}:", "temporary": False, "volume": None}
+    volume = normalize_volume_guid_path(target)
+    if not volume:
+        return {"letter": None, "temporary": False, "volume": None}
+    free = pick_free_letter(used)
+    return {"letter": f"{free}:" if free else None, "temporary": True, "volume": volume}
+
+
+def esp_bcdboot_space_plan(free_bytes: int, font_bytes: int, *, need_bytes: int = BCD_MIN_FREE_BYTES) -> dict[str, bool]:
+    """Trim fonts only when the ESP cannot hold bcdboot, and only after a backup."""
+    free = max(0, int(free_bytes))
+    fonts = max(0, int(font_bytes))
+    if free >= need_bytes:
+        return {"trim_fonts": False, "minimal": False, "enough": True, "backup_required": False}
+    return {
+        "trim_fonts": fonts > 0,
+        "minimal": True,
+        "enough": free + fonts >= need_bytes,
+        "backup_required": True,
+    }
+
+
+def partition_backup_blocks(result: dict | None) -> bool:
+    """A failed partition backup is NO-GO. An explicit disable is not a failure."""
+    payload = result or {}
+    actions = [str(item) for item in (payload.get("actions") or [])]
+    if "partition_backup_disabled" in actions:
+        return False
+    return not bool(payload.get("ok"))
+
+
+def partition_backup_verdict(result: dict | None) -> str:
+    return "NO-GO" if partition_backup_blocks(result) else "GO"
 
 
 def pick_free_letter(used: Iterable[str]) -> str | None:
@@ -520,6 +606,8 @@ def letters_in_use(drive_map: DriveMap) -> set[str]:
 
 def existing_folder(volume: VolumeRecord) -> str | None:
     for path in volume.access_paths:
+        if normalize_volume_guid_path(path):
+            continue
         if path and drive_letter_of(path) is None and access_root(path):
             return access_root(path)
     return None

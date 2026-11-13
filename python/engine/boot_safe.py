@@ -1178,15 +1178,22 @@ def preflight_boot_edit(
     try:
         from .boot_partition_backup import backup_boot_partitions
 
+        from .drive_map import partition_backup_blocks
+
         pb = backup_boot_partitions(system_disk=disk)
         if pb.get("ok"):
             snap.notes.append("partition_backup_ok")
             snap.bcd_backup = snap.bcd_backup or pb.get("bcd")
+        elif partition_backup_blocks(pb):
+            snap.block_reasons.append("partition_backup_failed")
+            snap.notes.append("partition_backup_failed")
+            log("Partition backup failed. NO-GO.", "ERROR")
         else:
-            snap.notes.append("partition_backup_weak")
+            snap.notes.append("partition_backup_disabled")
     except Exception as e:
-        snap.notes.append("partition_backup_skip")
-        log(f"Partition backup: {e}", "WARN")
+        snap.block_reasons.append("partition_backup_failed")
+        snap.notes.append("partition_backup_failed")
+        log(f"Partition backup failed. NO-GO. {e}", "ERROR")
 
     snap.safe_to_mutate = len(snap.block_reasons) == 0
     if snap.safe_to_mutate:

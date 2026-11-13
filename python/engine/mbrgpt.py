@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .diskpart_safe import (
@@ -130,8 +132,66 @@ def repair_boot_manager(prefer_uefi: bool = True) -> bool:
         return _repair_boot_locked(prefer_uefi, sys_root, bcdboot)
 
 
+def _disk_full(code: int, output: str) -> bool:
+    text = output or ""
+    if int(code) == 112:
+        return True
+    return bool(re.search(r"\b112\b|not enough space|espace insuffisant|disk full|espace disque", text, re.I))
+
+
+def _font_dirs(root: Path) -> list[Path]:
+    return [root / "EFI" / "Microsoft" / "Boot" / "Fonts", root / "Boot" / "Fonts"]
+
+
+def _font_bytes(root: Path) -> int:
+    total = 0
+    for folder in _font_dirs(root):
+        if not folder.is_dir():
+            continue
+        for item in folder.rglob("*"):
+            if item.is_file() and item.suffix.lower() in {".ttf", ".otf", ".ttc"}:
+                try:
+                    total += item.stat().st_size
+                except OSError:
+                    pass
+    return total
+
+
+def _backup_and_trim_fonts(root: Path) -> bool:
+    """Copy ESP fonts aside, then remove them. A failed copy deletes nothing."""
+    folders = [path for path in _font_dirs(root) if path.is_dir()]
+    if not folders:
+        return True
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest_root = STATE_DIR / "font-backups" / stamp
+    try:
+        for folder in folders:
+            shutil.copytree(folder, dest_root / folder.relative_to(root))
+    except Exception as exc:
+        log(f"Font backup failed. Fonts were not deleted: {exc}", "ERROR")
+        return False
+    for folder in folders:
+        for item in list(folder.rglob("*")):
+            if item.is_file() and item.suffix.lower() in {".ttf", ".otf", ".ttc"}:
+                try:
+                    item.unlink()
+                except OSError:
+                    pass
+    log(f"ESP fonts backed up to {dest_root} and trimmed so bcdboot can fit", "OK")
+    return True
+
+
 def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool:
-    from .drive_map import access_root, bcdboot_target
+    from .drive_map import (
+        access_root,
+        bcdboot_letter_plan,
+        bcdboot_locale,
+        bcdboot_target,
+        BCD_MIN_FREE_BYTES,
+        esp_bcdboot_space_plan,
+        minimal_bcdboot_args,
+        normalize_volume_guid_path,
+    )
     from .esp_access import bcdboot_command, poll_if_due, prepare_boot_step, resolved_bcd_mode
     from .proc_guard import GateState, PostState, probe_admin, precheck, postcheck
     from .secureboot_certs import efi_write_block_reason
@@ -162,9 +222,29 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
     mounted = mount_esp()
     esp_vol_index: int | None = None
     assigned_here = False
+    temp_mountvol = False
     target: str | None = None
     if mounted:
-        target = bcdboot_target(access_root(mounted) or mounted)
+        opened = access_root(mounted) or mounted
+        if normalize_volume_guid_path(opened):
+            plan = bcdboot_letter_plan(opened, ())
+            volume = str(plan.get("volume") or "")
+            letter_only = free_letter()
+            letter = f"{letter_only}:" if letter_only else str(plan.get("letter") or "")
+            if letter and volume:
+                code, out = _run(["mountvol", letter, volume], timeout=60)
+                if code == 0 and Path(letter + "\\").exists():
+                    target = letter
+                    temp_mountvol = True
+                    log(f"bcdboot uses temporary letter {letter} for {volume}", "OK")
+                else:
+                    log(f"Could not mount {volume} on {letter} for bcdboot ({code}): {(out or '')[:160]}", "ERROR")
+                    return False
+            else:
+                log(f"No free letter for bcdboot volume {volume}", "ERROR")
+                return False
+        else:
+            target = bcdboot_target(opened)
         log(f"Boot volume access path {target}", "OK")
     elif step is not None and step.bcd_mode == "BIOS":
         if step.mount is not None and step.mount.action in ("reuse_letter", "reuse_folder"):
@@ -188,7 +268,19 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
     modes = resolved_bcd_mode(prefer_uefi, step)
     ok = False
     timed_out = False
+    minimal = False
+    space_root = Path((target or "") + "\\") if target and len(str(target)) == 2 and str(target)[1] == ":" else None
     try:
+        if space_root is not None and space_root.exists():
+            try:
+                free = shutil.disk_usage(space_root).free
+            except OSError:
+                free = BCD_MIN_FREE_BYTES
+            plan_space = esp_bcdboot_space_plan(free, _font_bytes(space_root))
+            minimal = bool(plan_space["minimal"])
+            if plan_space["trim_fonts"] and not _backup_and_trim_fonts(space_root):
+                log("NO-GO: ESP font backup failed, so bcdboot was not retried on a full volume.", "ERROR")
+                return False
         for mode in modes:
             fresh = poll_if_due("bcdboot")
             if fresh is not None and fresh.abort:
@@ -198,7 +290,9 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
             if cert_reason:
                 log(cert_reason, "ERROR")
                 continue
-            if target:
+            if target and minimal:
+                cmd = minimal_bcdboot_args(str(bcdboot), sys_root, target, mode, bcdboot_locale())
+            elif target:
                 cmd = bcdboot_command(str(bcdboot), sys_root, target, mode)
             else:
                 if mode == "ALL":
@@ -218,9 +312,24 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
                 ok = True
                 log(f"Boot Manager repaired ({mode})", "OK")
                 break
+            if target and space_root is not None and _disk_full(code, out or "") and not minimal:
+                if not _backup_and_trim_fonts(space_root):
+                    log("NO-GO: ESP font backup failed after bcdboot error 112.", "ERROR")
+                    break
+                minimal = True
+                cmd = minimal_bcdboot_args(str(bcdboot), sys_root, target, mode, bcdboot_locale())
+                code, out = _run(cmd, timeout=180)
+                log(f"bcdboot {' '.join(cmd[1:])} -> {code}")
+                if bcdboot_succeeded(code, out or ""):
+                    ok = True
+                    log(f"Boot Manager repaired ({mode}) after freeing ESP space", "OK")
+                    break
             log(f"bcdboot {mode} failed (exit {code})", "ERROR")
     finally:
-        if mounted:
+        if temp_mountvol and target:
+            _run(["mountvol", str(target).rstrip("\\"), "/d"], timeout=60)
+            log(f"Removed temporary bcdboot letter {target}", "INFO")
+        elif mounted:
             unmount_letter(mounted)
         elif assigned_here and esp_vol_index is not None and target:
             letter = target.rstrip("\\").rstrip(":")[:1]
