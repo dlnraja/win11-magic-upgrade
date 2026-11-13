@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -377,6 +378,58 @@ def _wait_for_virtual_disk() -> None:
     log("Virtual Disk service is not running; starting it", "INFO")
     _run(["sc", "start", "vds"], timeout=30)
     _run(["sc", "query", "vds"], timeout=20)
+
+
+PARTITION_MAGIC_TIMEOUT_S = 180
+
+
+def destructive_partition_opt_in() -> bool:
+    """Shrink, create, and format stay off unless MAGIC_ESP_EXPAND=1."""
+    return os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes")
+
+
+def run_partition_magic_fallback(
+    op: str,
+    *,
+    verify: Callable[[], bool],
+    timeout_s: int = PARTITION_MAGIC_TIMEOUT_S,
+    magic: Callable[[str, bool, int], bool] | None = None,
+) -> bool:
+    """Last resort. Plans only, unless MAGIC_ESP_EXPAND=1, and the result must verify."""
+    if timeout_s <= 0:
+        log(f"partition-magic failover for {op} exceeded its timeout", "ERROR")
+        return False
+    mutate = destructive_partition_opt_in()
+    log(f"partition-magic failover for {op} (mutate={mutate}, timeout={timeout_s}s)", "INFO")
+    started = time.monotonic()
+    try:
+        if magic is not None:
+            ok = bool(magic(op, mutate, timeout_s))
+        else:
+            ok = _builtin_partition_magic(op, mutate=mutate)
+    except Exception as exc:
+        log(f"partition-magic failover for {op} failed: {exc}", "WARN")
+        return False
+    if time.monotonic() - started > timeout_s:
+        log(f"partition-magic failover for {op} exceeded its timeout", "ERROR")
+        return False
+    if not mutate:
+        log(f"partition-magic failover for {op} staged a plan only", "INFO")
+        return False
+    if ok and verify():
+        return True
+    log(f"partition-magic failover for {op} did not verify", "WARN")
+    return False
+
+
+def _builtin_partition_magic(op: str, *, mutate: bool) -> bool:
+    from .partition_smart import run_smart_partition_magic, stage_partition_magic_failover
+
+    if not mutate:
+        stage_partition_magic_failover(reason=op)
+        return False
+    result = run_smart_partition_magic()
+    return bool((result or {}).get("ok"))
 
 
 def run_methods(op: str, methods: list[tuple[str, Callable[[], bool]]]) -> str | None:
@@ -799,8 +852,10 @@ def assign_partition_letter(
     verify: Callable[[], bool] | None = None,
     exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
     runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+    magic: Callable[[str, bool, int], bool] | None = None,
+    timeout_s: int = PARTITION_MAGIC_TIMEOUT_S,
 ) -> str | None:
-    """Assign a letter. Diskpart, then Storage, CIM, mountvol, then a folder mount."""
+    """Assign a letter. Diskpart, Storage, CIM, mountvol, folder, then Partition Magic."""
     loc_letter = letter.upper()[:1]
     check = verify or (lambda: _letter_present(loc_letter))
     cmds = commands_for(
@@ -847,6 +902,12 @@ def assign_partition_letter(
             ("cim", via_cim),
             ("mountvol", via_mountvol),
             ("folder", via_folder),
+            (
+                "partition-magic",
+                lambda: run_partition_magic_fallback(
+                    f"assign {loc_letter}", verify=check, timeout_s=timeout_s, magic=magic
+                ),
+            ),
         ],
     )
 
@@ -883,6 +944,8 @@ def remove_partition_letter(
     verify: Callable[[], bool] | None = None,
     exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
     runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+    magic: Callable[[str, bool, int], bool] | None = None,
+    timeout_s: int = PARTITION_MAGIC_TIMEOUT_S,
 ) -> str | None:
     loc_letter = (letter or "").upper()[:1]
     check = verify or (lambda: not loc_letter or not _letter_present(loc_letter))
@@ -930,6 +993,12 @@ def remove_partition_letter(
             ("cim", via_cim),
             ("mountvol", via_mountvol),
             ("folder", via_folder),
+            (
+                "partition-magic",
+                lambda: run_partition_magic_fallback(
+                    f"remove {loc_letter or volume}", verify=check, timeout_s=timeout_s, magic=magic
+                ),
+            ),
         ],
     )
 
@@ -959,6 +1028,8 @@ def mark_partition_active(
     verify: Callable[[], bool] | None = None,
     exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
     runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+    magic: Callable[[str, bool, int], bool] | None = None,
+    timeout_s: int = PARTITION_MAGIC_TIMEOUT_S,
 ) -> str | None:
     """Set the active flag by disk and partition number. Diskpart active is MBR only."""
     cmds = commands_for("active", disk=disk, partition=partition, active=True, style=style)
@@ -989,6 +1060,15 @@ def mark_partition_active(
             ("cim", via_cim),
             ("mountvol", lambda: False),
             ("folder", lambda: False),
+            (
+                "partition-magic",
+                lambda: run_partition_magic_fallback(
+                    f"active disk {disk} partition {partition}",
+                    verify=check,
+                    timeout_s=timeout_s,
+                    magic=magic,
+                ),
+            ),
         ],
     )
 
@@ -1002,6 +1082,8 @@ def set_partition_id(
     verify: Callable[[], bool] | None = None,
     exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
     runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+    magic: Callable[[str, bool, int], bool] | None = None,
+    timeout_s: int = PARTITION_MAGIC_TIMEOUT_S,
 ) -> str | None:
     cmds = commands_for("set-id", disk=disk, partition=partition, gpt_type=gpt_type, style=style)
     check = verify or (lambda: True)
@@ -1031,6 +1113,15 @@ def set_partition_id(
             ("cim", via_cim),
             ("mountvol", lambda: False),
             ("folder", lambda: False),
+            (
+                "partition-magic",
+                lambda: run_partition_magic_fallback(
+                    f"set id disk {disk} partition {partition}",
+                    verify=check,
+                    timeout_s=timeout_s,
+                    magic=magic,
+                ),
+            ),
         ],
     )
 

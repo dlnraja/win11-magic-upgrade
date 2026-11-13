@@ -1458,3 +1458,42 @@ def run_smart_partition_magic(
         "OK" if summary.get("ok") else "WARN",
     )
     return summary
+
+
+def stage_partition_magic_failover(
+    *,
+    reason: str = "partition-op",
+    layout: dict[str, Any] | None = None,
+    writer: Any = None,
+    system_disk: int | None = None,
+) -> dict[str, Any]:
+    """Plan and write rescue scripts. Does not shrink, create, format, or move."""
+    summary: dict[str, Any] = {
+        "ok": False,
+        "destructive": False,
+        "staged": False,
+        "reason": reason,
+        "actions": ["partition_magic_plan_only"],
+    }
+    if layout is None:
+        try:
+            layout = map_system_disk(system_disk)
+        except Exception as exc:
+            summary["error"] = type(exc).__name__
+            return summary
+    if not layout or not layout.get("ok"):
+        summary["strategy"] = "layout_unavailable"
+        return summary
+    plan = plan_smart_layout(layout)
+    summary["strategy"] = plan.get("strategy")
+    if plan.get("strategy") == "noop_space_ok":
+        summary["staged"] = True
+        summary["actions"].append("noop_space_ok")
+        return summary
+    write = writer or write_gparted_smart_scripts
+    try:
+        summary["scripts"] = write(plan, layout, reason=reason)
+        summary["staged"] = True
+    except Exception as exc:
+        summary["error"] = type(exc).__name__
+    return summary

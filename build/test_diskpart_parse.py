@@ -1,6 +1,7 @@
 """Unit checks for disk # parsing (FR Disque / EN Disk)."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from engine.diskpart_safe import (  # noqa: E402
     lint_diskpart_script,
     parse_list_volume,
     run_diskpart,
+    run_partition_magic_fallback,
     script_lines,
     select_lines,
     step_scripts,
@@ -224,6 +226,86 @@ def test_diskpart_grammar_rejects_bad_arguments() -> None:
     print("grammar OK")
 
 
+def test_partition_magic_is_last_and_not_destructive() -> None:
+    from engine.partition_smart import stage_partition_magic_failover
+
+    seen: list[tuple[str, bool, int]] = []
+
+    def magic(op: str, mutate: bool, timeout_s: int) -> bool:
+        seen.append((op, mutate, timeout_s))
+        return True
+
+    def fail_exec(argv: list[str], timeout: int) -> tuple[int, str]:
+        del argv, timeout
+        return 1, "no"
+
+    def runner(argv: list[str], data: bytes, timeout: int) -> tuple[int, bytes]:
+        del argv, data, timeout
+        return 1, b"erreur"
+
+    os.environ.pop("MAGIC_ESP_EXPAND", None)
+    method = assign_partition_letter(
+        0,
+        1,
+        "Z",
+        volume=2,
+        volume_guid=r"\\?\Volume{11111111-2222-3333-4444-555555555555}\\",
+        folder=r"C:\mount\esp",
+        verify=lambda: False,
+        exec_command=fail_exec,
+        runner=runner,
+        magic=magic,
+    )
+    assert method is None
+    assert seen == [("assign Z", False, 180)]
+    assert run_partition_magic_fallback("assign Z", verify=lambda: True, timeout_s=0, magic=magic) is False
+    assert len(seen) == 1
+
+    os.environ["MAGIC_ESP_EXPAND"] = "1"
+    try:
+        method = assign_partition_letter(
+            0,
+            1,
+            "Z",
+            volume=2,
+            verify=lambda: True,
+            exec_command=fail_exec,
+            runner=runner,
+            magic=magic,
+        )
+    finally:
+        os.environ.pop("MAGIC_ESP_EXPAND", None)
+    assert method == "partition-magic"
+    assert seen[-1][1] is True
+
+    writes: list[str] = []
+    staged = stage_partition_magic_failover(
+        reason="test",
+        layout={
+            "ok": True,
+            "disk": 0,
+            "style": "GPT",
+            "partitions": [
+                {
+                    "number": 1,
+                    "gpt": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+                    "size_mb": 512,
+                    "free_mb": 200,
+                    "fs": "FAT32",
+                    "letter": None,
+                    "is_esp": True,
+                }
+            ],
+            "free_regions": [],
+        },
+        writer=lambda plan, layout, reason="": writes.append(reason) or {},
+    )
+    assert staged["destructive"] is False
+    assert staged["strategy"] == "noop_space_ok"
+    assert writes == []
+    print("partition-magic OK")
+
+
 if __name__ == "__main__":
     test_en()
     test_fr_disque()
@@ -233,4 +315,5 @@ if __name__ == "__main__":
     test_select_uses_numbers_and_file_runner()
     test_fallback_order_stops_at_first_verified_method()
     test_diskpart_grammar_rejects_bad_arguments()
+    test_partition_magic_is_last_and_not_destructive()
     print("ALL diskpart parse tests passed")
