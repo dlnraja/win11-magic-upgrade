@@ -11,6 +11,7 @@ import locale
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
@@ -182,10 +183,23 @@ class App(tk.Tk):
             cursor="hand2",
             padx=18,
             pady=14,
-            command=lambda: self.start("oneclick"),
+            command=self._startup_button,
         )
         self.btn_go.pack(fill="x")
         self._action_buttons.append(self.btn_go)
+        self._startup_cancel_btn = tk.Button(
+            hero,
+            text="Cancel",
+            font=("Segoe UI", 11),
+            bg="#7f1d1d",
+            fg="white",
+            activebackground="#991b1b",
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=8,
+            command=self._startup_cancel,
+        )
 
         # --- Secondary actions ---
         btns = tk.Frame(self, bg="#0f172a")
@@ -370,8 +384,18 @@ class App(tk.Tk):
         if is_admin():
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
+        self._count_alive = False
+        self._count_job = None
         if not self._auto_action:
-            self.after(600, self._noargs_boot_policy)
+            from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
+
+            self._count_left = startup_countdown_seconds()
+            self._count_alive = True
+            self._startup_cancel_btn.pack(fill="x", pady=(6, 0))
+            self._paint_startup_button()
+            self._count_job = self.after(1000, self._startup_tick)
+        else:
+            self.btn_go.configure(command=lambda: self.start("oneclick"))
 
         if self._auto_action:
             self.after(350, lambda: self.start(self._auto_action or "oneclick"))
@@ -550,8 +574,65 @@ class App(tk.Tk):
             pass
         self._progress_job = self.after(500, self._poll_progress)
 
+    def _paint_startup_button(self) -> None:
+        self.btn_go.configure(
+            text=f"Start boot check and official update ({self._count_left})",
+            command=self._startup_now,
+        )
+
+    def _startup_tick(self) -> None:
+        from engine.win11_inplace_policy import next_countdown  # type: ignore
+
+        if not self._count_alive:
+            return
+        self._count_left, action = next_countdown(self._count_left)
+        if action == "run":
+            self._begin_startup_chain()
+            return
+        self._paint_startup_button()
+        self._count_job = self.after(1000, self._startup_tick)
+
+    def _startup_button(self) -> None:
+        self.start("oneclick")
+
+    def _startup_now(self) -> None:
+        self._count_alive = False
+        if self._count_job is not None:
+            try:
+                self.after_cancel(self._count_job)
+            except Exception:
+                pass
+            self._count_job = None
+        self._begin_startup_chain()
+
+    def _startup_cancel(self) -> None:
+        if not self._count_alive:
+            return
+        self._count_alive = False
+        if self._count_job is not None:
+            try:
+                self.after_cancel(self._count_job)
+            except Exception:
+                pass
+            self._count_job = None
+        self.btn_go.configure(text="Start boot check and official update", command=self._startup_now)
+        try:
+            self._startup_cancel_btn.pack_forget()
+        except Exception:
+            pass
+        self.append("Startup countdown cancelled.\n")
+
+    def _begin_startup_chain(self) -> None:
+        self._count_alive = False
+        try:
+            self._startup_cancel_btn.pack_forget()
+        except Exception:
+            pass
+        self.btn_go.configure(state="disabled", text="Boot check and official update running")
+        self._noargs_boot_policy()
+
     def _noargs_boot_policy(self) -> None:
-        """Boot guard first. A GO Windows 11 PC may start the official update."""
+        """Boot guard, repair, then the official update only on a clean GO."""
         if self._busy or self._auto_action:
             return
         self.append("Startup: boot guard (MBR/EFI/BCD/ESP) before any update.\n")
@@ -627,8 +708,10 @@ class App(tk.Tk):
 
     def _present_startup(self, decision) -> None:
         self.append(decision.reason + "\n")
-        if decision.action == "official_update" and decision.countdown:
-            StartupCountdown(self, on_go=lambda: self.start("oneclick"))
+        if decision.action == "official_update":
+            self.append("Boot guard is GO. Starting the official in-place update.\n")
+            self.btn_go.configure(state="normal", command=lambda: self.start("oneclick"))
+            self.start("oneclick")
             return
         if decision.action in ("repair", "nogo"):
             self.append("Update stays off until every boot verification passes with zero errors.\n")
@@ -914,49 +997,101 @@ class App(tk.Tk):
         self.phase_var.set(self.t.get("progress_done", "Finished"))
 
 
-class StartupCountdown(tk.Toplevel):
-    """Cancellable pause before the official Windows 11 update."""
+def run_console_startup() -> int:
+    """No-args console path: boot guard, repair, then the official update only on GO."""
+    from engine.detect import collect_report  # type: ignore
+    from engine.win11_inplace_policy import decide_noargs_startup, decide_oneclick  # type: ignore
+    from engine.win11_release import floor_target, refresh_latest_win11  # type: ignore
 
-    def __init__(self, app: App, on_go) -> None:
-        super().__init__(app)
-        self.title("Official Windows 11 update")
-        self.resizable(False, False)
-        self.configure(bg="#0f172a")
-        self._left = 15
-        self._on_go = on_go
-        self._alive = True
-        self._label = tk.StringVar(value=self._line())
-        tk.Label(
-            self,
-            textvariable=self._label,
-            font=("Segoe UI", 12),
-            fg="#e2e8f0",
-            bg="#0f172a",
-            padx=16,
-            pady=12,
-        ).pack()
-        tk.Button(self, text="Cancel", command=self._cancel).pack(pady=(0, 12))
-        self.protocol("WM_DELETE_WINDOW", self._cancel)
-        self.after(1000, self._tick)
+    print("Startup: boot guard (MBR/EFI/BCD/ESP) before any update.")
+    report = collect_report()
+    guard = _guard_snapshot()
+    repaired = False
+    if guard.get("verdict") != "GO" or int(guard.get("errors") or 0) != 0:
+        repaired = True
+        print("Boot guard is not GO. Repairing before any update.")
+        try:
+            from engine.boot_guard import verify_and_heal_boot  # type: ignore
 
-    def _line(self) -> str:
-        return f"Official in-place update starts in {self._left} s. No bypass."
+            verify_and_heal_boot(force=True)
+        except Exception as exc:
+            print(f"Startup repair skipped: {exc}")
+        guard = _guard_snapshot()
+    try:
+        target = refresh_latest_win11(host_build=int(getattr(report, "build", 0) or 0))
+    except Exception:
+        target = floor_target()
+    plan = decide_oneclick(
+        build=int(getattr(report, "build", 0) or 0),
+        ubr=int(getattr(report, "ubr", 0) or 0),
+        display_version=str(getattr(report, "display_version", "") or ""),
+        target_version=str(getattr(target, "version", "") or ""),
+        target_build=int(getattr(target, "major", 0) or 0),
+        target_ubr=int(getattr(target, "ubr", 0) or 0),
+    )
+    opt_out = os.environ.get("MAGIC_SKIP_STARTUP_UPDATE", "").strip().lower() in ("1", "true", "yes")
+    decision = decide_noargs_startup(
+        is_win11=bool(getattr(report, "is_win11", False)),
+        guard_go=guard.get("verdict") == "GO",
+        issues=list(guard.get("issues") or []),
+        opt_out=opt_out,
+        update_path=plan.path,
+        repaired=repaired,
+        error_count=int(guard.get("errors") or 0),
+    )
+    print(decision.reason)
+    if decision.action != "official_update":
+        return 0 if decision.action in ("health", "idle") else 2
+    return int(run_pipeline())
 
-    def _tick(self) -> None:
-        if not self._alive:
-            return
-        self._left -= 1
-        if self._left <= 0:
-            self._alive = False
-            self.destroy()
-            self._on_go()
-            return
-        self._label.set(self._line())
-        self.after(1000, self._tick)
 
-    def _cancel(self) -> None:
-        self._alive = False
-        self.destroy()
+def _guard_snapshot() -> dict:
+    try:
+        from engine.boot_safe import postflight_boot_edit  # type: ignore
+
+        post = postflight_boot_edit()
+        issues = [str(item) for item in (post.get("issues") or []) if str(item)]
+        clean = bool(post.get("ok")) and not issues and post.get("verdict", "GO") != "NO-GO"
+        return {"verdict": "GO" if clean else "NO-GO", "issues": issues, "errors": 0 if clean else max(1, len(issues))}
+    except Exception as exc:
+        return {"verdict": "NO-GO", "issues": [type(exc).__name__], "errors": 1}
+
+
+def console_countdown(seconds: int, *, wait, key_pressed) -> bool:
+    """Print a countdown. Return False when a key cancels it."""
+    from engine.win11_inplace_policy import next_countdown
+
+    print(f"Boot check and official update start in {seconds} s. Press a key to cancel.", flush=True)
+    left = seconds
+    while True:
+        print(f"\r{left} s remaining. Press a key to cancel.", end="", flush=True)
+        if key_pressed(wait):
+            print("\nStartup countdown cancelled.")
+            return False
+        left, action = next_countdown(left)
+        if action == "run":
+            print("\nStarting boot check.")
+            return True
+
+
+def _console_key_pressed(wait) -> bool:
+    import select
+
+    wait(0.1)
+    for _ in range(9):
+        if os.name == "nt":
+            import msvcrt
+
+            if msvcrt.kbhit():
+                msvcrt.getwch()
+                return True
+        else:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+            if ready:
+                sys.stdin.read(1)
+                return True
+        wait(0.1)
+    return False
 
 
 def _parse_auto_action(argv: list[str]) -> str | None:
@@ -1123,6 +1258,7 @@ Env (selected):
   MAGIC_SKIP_BOOT_REMEDIATE=1  Disable boot remediation bot
   MAGIC_SKIP_BOOT_GUARD=1      Disable autonomous EFI/GRUB/WinRE safety net
   MAGIC_SKIP_STARTUP_UPDATE=1  Double-click runs the boot guard only, no auto update
+  MAGIC_STARTUP_COUNTDOWN=20   Seconds before the no-args startup chain (default 20)
   MAGIC_WINRE_BOOT=1           Force one-shot WinRE ramdisk on next reboot
   MAGIC_WINPE_BOOT=1           Force one-shot WinPE ramdisk if WinRE unavailable
   MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
@@ -1191,10 +1327,20 @@ def main() -> None:
     except Exception:
         pass
 
+    if not argv and sys.stdin.isatty() and sys.stdout.isatty():
+        from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
+
+        if not console_countdown(startup_countdown_seconds(), wait=time.sleep, key_pressed=_console_key_pressed):
+            raise SystemExit(0)
+        if not is_admin() and relaunch_as_admin(["--startup-chain"]):
+            raise SystemExit(0)
+        raise SystemExit(run_console_startup())
+
     cli = any(
         a in argv_l
         for a in (
             "--cli",
+            "--startup-chain",
             "--oneclick",
             "-oneclick",
             "--diagnose",
@@ -1257,6 +1403,8 @@ def main() -> None:
 
                 print(apply_research_pack(collect_report(), resume=False))
                 return
+            if "--startup-chain" in argv_l:
+                raise SystemExit(run_console_startup())
             if "--diagnose" in argv_l:
                 run_diagnose()
                 return

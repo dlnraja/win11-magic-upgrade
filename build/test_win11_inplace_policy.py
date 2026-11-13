@@ -16,6 +16,8 @@ if "engine" not in sys.modules:
 from engine.win11_inplace_policy import (  # noqa: E402
     classify_setup_failure,
     decide_noargs_startup,
+    next_countdown,
+    startup_countdown_seconds,
     decide_oneclick,
     next_remediation,
     official_setup_args,
@@ -150,6 +152,17 @@ def test_noargs_repairs_until_go_and_honors_opt_out() -> None:
     assert still_wrong.action == "nogo"
 
 
+def test_countdown_defaults_to_20_and_can_cancel() -> None:
+    assert startup_countdown_seconds(None) == 20 or startup_countdown_seconds("20") == 20
+    assert startup_countdown_seconds("20") == 20
+    assert startup_countdown_seconds("0") == 1
+    assert startup_countdown_seconds("nope") == 20
+    assert next_countdown(20) == (19, "wait")
+    assert next_countdown(1) == (0, "run")
+    assert next_countdown(8, start_now=True) == (0, "run")
+    assert next_countdown(8, cancel=True) == (8, "cancel")
+
+
 def test_failure_picks_one_matching_retry() -> None:
     assert classify_setup_failure(1, "Setup failed 0xC1900200") == "compat"
     assert classify_setup_failure(1, "0xC1900202 hardware block") == "compat"
@@ -210,6 +223,7 @@ def main() -> None:
     test_behind_win11_is_official_inplace_only()
     test_noargs_win11_go_starts_official_update()
     test_noargs_repairs_until_go_and_honors_opt_out()
+    test_countdown_defaults_to_20_and_can_cancel()
     test_failure_picks_one_matching_retry()
     print("test_win11_inplace_policy ok")
 

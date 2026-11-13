@@ -181,6 +181,29 @@ def next_remediation(cause: str, *, used: set[str], attempt: int, architecture: 
 
 
 _BOOT_ISSUE = re.compile(r"mbr|efi|esp|bcd|bootmgr|bootmgfw", re.I)
+DEFAULT_STARTUP_COUNTDOWN = 20
+
+
+def startup_countdown_seconds(raw: str | int | None = None) -> int:
+    """Seconds before the no-args startup chain runs. Default is 20."""
+    import os
+
+    if raw is None:
+        raw = os.environ.get("MAGIC_STARTUP_COUNTDOWN", str(DEFAULT_STARTUP_COUNTDOWN))
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = DEFAULT_STARTUP_COUNTDOWN
+    return max(1, min(seconds, 300))
+
+
+def next_countdown(left: int, *, cancel: bool = False, start_now: bool = False) -> tuple[int, str]:
+    """One tick. Returns the next number and wait, run, or cancel."""
+    if cancel:
+        return left, "cancel"
+    if start_now or left <= 1:
+        return 0, "run"
+    return left - 1, "wait"
 
 
 @dataclass(frozen=True)
