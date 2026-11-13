@@ -1024,11 +1024,9 @@ def open_bcdboot_letter(path: str | None, decision: BootDecision | None = None) 
         code, _out = _run(argv, timeout=60)
         return code == 0 and Path(f"{letter}\\").exists()
 
-    from .drive_map import judge_mount, open_checked_mount, plan_bcdboot_letter
+    from .drive_map import judge_mount, open_checked_mount, plan_bcdboot_letter, resolve_access_path
 
     plan = plan_bcdboot_letter(path, used)
-    if plan.get("letter") and not plan.get("needs_assign"):
-        return str(plan["letter"]), False
 
     def _free(letter: str) -> bool:
         return not Path(f"{str(letter)[:1]}:\\").exists()
@@ -1061,18 +1059,70 @@ def open_bcdboot_letter(path: str | None, decision: BootDecision | None = None) 
         if letter:
             _run(["mountvol", f"{letter}:", "/d"], timeout=30)
 
-    result = open_checked_mount(
-        plan,
-        {
-            "mountvol": _mountvol,
-            "Add-PartitionAccessPath": _storage,
-            "diskpart assign": _diskpart,
-        },
-        letter_free=_free,
-        verify=_verify,
-        release=_release,
-    )
-    if not result.get("ok"):
-        log(f"NO-GO: temporary mount failed ({result.get('reason')})", "ERROR")
+    def _assign() -> str | None:
+        mounted = open_checked_mount(
+            plan,
+            {
+                "mountvol": _mountvol,
+                "Add-PartitionAccessPath": _storage,
+                "diskpart assign": _diskpart,
+            },
+            letter_free=_free,
+            verify=_verify,
+            release=_release,
+        )
+        if not mounted.get("ok"):
+            return None
+        return str(mounted.get("letter") or "")
+
+    folder = ""
+    if volume is not None:
+        for one in volume.access_paths:
+            if bare_bcdboot_letter(str(one)) is None and not normalize_volume_guid_path(str(one)):
+                folder = str(one)
+                break
+    elif path and bare_bcdboot_letter(path) is None and not wanted:
+        folder = path
+    spec = {
+        "letter": volume.letter if volume is not None and volume.letter else (None if plan.get("needs_assign") else plan.get("letter")),
+        "guid": (volume.volume_guid if volume is not None and volume.volume_guid else wanted),
+        "harddisk_volume": None,
+        "folder": folder,
+        "disk": volume.disk if volume is not None else None,
+        "partition": volume.partition if volume is not None else None,
+        "esp": bool(wanted) or (volume is not None and bool(wanted or volume.volume_guid)),
+    }
+
+    def _probe(candidate: str) -> dict[str, object]:
+        observed: dict[str, object] = {
+            "exists": Path(candidate).exists(),
+            "readable": False,
+            "guid": None,
+            "disk": None,
+            "partition": None,
+            "filesystem": None,
+        }
+        if observed["exists"]:
+            try:
+                os.listdir(candidate)
+                observed["readable"] = True
+            except OSError:
+                observed["readable"] = False
+        same_letter = False
+        if volume is not None and volume.letter and candidate.upper().startswith(f"{volume.letter.upper()[:1]}:\\"):
+            same_letter = True
+        same_guid = bool(wanted) and candidate.rstrip("\\").lower() == str(wanted).rstrip("\\").lower()
+        same_folder = bool(folder) and candidate.rstrip("\\").lower() == folder.rstrip("\\").lower()
+        if observed["readable"] and volume is not None and (same_letter or same_guid or same_folder):
+            observed["disk"] = volume.disk
+            observed["partition"] = volume.partition
+            observed["guid"] = wanted or volume.volume_guid
+            observed["filesystem"] = "FAT32" if spec["esp"] else None
+        return observed
+
+    resolved = resolve_access_path(spec, probe=_probe, assign=_assign, need_letter=True, logger=log)
+    if not resolved.get("ok"):
+        log("NO-GO: no path style produced a verified bcdboot letter", "ERROR")
         return None, False
-    return str(result.get("letter") or ""), True
+    log(f"bcdboot path style {resolved.get('style')}", "OK")
+    return str(resolved.get("letter") or ""), resolved.get("style") == "temp-letter"

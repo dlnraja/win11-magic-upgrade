@@ -224,6 +224,121 @@ def open_checked_mount(
     }
 
 
+_PATH_STYLES = ("letter", "volume-guid", "device", "folder", "temp-letter")
+
+
+def device_path(volume_number: int) -> str:
+    """``\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeN\\`` from the volume number."""
+    if isinstance(volume_number, bool) or not isinstance(volume_number, int) or volume_number < 1:
+        raise ValueError(f"not a hard disk volume number: {volume_number!r}")
+    return f"\\\\?\\GLOBALROOT\\Device\\HarddiskVolume{volume_number}\\"
+
+
+def access_style_candidates(spec: Mapping[str, object]) -> list[tuple[str, str]]:
+    """Each path style at most once, in the fallback order. No retries."""
+    found: list[tuple[str, str]] = []
+    letter = bare_bcdboot_letter(str(spec.get("letter") or ""))
+    if letter:
+        found.append(("letter", letter + "\\"))
+    guid_text = spec.get("guid")
+    if guid_text:
+        guid = normalize_volume_guid_path(str(guid_text))
+        if guid is None:
+            try:
+                guid = volume_path_from_guid(str(guid_text))
+            except ValueError:
+                guid = None
+        if guid:
+            found.append(("volume-guid", guid))
+    number = spec.get("harddisk_volume")
+    if isinstance(number, int) and not isinstance(number, bool) and number >= 1:
+        found.append(("device", device_path(number)))
+    folder = str(spec.get("folder") or "")
+    if folder and path_format_problem(folder) == "":
+        if not folder.endswith("\\"):
+            folder += "\\"
+        if path_format_problem(folder, trailing_slash=True) == "":
+            found.append(("folder", folder))
+    found.append(("temp-letter", ""))
+    ordered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for style, path in found:
+        if style in seen or style not in _PATH_STYLES:
+            continue
+        seen.add(style)
+        ordered.append((style, path))
+        if len(ordered) == len(_PATH_STYLES):
+            break
+    return ordered
+
+
+def resolve_access_path(
+    spec: Mapping[str, object],
+    *,
+    probe: Callable[[str], Mapping[str, object]],
+    assign: Callable[[], str | None] | None = None,
+    need_letter: bool = False,
+    logger: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    """Try letter, GUID, device, folder, then a temp letter. First verified style wins."""
+    expected = {
+        "guid": spec.get("guid"),
+        "disk": spec.get("disk"),
+        "partition": spec.get("partition"),
+        "esp": spec.get("esp"),
+    }
+    tried: list[str] = []
+    for style, path in access_style_candidates(spec):
+        if style == "temp-letter":
+            if assign is None:
+                tried.append("temp-letter:no-assign")
+                break
+            given = assign()
+            letter = bare_bcdboot_letter(given or "")
+            if letter is None:
+                tried.append("temp-letter:assign-failed")
+                break
+            path = letter + "\\"
+        problem = path_format_problem(path, trailing_slash=True)
+        if problem:
+            tried.append(f"{style}:{problem}")
+            continue
+        try:
+            observed = probe(path)
+        except Exception as exc:
+            tried.append(f"{style}:{type(exc).__name__}")
+            continue
+        mismatch = judge_mount(observed, expected)
+        if mismatch:
+            tried.append(f"{style}:{mismatch}")
+            continue
+        drive = drive_letter_of(path)
+        letter = f"{drive}:" if drive else None
+        if need_letter and letter is None:
+            tried.append(f"{style}:not-a-letter")
+            continue
+        if logger is not None:
+            logger(f"path style {style} used")
+        return {
+            "ok": True,
+            "style": style,
+            "path": path,
+            "letter": letter,
+            "verdict": "GO",
+            "tried": tuple(tried),
+        }
+    if logger is not None:
+        logger("NO-GO: no path style resolved the partition")
+    return {
+        "ok": False,
+        "style": "",
+        "path": "",
+        "letter": None,
+        "verdict": "NO-GO",
+        "tried": tuple(tried),
+    }
+
+
 def mountvol_assign_args(letter: str, volume: str) -> list[str]:
     """mountvol argv. The volume argument is a real ``\\\\?\\Volume{GUID}\\`` path."""
     guid = normalize_volume_guid_path(volume)

@@ -32,7 +32,10 @@ from engine.drive_map import (  # noqa: E402
     checked_directory,
     judge_mount,
     mountvol_assign_args,
+    access_style_candidates,
+    device_path,
     open_checked_mount,
+    resolve_access_path,
     path_format_problem,
     tool_arg_problem,
     volume_path_from_guid,
@@ -960,6 +963,60 @@ def test_path_and_mount_checks() -> None:
     assert all(item.endswith("letter-busy") for item in blocked["tried"])
 
 
+def test_path_style_fallback() -> None:
+    guid = "b95f9bc1-965f-43ae-81ff-28b0e4909488"
+    spec = {
+        "letter": "S",
+        "guid": guid,
+        "harddisk_volume": 3,
+        "folder": r"C:\MagicUpgrade\mnt\esp",
+        "disk": 0,
+        "partition": 2,
+        "esp": True,
+    }
+    styles = [name for name, _path in access_style_candidates(spec)]
+    assert styles == ["letter", "volume-guid", "device", "folder", "temp-letter"]
+    assert device_path(3) == "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\"
+    assert not has_doubled_backslash_run(device_path(3))
+    seen: list[str] = []
+
+    def probe(path: str) -> dict:
+        seen.append(path)
+        good = {"exists": True, "readable": True, "guid": guid, "disk": 0, "partition": 2, "filesystem": "FAT32"}
+        if path.startswith("\\\\?\\Volume") or path.startswith("Z:"):
+            return good
+        return {"exists": False, "readable": False}
+
+    logs: list[str] = []
+    found = resolve_access_path(spec, probe=probe, assign=lambda: "Z:", need_letter=False, logger=logs.append)
+    assert found["verdict"] == "GO" and found["style"] == "volume-guid"
+    assert found["path"].startswith("\\\\?\\Volume{")
+    assert len(seen) == 2
+    assert logs == ["path style volume-guid used"]
+
+    seen.clear()
+    logs.clear()
+    calls = {"n": 0}
+
+    def assign() -> str:
+        calls["n"] += 1
+        return "Z:"
+
+    boot = resolve_access_path(spec, probe=probe, assign=assign, need_letter=True, logger=logs.append)
+    assert boot["style"] == "temp-letter" and boot["letter"] == "Z:"
+    assert boot["verdict"] == "GO"
+    assert calls["n"] == 1
+    assert len(seen) <= 5
+    assert logs == ["path style temp-letter used"]
+
+    def dead(_path: str) -> dict:
+        return {"exists": False, "readable": False}
+
+    blocked = resolve_access_path(spec, probe=dead, assign=lambda: None, need_letter=True, logger=logs.append)
+    assert blocked["verdict"] == "NO-GO" and blocked["ok"] is False
+    assert len(blocked["tried"]) <= 5
+
+
 if __name__ == "__main__":
     test_esp_on_letter_other_than_y()
     test_esp_without_letter_picks_free_letter()
@@ -991,4 +1048,5 @@ if __name__ == "__main__":
     test_decision_type_exports()
     test_no_hardcoded_esp_letter_in_sources()
     test_path_and_mount_checks()
+    test_path_style_fallback()
     print("drive map logic OK")
