@@ -193,7 +193,9 @@ def prepare_bios_boot_files() -> bool:
         return not step.abort and bool(step.skip_loader_overwrite)
     result = run_bounded([str(bcdboot), sys_root, "/f", "BIOS"], timeout=180)
     log(f"bcdboot /f BIOS -> {result.code}: {(result.output or result.reason)[:240]}")
-    return result.ok or "successfully" in (result.output or "").lower()
+    from .boot_safe import bcdboot_succeeded
+
+    return bcdboot_succeeded(result.code, result.output or "")
 
 
 def apply_hybrid_ia32_path(*, activate: bool = False, prepare_bios: bool = True) -> dict:

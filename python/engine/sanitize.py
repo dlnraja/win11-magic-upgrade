@@ -14,7 +14,8 @@ from typing import Any
 
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-_IPV6 = re.compile(r"\b(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}\b", re.I)
+# Three or more colons. HH:MM:SS has two and must stay readable in repair summaries.
+_IPV6 = re.compile(r"\b(?:[A-F0-9]{1,4}:){3,7}[A-F0-9]{1,4}\b", re.I)
 _MAC = re.compile(r"\b(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}\b", re.I)
 _SID = re.compile(r"\bS-1-5-21(?:-\d+){3,}\b")
 _GUID = re.compile(

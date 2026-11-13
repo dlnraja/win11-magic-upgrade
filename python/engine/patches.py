@@ -673,8 +673,10 @@ def apply_migration_patches(
             force = scan_logs_for_srp_error() and not resume
             srp = inspect_and_fix_system_reserved(force_expand=force, system_disk=system_disk)
             if isinstance(srp, dict) and srp.get("ok") is False:
-                log("SRP/ESP fix reported failure — retrying with force expand", "WARN")
-                srp = inspect_and_fix_system_reserved(force_expand=True, system_disk=system_disk)
+                log(
+                    "SRP/ESP fix reported failure. One-Click will not shrink C: or create another ESP.",
+                    "WARN",
+                )
         except Exception as e:
             log(f"System Reserved / EFI fix skipped: {e}", "WARN")
 

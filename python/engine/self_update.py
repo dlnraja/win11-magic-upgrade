@@ -80,6 +80,11 @@ def parse_semver(value: str) -> tuple[int, int, int]:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _parse_ver(value: str) -> tuple[int, ...]:
+    """Older callers compare this tuple directly."""
+    return parse_semver(value)
+
+
 def compare_semver(left: str, right: str) -> int:
     a, b = parse_semver(left), parse_semver(right)
     if a < b:

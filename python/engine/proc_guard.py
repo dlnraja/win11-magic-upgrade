@@ -243,7 +243,9 @@ def validate_output(
             return False, f"output missing {pattern}"
     for pattern in reject_patterns:
         if re.search(pattern, text, re.I):
-            # A success line wins over a generic error word in a path.
+            # BcdOpenStore / BFSVC Error is a failure even when the word "successfully" appears.
+            if re.search(r"BcdOpenStore|BFSVC Error|unexpected error|erreur inattendue", text, re.I):
+                return False, "bcd store error"
             if re.search(r"successfully|r[eé]ussi|termin[eé]", text, re.I):
                 continue
             return False, f"output matched {pattern}"

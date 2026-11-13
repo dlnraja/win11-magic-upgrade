@@ -305,7 +305,7 @@ def run_boot_auto_remediate(
             from .boot_safe import run_esp_srp_with_restore
             from .sysreserved import scan_logs_for_srp_error
 
-            force = bool(scan_logs_for_srp_error()) or force_esp
+            force = os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes")
             rep = report.as_dict() if report is not None and hasattr(report, "as_dict") else None
             res = run_esp_srp_with_restore(
                 force_expand=force,

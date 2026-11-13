@@ -360,7 +360,7 @@ def _execute_step(
         except Exception as e:
             log(f"Boot remediation bot: {e}", "WARN")
         res = run_esp_srp_with_restore(
-            force_expand=force or True,
+            force_expand=os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes"),
             system_disk=disk,
             retries=3,
             report=rep if isinstance(rep, dict) else None,
@@ -874,7 +874,7 @@ def fix_system_reserved_only(sink: Callable[[str], None] | None = None) -> None:
         from .boot_safe import run_esp_srp_with_restore
 
         result = run_esp_srp_with_restore(
-            force_expand=force or True,
+            force_expand=os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes"),
             system_disk=disk,
             retries=3,
             report=report_dict,

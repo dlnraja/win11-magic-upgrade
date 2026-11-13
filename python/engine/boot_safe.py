@@ -112,17 +112,76 @@ def _c_free_gb() -> float | None:
         return None
 
 
+def partition_style_from_text(text: str) -> str:
+    """Read GPT/MBR from diskpart or Get-Disk text, including a Gpt column star."""
+    blob = text or ""
+    if re.search(
+        r"\bGPT\b|\bGUID\b|PartitionStyle\s*[:=]\s*GPT|table de partition\s*:\s*GPT",
+        blob,
+        re.I,
+    ):
+        return "GPT"
+    if re.search(r"Gpt\s*\*|\*\s*$", blob, re.I) and re.search(r"\bGpt\b", blob, re.I):
+        return "GPT"
+    if re.search(r"\bMBR\b|PartitionStyle\s*[:=]\s*MBR|table de partition\s*:\s*MBR", blob, re.I):
+        return "MBR"
+    return "Unknown"
+
+
+def style_from_list_disk(text: str, disk_n: int) -> str:
+    """list disk: a star in the Gpt column means GPT even when the word is only in the header."""
+    header_gpt = False
+    for line in (text or "").splitlines():
+        if re.search(r"\bGpt\b", line, re.I) and re.search(r"Disk|Disque", line, re.I) and not re.search(
+            r"\d", line
+        ):
+            header_gpt = True
+        if re.search(rf"(?:Disk|Disque)\s+{int(disk_n)}\b", line, re.I):
+            if "*" in line and header_gpt:
+                return "GPT"
+            if re.search(r"\bGPT\b", line, re.I):
+                return "GPT"
+            if header_gpt and "*" not in line:
+                return "MBR"
+    return "Unknown"
+
+
+def bcdboot_succeeded(code: int, output: str) -> bool:
+    """Exit 32 and BcdOpenStore / BFSVC Error are failures even if other words look successful."""
+    text = output or ""
+    if re.search(
+        r"BcdOpenStore|BFSVC Error|unexpected error|erreur inattendue|failed with",
+        text,
+        re.I,
+    ):
+        return False
+    return int(code) == 0
+
+
 def _partition_style(disk_n: int | None) -> str:
     if disk_n is None or disk_n < 0:
         return "Unknown"
     ok, out = ensure_select_disk(int(disk_n))
-    if not ok:
-        return "Unknown"
-    if re.search(r"GPT", out, re.I):
-        return "GPT"
-    if re.search(r"MBR", out, re.I):
-        return "MBR"
-    return "Unknown"
+    style = partition_style_from_text(out if ok else "")
+    if style != "Unknown":
+        return style
+    code, ps_out = _run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"(Get-Disk -Number {int(disk_n)} -ErrorAction SilentlyContinue).PartitionStyle",
+        ],
+        timeout=30,
+    )
+    style = partition_style_from_text(ps_out if code == 0 else "")
+    if style != "Unknown":
+        return style
+    from .diskpart_safe import run_diskpart
+
+    ok_list, listed = run_diskpart("list disk\nexit\n", timeout=30)
+    return style_from_list_disk(listed if ok_list or listed else "", int(disk_n))
 
 
 def inspect_boot_files_on_letter(letter: str) -> dict[str, bool]:
@@ -606,7 +665,7 @@ def intelligent_boot_repair(*, prefer_uefi: bool | None = None, system_disk: int
                 continue
             code, out = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
             summary["actions"].append(f"bcdboot_{mode}:{code}")
-            if code == 0 or "successfully" in (out or "").lower():
+            if bcdboot_succeeded(code, out or ""):
                 break
 
     summary["actions"].extend(heal_bcd_store(prefer_uefi=uefi))
@@ -720,8 +779,9 @@ def guarantee_bootable(
     force_winre = os.environ.get("MAGIC_WINRE_BOOT", "").strip().lower() in ("1", "true", "yes")
     force_pe = os.environ.get("MAGIC_WINPE_BOOT", "").strip().lower() in ("1", "true", "yes")
 
-    if post.get("ok") and not force_restore and not force_winre and not force_pe:
-        actions.append("postflight_ok")
+    verified_fault = bool(post.get("needs_boot_repair"))
+    if not verified_fault and not force_restore and not force_winre and not force_pe:
+        actions.append("postflight_ok" if post.get("ok") else "no_verified_boot_fault")
         out = {
             "bootable": True,
             "safe_reboot_path": True,
@@ -1147,6 +1207,44 @@ def preflight_boot_edit(
     return snap
 
 
+_REAL_BOOT_FAULTS = frozenset(
+    {
+        "bcd_bootmgr_missing",
+        "missing_uefi_boot_files",
+        "missing_bios_boot_files",
+    }
+)
+
+
+def assess_postflight(
+    *,
+    firmware: str,
+    mounted: bool,
+    has_esp: bool,
+    boot_files_ok: bool,
+    bcd_ok: bool,
+    methods_exhausted: bool,
+) -> dict[str, Any]:
+    """Decide postflight issues without treating a mountvol miss as a broken boot.
+
+    ``esp_unmountable`` is only for a UEFI machine that has an ESP and every
+    access method failed. BIOS/MBR with no ESP is normal. A boot rewrite is
+    allowed only when BCD or boot files are actually missing.
+    """
+    fw = (firmware or "").strip().upper()
+    bios = fw in ("BIOS", "LEGACY", "MBR")
+    issues: list[str] = []
+    if not bcd_ok:
+        issues.append("bcd_bootmgr_missing")
+    if not mounted:
+        if fw == "UEFI" and has_esp and methods_exhausted:
+            issues.append("esp_unmountable")
+    elif not boot_files_ok:
+        issues.append("missing_bios_boot_files" if bios or not has_esp else "missing_uefi_boot_files")
+    repair = any(item in _REAL_BOOT_FAULTS for item in issues)
+    return {"issues": issues, "needs_boot_repair": repair, "ok": not issues and bcd_ok}
+
+
 def postflight_boot_edit(
     *,
     expect_uefi: bool | None = None,
@@ -1176,22 +1274,53 @@ def postflight_boot_edit(
         result["issues"].append("bcd_bootmgr_missing")
 
     mounted = None
+    has_esp = result["firmware"] == "UEFI"
+    methods_exhausted = False
+    try:
+        from .esp_access import _poller
+
+        decision = _poller().decision if _poller() is not None else None
+        drive_map = _poller().map if _poller() is not None else None
+    except Exception:
+        decision = None
+        drive_map = None
+    if drive_map is not None and (drive_map.firmware or "").upper() in ("BIOS", "LEGACY", "MBR"):
+        result["firmware"] = "BIOS"
+    if decision is not None:
+        has_esp = decision.esp is not None
     try:
         mounted = mount_esp()
+        if drive_map is not None and (drive_map.firmware or "").upper() in ("BIOS", "LEGACY", "MBR"):
+            result["firmware"] = "BIOS"
+            has_esp = bool(decision and decision.esp)
+        boot_files_ok = True
         if mounted:
             files = inspect_boot_files_on_letter(mounted)
             result["boot_files"] = files
+            result["mount_path"] = mounted
             want_uefi = expect_uefi if expect_uefi is not None else (result["firmware"] == "UEFI")
-            if want_uefi:
-                if not (files.get("efi_boot_bootx64") or files.get("efi_ms_bootmgfw")):
-                    result["issues"].append("missing_uefi_boot_files")
+            if want_uefi and has_esp:
+                boot_files_ok = bool(files.get("efi_boot_bootx64") or files.get("efi_ms_bootmgfw"))
             else:
-                if not (files.get("bios_bootmgr") or files.get("bios_bcd")):
-                    # UEFI files on BIOS firmware is still OK for hybrid
-                    if not (files.get("efi_boot_bootx64") or files.get("efi_ms_bootmgfw")):
-                        result["issues"].append("missing_bios_boot_files")
+                boot_files_ok = bool(
+                    files.get("bios_bootmgr")
+                    or files.get("bios_bcd")
+                    or files.get("efi_boot_bootx64")
+                    or files.get("efi_ms_bootmgfw")
+                )
         else:
-            result["issues"].append("esp_unmountable")
+            methods_exhausted = True
+            boot_files_ok = True
+        assessed = assess_postflight(
+            firmware=str(result["firmware"]),
+            mounted=bool(mounted),
+            has_esp=has_esp,
+            boot_files_ok=boot_files_ok,
+            bcd_ok=bool(result["bcd_bootmgr"]),
+            methods_exhausted=methods_exhausted,
+        )
+        result["issues"] = assessed["issues"]
+        result["needs_boot_repair"] = assessed["needs_boot_repair"]
     finally:
         if mounted:
             try:
@@ -1200,6 +1329,7 @@ def postflight_boot_edit(
                 pass
 
     result["ok"] = len(result["issues"]) == 0
+    result["needs_boot_repair"] = bool(result.get("needs_boot_repair"))
     # Deep verification scorecard (informational — intelligent_boot_repair acts on it)
     try:
         from .boot_emergency import deep_boot_verification

@@ -212,10 +212,13 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
                 timed_out = True
                 log(out or "bcdboot timed out", "ERROR")
                 break
-            if code == 0 or "successfully" in (out or "").lower() or "BFSVC" in (out or ""):
+            from .boot_safe import bcdboot_succeeded
+
+            if bcdboot_succeeded(code, out or ""):
                 ok = True
                 log(f"Boot Manager repaired ({mode})", "OK")
                 break
+            log(f"bcdboot {mode} failed (exit {code})", "ERROR")
     finally:
         if mounted:
             unmount_letter(mounted)

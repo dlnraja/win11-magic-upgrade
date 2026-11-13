@@ -130,13 +130,18 @@ def deep_boot_verification(*, prefer_uefi: bool | None = None) -> dict[str, Any]
                             or files.get("efi_ms_bootmgfw")
                         ),
                     )
-                # BCD store file on ESP/BIOS
-                bcd_path = Path(f"{letter}:\\EFI\\Microsoft\\Boot\\BCD") if uefi else Path(f"{letter}:\\Boot\\BCD")
-                alt = Path(f"{letter}:\\EFI\\Microsoft\\Boot\\BCD")
-                present = bcd_path.is_file() or alt.is_file() or Path(f"{letter}:\\Boot\\BCD").is_file()
+                from .drive_map import access_root
+
+                root = Path(access_root(mounted) or mounted)
+                present = (root / "EFI" / "Microsoft" / "Boot" / "BCD").is_file() or (
+                    root / "Boot" / "BCD"
+                ).is_file()
                 _check("esp_bcd_file", present, warn=True)
+                _check("esp_mountable", True)
             else:
-                _check("esp_mountable", False)
+                # mount_esp already tried Storage, diskpart, and a folder.
+                # A BIOS machine with no ESP is not a failure.
+                _check("esp_mountable", not uefi, warn=not uefi)
         finally:
             if mounted:
                 try:
@@ -444,7 +449,9 @@ def emergency_regenerate_bcd(*, prefer_uefi: bool | None = None) -> dict[str, An
                 continue
             c, o = _run([str(bcdboot), sys_root, "/f", mode], timeout=180)
             out["actions"].append(f"bcdboot_{mode}:{c}")
-            if c == 0 or "successfully" in (o or "").lower():
+            from .boot_safe import bcdboot_succeeded
+
+            if bcdboot_succeeded(c, o or ""):
                 break
 
     out["actions"].extend(heal_bcd_store(prefer_uefi=uefi))

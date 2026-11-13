@@ -161,7 +161,9 @@ def _copy_tree_filtered(src: Path, dst: Path) -> tuple[int, int]:
                 shutil.copy2(sp, tp)
                 files += 1
                 nbytes += sp.stat().st_size
-            except Exception:
+            except Exception as exc:
+                # Error 32 (file in use) is a warning. It is not a reason to shrink or recreate an ESP.
+                log(f"Backup skipped locked file {name}: {exc}", "WARN")
                 continue
     return files, nbytes
 
@@ -195,7 +197,13 @@ def _try_capture_wim(src_letter: str, wim_path: Path, name: str) -> bool:
     if code == 0 and wim_path.is_file() and wim_path.stat().st_size > 1000:
         log(f"WIM captured: {wim_path.name} ({wim_path.stat().st_size // (1024*1024)} MB)", "OK")
         return True
-    log(f"WIM capture failed/skipped: {(out or '')[:160]}", "INFO")
+    tail = (out or "")[:200]
+    if "1005" in tail or "recognized file system" in tail.lower() or "système de fichiers" in tail.lower():
+        log("WIM skipped: volume has no recognized filesystem (RAW/MSR). Not a boot failure.", "WARN")
+    elif "error 32" in tail.lower() or "being used by another process" in tail.lower():
+        log("WIM skipped: a file is in use (error 32). Not a reason to change partitions.", "WARN")
+    else:
+        log(f"WIM capture failed/skipped: {tail[:160]}", "INFO")
     try:
         wim_path.unlink(missing_ok=True)
     except Exception:
@@ -705,7 +713,9 @@ def dynamic_regenerate_boot_partition(
             else:
                 c, o = _run([str(bcdboot), sys_root, "/s", letter, "/f", mode], timeout=180)
                 out["actions"].append(f"bcdboot_s_{mode}:{c}")
-                out["ok"] = c == 0 or "successfully" in (o or "").lower()
+                from .boot_safe import bcdboot_succeeded
+
+                out["ok"] = bcdboot_succeeded(c, o or "")
 
     # Persist regenerate status
     try:

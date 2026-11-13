@@ -311,7 +311,9 @@ def repair_bootmgr_to_os_arch(prefer_uefi: bool = True) -> bool:
                 except Exception as e:
                     log(f"bootx64 copy: {e}", "WARN")
             unmount_letter(letter)
-            ok = code == 0 or "successfully" in out.lower()
+            from .boot_safe import bcdboot_succeeded
+
+            ok = bcdboot_succeeded(code, out or "")
     return ok
 
 

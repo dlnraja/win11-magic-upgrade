@@ -943,6 +943,7 @@ def cli_help_text() -> str:
     return """
 Win11 Magic Upgrade - CLI
 
+  Win11MagicUpgrade.exe --cli --repair-before-reboot
   Win11MagicUpgrade.exe --cli --diagnose
   Win11MagicUpgrade.exe --cli --oneclick
   Win11MagicUpgrade.exe --cli --dry-run
@@ -986,6 +987,8 @@ Env (selected):
   MAGIC_INSTALL_VCREDIST=1     VC++ 2015-2022 redistributables
   MAGIC_INSTALL_MEDIA_FEATURE=1  Media Feature Pack (N editions)
   MAGIC_SKIP_FRAMEWORKS=1      Disable all framework installs
+  MAGIC_ESP_EXPAND=1           Opt in to shrink C: or create another ESP
+  MAGIC_ESP_FONT_CLEANUP=1    Opt in to delete EFI font files after a backup
   MAGIC_BOOT_AUTO_FIX=1        Run EFI/MBR/smart-partition failover bot
   MAGIC_SKIP_BOOT_REMEDIATE=1  Disable boot remediation bot
   MAGIC_SKIP_BOOT_GUARD=1      Disable autonomous EFI/GRUB/WinRE safety net
@@ -1082,6 +1085,7 @@ def main() -> None:
             "--research",
             "--boot-fix",
             "--boot-heal",
+            "--repair-before-reboot",
             "--openduet-prepare",
             "--openduet-write",
         )
@@ -1150,6 +1154,12 @@ def main() -> None:
 
                     heal = verify_and_heal_boot(force=True)
                     raise SystemExit(0 if heal.get("ok") or heal.get("bootable") else 2)
+                if "--repair-before-reboot" in argv_l:
+                    from engine.pre_reboot import repair_before_reboot  # type: ignore
+
+                    report = repair_before_reboot()
+                    print(report.get("summary_text") or report.get("verdict"))
+                    raise SystemExit(0 if report.get("verdict") == "GO" else 2)
                 if "--boot-fix" in argv_l:
                     from engine.boot_remediation import run_boot_auto_remediate  # type: ignore
                     from engine.detect import collect_report  # type: ignore

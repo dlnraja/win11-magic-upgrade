@@ -156,9 +156,12 @@ def cleanup_boot_volume(root: str) -> dict:
 
     before_t, before_f = _mb(base)
 
-    # EFI fonts (Microsoft documented fix)
+    # EFI fonts are removed only when MAGIC_ESP_FONT_CLEANUP=1, after a backup exists.
     fonts = base / "EFI" / "Microsoft" / "Boot" / "Fonts"
-    if fonts.is_dir():
+    if fonts.is_dir() and not font_cleanup_opt_in():
+        actions.append("font_cleanup_skipped_needs_MAGIC_ESP_FONT_CLEANUP")
+        log("Leaving EFI\\Microsoft\\Boot\\Fonts in place (cleanup is opt-in)", "INFO")
+    elif fonts.is_dir():
         n = 0
         for f in fonts.rglob("*"):
             if f.is_file() and f.suffix.lower() in {".ttf", ".otf", ".ttc"}:
@@ -184,6 +187,19 @@ def cleanup_boot_volume(root: str) -> dict:
         freed_files += n
         if n:
             actions.append(f"Deleted {n} BIOS Boot\\Fonts files")
+
+    # OEM payloads and leftover logs stay unless the same opt-in is set.
+    # One-Click must not delete ESP files on its own.
+    if not font_cleanup_opt_in():
+        actions.append("esp_file_cleanup_skipped_needs_opt_in")
+        log("Leaving other ESP files in place (deletion is opt-in)", "INFO")
+        after_t, after_f = _mb(base)
+        return {
+            "total_mb": after_t,
+            "free_mb": after_f,
+            "freed_mb": after_f - before_f,
+            "actions": actions,
+        }
 
     # OEM firmware / recovery dumps often stuffed into ESP (HP, Dell, Lenovo, Acer, Asus, Toshiba...)
     # Policy is brand-aware via oem_adapt (keep .efi loaders; drop bulky capsules).
@@ -294,6 +310,15 @@ def unmount_letter(letter_root: str) -> None:
     _run(["mountvol", f"{L}:", "/d"])
 
 
+def destructive_esp_opt_in() -> bool:
+    """Shrink, new ESP, and format stay off unless the operator sets MAGIC_ESP_EXPAND=1."""
+    return os.environ.get("MAGIC_ESP_EXPAND", "").strip().lower() in ("1", "true", "yes")
+
+
+def font_cleanup_opt_in() -> bool:
+    return os.environ.get("MAGIC_ESP_FONT_CLEANUP", "").strip().lower() in ("1", "true", "yes")
+
+
 def create_larger_esp(
     size_mb: int = TARGET_ESP_MB,
     *,
@@ -304,7 +329,14 @@ def create_larger_esp(
     Then bcdboot Windows onto it. Does not wipe user data on C:.
     Refuses to proceed if system disk cannot be verified (no silent disk 0).
     """
-    log(f"Creating new {size_mb} MB EFI System Partition (shrink C:, no data wipe)...", "STEP")
+    if not destructive_esp_opt_in():
+        log(
+            "Refusing to shrink C: or create an ESP. One-Click does not do this. "
+            "Set MAGIC_ESP_EXPAND=1 only after a verified backup and a reviewed plan.",
+            "WARN",
+        )
+        return None
+    log(f"Creating new {size_mb} MB EFI System Partition (opt-in, shrink C:, no data wipe)...", "STEP")
     try:
         from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
 
@@ -369,12 +401,14 @@ def create_larger_esp(
     if cert_reason:
         log(cert_reason, "ERROR")
         return None
+    from .boot_safe import bcdboot_succeeded
+
     code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "UEFI"], timeout=180)
     log(f"bcdboot -> {code}: {bout[:300]}")
-    if code != 0 and "successfully" not in bout.lower() and "reussi" not in bout.lower().replace("é", "e"):
+    if not bcdboot_succeeded(code, bout):
         code2, bout2 = _run([str(bcdboot), sys_root, "/s", root, "/f", "ALL"], timeout=180)
         log(f"bcdboot ALL -> {code2}: {bout2[:300]}")
-        if code2 != 0:
+        if not bcdboot_succeeded(code2, bout2):
             log("bcdboot failed on new ESP - old ESP still present, boot should remain OK", "WARN")
             # Do NOT report success — caller must not mark expand ok
             return None
@@ -393,7 +427,14 @@ def create_larger_system_reserved_mbr(
     then bcdboot /f BIOS. Old System Reserved left intact as fallback.
     Does NOT set `active` until bcdboot succeeds (avoids stealing boot flag on failure).
     """
-    log(f"Creating new {size_mb} MB System partition (MBR/BIOS path)...", "STEP")
+    if not destructive_esp_opt_in():
+        log(
+            "Refusing to shrink C: or create a System Reserved partition. "
+            "Set MAGIC_ESP_EXPAND=1 to opt in.",
+            "WARN",
+        )
+        return None
+    log(f"Creating new {size_mb} MB System partition (opt-in MBR/BIOS path)...", "STEP")
     try:
         from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
 
@@ -445,7 +486,9 @@ def create_larger_system_reserved_mbr(
     bcdboot = Path(sys_root) / "System32" / "bcdboot.exe"
     code, bout = _run([str(bcdboot), sys_root, "/s", root, "/f", "BIOS"])
     log(f"bcdboot BIOS -> {code}: {bout[:300]}")
-    if code != 0 and "successfully" not in bout.lower():
+    from .boot_safe import bcdboot_succeeded
+
+    if not bcdboot_succeeded(code, bout):
         log("bcdboot BIOS failed — leaving new partition without active flag (old SRP intact)", "WARN")
         return None
 
@@ -582,6 +625,14 @@ def inspect_and_fix_system_reserved(
 
         space_tight = info["free_mb"] < MIN_FREE_MB or info["total_mb"] < MIN_SIZE_MB_COMFORTABLE
         need_expand = space_tight or (force_expand and not prior_expanded and space_tight)
+        if need_expand and not destructive_esp_opt_in():
+            log(
+                "ESP space is tight. One-Click will not shrink C: or create a second ESP. "
+                "Set MAGIC_ESP_EXPAND=1 to opt in after reviewing the plan.",
+                "WARN",
+            )
+            result["actions"].append("expand_refused_no_opt_in")
+            need_expand = False
         if force_expand and not prior_expanded and not space_tight:
             log("Historical SRP error in logs but ESP space OK after cleanup — skip expand", "OK")
             need_expand = False
