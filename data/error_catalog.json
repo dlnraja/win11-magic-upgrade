@@ -8,7 +8,14 @@
         "The specified entry"
       ],
       "cause": "bcdedit was aimed at {current}. That identifier does not exist in an offline BCD store or in WinRE, and braces are mangled when the command is sent through a shell.",
+      "detection": "bcdedit prints that it cannot reference the specified entry.",
       "syntax": "bcdedit /enum {default} /v",
+      "repair": [
+        "bcdedit-enum-osloader",
+        "use-loader-guid",
+        "never-current-with-store"
+      ],
+      "rollback": "Export a fresh BCD before the next set. Do not import a store that was edited with {current}.",
       "repair_order": [
         "Run bcdedit as an argument list, with no shell.",
         "Parse bcdedit /enum {default} /v and bcdedit /enum osloader /v.",
