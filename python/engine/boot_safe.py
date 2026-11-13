@@ -1709,12 +1709,15 @@ def download_gparted_iso() -> Path | None:
 
     log(f"Downloading GParted Live ISO (rescue only): {GPARTED_ISO_NAME}", "STEP")
     try:
-        req = urllib.request.Request(
+        from .segment_download import download_image, make_ui_callback, redact_url
+
+        download_image(
             GPARTED_ISO_URL,
-            headers={"User-Agent": "Win11MagicUpgrade-Rescue/1.21"},
+            dest,
+            on_progress=make_ui_callback(dest.name),
+            log=log,
+            label=dest.name,
         )
-        with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
-            shutil.copyfileobj(resp, f, length=1024 * 1024)
         if dest.stat().st_size < 10_000_000:
             dest.unlink(missing_ok=True)
             log("GParted download too small — discarded", "WARN")
@@ -1722,12 +1725,14 @@ def download_gparted_iso() -> Path | None:
         log(f"GParted ISO ready: {dest} ({dest.stat().st_size // (1024*1024)} MB)", "OK")
         # Sidecar URL note
         (rescue / "GParted-ISO-SOURCE.txt").write_text(
-            f"URL: {GPARTED_ISO_URL}\nFile: {dest}\nVerify checksum on gparted.org if possible.\n",
+            f"URL: {redact_url(GPARTED_ISO_URL)}\nFile: {dest.name}\nVerify checksum on gparted.org if possible.\n",
             encoding="utf-8",
         )
         return dest
     except Exception as e:
-        log(f"GParted ISO download failed: {e}", "WARN")
+        from .segment_download import redact_text
+
+        log(f"GParted ISO download failed: {redact_text(str(e))}", "WARN")
         try:
             dest.unlink(missing_ok=True)
         except Exception:

@@ -1452,6 +1452,8 @@ Env (selected):
   MAGIC_INSTALL_VLC=1          Install VLC after Win10 settle if DVD Player missing
   MAGIC_FREE_SPACE=1           Aggressive disk reclaim
   MAGIC_ISO_CACHE=             Shared ISO folder(s) (; separated)
+  MAGIC_DOWNLOAD_SEGMENTS=6    Parallel ISO/ESD connections (4-8)
+  MAGIC_ISO_SHA256=            Expected SHA-256; mismatch deletes and retries
   MAGIC_ENTERPRISE_ISO_DIR=    Local VL/enterprise ISO folder
   MAGIC_DU_CAB_DIR=            Offline Dynamic Update .cab folder (staged before Setup)
   MAGIC_DU_OFFLINE=1           Force /dynamicupdate disable when cabs staged
