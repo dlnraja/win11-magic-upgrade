@@ -908,6 +908,79 @@ def last_boot_guard() -> dict[str, Any] | None:
     return _LAST_GUARD
 
 
+def decide_startup_repair(diag: dict[str, Any]) -> dict[str, Any]:
+    """Choose UEFI repair, MBR repair, both, or neither. A healthy path is never selected."""
+    firmware = str(diag.get("firmware") or "UNKNOWN").upper()
+    style = str(diag.get("partition_style") or "UNKNOWN").upper()
+    csm = bool(diag.get("csm"))
+    esp = diag.get("esp") or {}
+    mbr = diag.get("mbr") or {}
+    failed = str(diag.get("failed_path") or "").lower()
+    if int(diag.get("boot_disk_count") or 1) > 1 and not diag.get("boot_disk_known", True):
+        return {"mode": "none", "repair_uefi": False, "repair_mbr": False, "reason": "multiple_boot_disks"}
+    uefi_eligible = firmware in ("UEFI", "UNKNOWN") or csm or style in ("GPT", "HYBRID")
+    mbr_eligible = firmware in ("BIOS", "LEGACY", "MBR", "UNKNOWN") or csm or style in ("MBR", "HYBRID")
+    if firmware == "BIOS" and not csm and style not in ("MBR", "HYBRID"):
+        uefi_eligible = False
+    if firmware == "UEFI" and not csm and style not in ("GPT", "HYBRID", "UNKNOWN"):
+        mbr_eligible = False
+    repair_uefi = uefi_eligible and bool(esp.get("present")) and not bool(esp.get("healthy", True))
+    repair_mbr = mbr_eligible and bool(mbr.get("present")) and not bool(mbr.get("healthy", True))
+    if failed == "uefi":
+        repair_mbr = False
+    elif failed == "bios":
+        repair_uefi = False
+    if repair_uefi and repair_mbr:
+        mode = "hybrid"
+    elif repair_uefi:
+        mode = "uefi"
+    elif repair_mbr:
+        mode = "mbr"
+    else:
+        mode = "none"
+    return {
+        "mode": mode,
+        "repair_uefi": repair_uefi,
+        "repair_mbr": repair_mbr,
+        "reason": "healthy" if mode == "none" else mode,
+    }
+
+
+def apply_startup_repairs(decision: dict[str, Any], *, uefi_repair: Callable[[], None], mbr_repair: Callable[[], None]) -> list[str]:
+    done: list[str] = []
+    if decision.get("repair_uefi"):
+        uefi_repair()
+        done.append("uefi")
+    if decision.get("repair_mbr"):
+        mbr_repair()
+        done.append("mbr")
+    return done
+
+
+def collect_startup_diagnostics() -> dict[str, Any]:
+    """Best-effort firmware, style, and path health. Missing data does not invent a repair."""
+    firmware = "UNKNOWN"
+    try:
+        import ctypes
+
+        kind = ctypes.c_uint(0)
+        if ctypes.windll.kernel32.GetFirmwareType(ctypes.byref(kind)):
+            firmware = {1: "BIOS", 2: "UEFI"}.get(int(kind.value), "UNKNOWN")
+    except Exception:
+        firmware = "UNKNOWN"
+    return {
+        "firmware": firmware,
+        "partition_style": "UNKNOWN",
+        "csm": False,
+        "secure_boot": "unknown",
+        "boot_disk_count": 1,
+        "boot_disk_known": True,
+        "failed_path": "",
+        "esp": {"present": False, "healthy": True, "reasons": ()},
+        "mbr": {"present": False, "healthy": True, "reasons": ()},
+    }
+
+
 def startup_boot_guard(argv: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
     """Run the anti-failed-boot guard once per process, inside a wall-clock budget."""
     global _LAST_GUARD
@@ -920,6 +993,40 @@ def startup_boot_guard(argv: list[str] | None = None, **kwargs: Any) -> dict[str
             "summary_text": "Startup boot guard skipped.\n",
             "bundle": "",
         }
+        return _LAST_GUARD
+    supplied = kwargs.pop("diagnostics", None)
+    diag = supplied if supplied is not None else collect_startup_diagnostics()
+    decision = decide_startup_repair(diag)
+    saw_path = bool((diag.get("esp") or {}).get("present") or (diag.get("mbr") or {}).get("present"))
+    if supplied is not None or saw_path:
+        touched: list[str] = []
+
+        def _uefi() -> None:
+            touched.append("uefi")
+            repair_before_reboot(uefi=True, **{k: v for k, v in kwargs.items() if k in ("root", "runner", "apply", "esps", "firmware_text", "unmount_letter", "esp_root_for", "budget_s")})
+
+        def _mbr() -> None:
+            touched.append("mbr")
+            repair_before_reboot(uefi=False, **{k: v for k, v in kwargs.items() if k in ("root", "runner", "apply", "esps", "firmware_text", "unmount_letter", "esp_root_for", "budget_s")})
+
+        apply_startup_repairs(decision, uefi_repair=_uefi, mbr_repair=_mbr)
+        verdict = "GO" if decision["mode"] == "none" or touched else "NO-GO"
+        if decision["reason"] == "multiple_boot_disks":
+            verdict = "NO-GO"
+        _LAST_GUARD = {
+            "verdict": verdict,
+            "repair_mode": decision["mode"],
+            "repair_uefi": decision["repair_uefi"],
+            "repair_mbr": decision["repair_mbr"],
+            "touched": touched,
+            "summary_text": (
+                f"Startup repair mode {decision['mode']}. "
+                f"UEFI repair={decision['repair_uefi']} MBR repair={decision['repair_mbr']}.\n"
+            ),
+            "bundle": "",
+            "delete_partitions": False,
+        }
+        open_repair_issue(_LAST_GUARD)
         return _LAST_GUARD
     raw_budget = os.environ.get("MAGIC_BOOT_GUARD_BUDGET", str(STARTUP_GUARD_BUDGET_S))
     try:

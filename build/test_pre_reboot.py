@@ -28,6 +28,8 @@ from engine.pre_reboot import (  # noqa: E402
     boot_guard_skipped,
     collect_diag_inventory,
     guard_blocks_action,
+    apply_startup_repairs,
+    decide_startup_repair,
     no_args_entrypoint,
     startup_action,
     startup_boot_guard,
@@ -296,6 +298,73 @@ def test_startup_guard_skips_only_when_asked_and_blocks_upgrade(tmp: Path) -> No
     assert source.index("startup_update(argv)") < source.index("startup_boot_guard(argv)")
 
 
+def _path(present: bool, healthy: bool) -> dict:
+    return {"present": present, "healthy": healthy, "reasons": () if healthy or not present else ("bad",)}
+
+
+def test_startup_repair_matrix() -> None:
+    def decision(**kwargs):
+        base = {
+            "firmware": "UEFI",
+            "partition_style": "GPT",
+            "csm": False,
+            "secure_boot": "off",
+            "boot_disk_count": 1,
+            "boot_disk_known": True,
+            "failed_path": "",
+            "esp": _path(True, True),
+            "mbr": _path(False, True),
+        }
+        base.update(kwargs)
+        return decide_startup_repair(base)
+
+    healthy = decision()
+    assert healthy["mode"] == "none"
+    assert healthy["repair_uefi"] is False and healthy["repair_mbr"] is False
+
+    uefi_only = decision(esp=_path(True, False))
+    assert uefi_only["mode"] == "uefi" and uefi_only["repair_mbr"] is False
+
+    bios_only = decision(
+        firmware="BIOS",
+        partition_style="MBR",
+        esp=_path(False, True),
+        mbr=_path(True, False),
+    )
+    assert bios_only["mode"] == "mbr" and bios_only["repair_uefi"] is False
+
+    hybrid = decision(
+        firmware="UEFI",
+        partition_style="HYBRID",
+        csm=True,
+        esp=_path(True, False),
+        mbr=_path(True, False),
+    )
+    assert hybrid["mode"] == "hybrid" and hybrid["repair_uefi"] and hybrid["repair_mbr"]
+
+    csm_mbr_healthy = decision(csm=True, partition_style="HYBRID", esp=_path(True, False), mbr=_path(True, True))
+    assert csm_mbr_healthy["mode"] == "uefi" and csm_mbr_healthy["repair_mbr"] is False
+
+    history = decision(
+        csm=True,
+        partition_style="HYBRID",
+        esp=_path(True, False),
+        mbr=_path(True, False),
+        failed_path="bios",
+    )
+    assert history["mode"] == "mbr" and history["repair_uefi"] is False
+
+    disks = decision(boot_disk_count=2, boot_disk_known=False, esp=_path(True, False))
+    assert disks["mode"] == "none" and disks["reason"] == "multiple_boot_disks"
+
+    called: list[str] = []
+    apply_startup_repairs(uefi_only, uefi_repair=lambda: called.append("uefi"), mbr_repair=lambda: called.append("mbr"))
+    assert called == ["uefi"]
+    called.clear()
+    apply_startup_repairs(healthy, uefi_repair=lambda: called.append("uefi"), mbr_repair=lambda: called.append("mbr"))
+    assert called == []
+
+
 def test_no_args_entrypoint_calls_guard_first() -> None:
     order: list[str] = []
     no_args_entrypoint(
@@ -357,6 +426,7 @@ def main() -> None:
     test_gpt_style_from_guid_and_star()
     test_postflight_ignores_mountvol_when_storage_works()
     test_one_click_does_not_expand_without_opt_in()
+    test_startup_repair_matrix()
     test_no_args_entrypoint_calls_guard_first()
     test_oneclick_stops_unless_go_and_issue_url_is_redacted()
     with tempfile.TemporaryDirectory() as name:
