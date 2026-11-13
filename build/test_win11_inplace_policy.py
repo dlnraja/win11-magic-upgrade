@@ -15,6 +15,9 @@ if "engine" not in sys.modules:
 
 from engine.win11_inplace_policy import (  # noqa: E402
     classify_setup_failure,
+    decide_noargs_startup,
+    next_countdown,
+    startup_countdown_seconds,
     decide_oneclick,
     next_remediation,
     official_setup_args,
@@ -69,6 +72,95 @@ def test_behind_win11_is_official_inplace_only() -> None:
     assert first[:2] == ["/auto", "upgrade"]
     assert "IgnoreWarning" not in first
     assert "/Product" not in first
+
+
+def test_noargs_win11_go_starts_official_update() -> None:
+    go = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=[],
+        update_path="inplace_least",
+    )
+    assert go.action == "official_update"
+    assert go.countdown is True
+    assert go.allow_bypass is False
+    cumulative = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        update_path="cumulative_update",
+    )
+    assert cumulative.action == "official_update"
+    assert cumulative.allow_bypass is False
+
+
+def test_noargs_repairs_until_go_and_honors_opt_out() -> None:
+    repair = decide_noargs_startup(
+        is_win11=True,
+        guard_go=False,
+        issues=["esp_bcd_missing"],
+        update_path="inplace_least",
+    )
+    assert repair.action == "repair"
+    assert repair.countdown is False
+    blocked = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=["efi bootmgfw missing"],
+        update_path="inplace_least",
+    )
+    assert blocked.action == "repair"
+    opted = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        opt_out=True,
+        update_path="inplace_least",
+    )
+    assert opted.action == "idle"
+    latest = decide_noargs_startup(is_win11=True, guard_go=True, update_path="health_check_only")
+    assert latest.action == "health"
+    older = decide_noargs_startup(is_win11=False, guard_go=True, update_path="inplace_least")
+    assert older.action == "idle"
+    healed = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=[],
+        update_path="inplace_least",
+        repaired=True,
+        error_count=0,
+    )
+    assert healed.action == "official_update"
+    assert healed.countdown is True
+    assert healed.allow_bypass is False
+    failed = decide_noargs_startup(
+        is_win11=True,
+        guard_go=False,
+        issues=["bcd_bootmgr_missing"],
+        update_path="inplace_least",
+        repaired=True,
+        error_count=1,
+    )
+    assert failed.action == "nogo"
+    assert failed.countdown is False
+    still_wrong = decide_noargs_startup(
+        is_win11=True,
+        guard_go=True,
+        issues=[],
+        update_path="inplace_least",
+        repaired=True,
+        error_count=1,
+    )
+    assert still_wrong.action == "nogo"
+
+
+def test_countdown_defaults_to_20_and_can_cancel() -> None:
+    assert startup_countdown_seconds(None) == 20 or startup_countdown_seconds("20") == 20
+    assert startup_countdown_seconds("20") == 20
+    assert startup_countdown_seconds("0") == 1
+    assert startup_countdown_seconds("nope") == 20
+    assert next_countdown(20) == (19, "wait")
+    assert next_countdown(1) == (0, "run")
+    assert next_countdown(8, start_now=True) == (0, "run")
+    assert next_countdown(8, cancel=True) == (8, "cancel")
 
 
 def test_failure_picks_one_matching_retry() -> None:
@@ -129,6 +221,9 @@ def main() -> None:
     test_older_windows_starts_official_too()
     test_already_latest_is_health_check_only()
     test_behind_win11_is_official_inplace_only()
+    test_noargs_win11_go_starts_official_update()
+    test_noargs_repairs_until_go_and_honors_opt_out()
+    test_countdown_defaults_to_20_and_can_cancel()
     test_failure_picks_one_matching_retry()
     print("test_win11_inplace_policy ok")
 

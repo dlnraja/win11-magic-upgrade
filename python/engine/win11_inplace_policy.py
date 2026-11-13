@@ -180,6 +180,83 @@ def next_remediation(cause: str, *, used: set[str], attempt: int, architecture: 
     return actions
 
 
+_BOOT_ISSUE = re.compile(r"mbr|efi|esp|bcd|bootmgr|bootmgfw", re.I)
+DEFAULT_STARTUP_COUNTDOWN = 20
+
+
+def startup_countdown_seconds(raw: str | int | None = None) -> int:
+    """Seconds before the no-args startup chain runs. Default is 20."""
+    import os
+
+    if raw is None:
+        raw = os.environ.get("MAGIC_STARTUP_COUNTDOWN", str(DEFAULT_STARTUP_COUNTDOWN))
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = DEFAULT_STARTUP_COUNTDOWN
+    return max(1, min(seconds, 300))
+
+
+def next_countdown(left: int, *, cancel: bool = False, start_now: bool = False) -> tuple[int, str]:
+    """One tick. Returns the next number and wait, run, or cancel."""
+    if cancel:
+        return left, "cancel"
+    if start_now or left <= 1:
+        return 0, "run"
+    return left - 1, "wait"
+
+
+@dataclass(frozen=True)
+class StartupDecision:
+    action: str  # repair | nogo | official_update | health | idle
+    countdown: bool = False
+    allow_bypass: bool = False
+    reason: str = ""
+
+
+def boot_issues_block_update(issues: list[str] | tuple[str, ...]) -> bool:
+    return any(_BOOT_ISSUE.search(str(item) or "") for item in issues)
+
+
+def decide_noargs_startup(
+    *,
+    is_win11: bool,
+    guard_go: bool,
+    issues: list[str] | tuple[str, ...] = (),
+    opt_out: bool = False,
+    update_path: str = "health_check_only",
+    repaired: bool = False,
+    error_count: int = 0,
+) -> StartupDecision:
+    """Double-click policy after the boot guard. Official update only on a clean GO."""
+    dirty = (not guard_go) or error_count != 0 or boot_issues_block_update(issues)
+    if repaired and dirty:
+        return StartupDecision(
+            "nogo",
+            reason="Post-repair verification failed. NO-GO. The official update will not start.",
+        )
+    if dirty:
+        return StartupDecision(
+            "repair",
+            reason="Boot guard is not GO. Repair MBR/EFI/BCD/ESP first. No update until every check passes.",
+        )
+    if repaired:
+        reason = "Boot repair verified with zero errors. Official in-place update, no bypass."
+    else:
+        reason = "Windows 11 and boot guard GO. Official in-place update, no bypass."
+    if opt_out:
+        return StartupDecision("idle", reason="Startup update is turned off.")
+    if not is_win11:
+        return StartupDecision("idle", reason="Boot guard is GO. This PC is not Windows 11 yet.")
+    if update_path not in ("inplace_least", "cumulative_update"):
+        return StartupDecision("health", reason="Already on the latest Windows 11. Health check only.")
+    return StartupDecision(
+        "official_update",
+        countdown=True,
+        reason=reason,
+    )
+
+
 def run_inplace_attempts(
     *,
     launch,
