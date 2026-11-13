@@ -197,10 +197,10 @@ def _rollback(plan: MountPlan, volume: VolumeRecord | None, io: "VolumeIO") -> N
     if not plan.mounted_by_us:
         return
     try:
-        if plan.action == "assign_letter" and plan.letter:
-            io.remove_letter(volume, plan.letter)
-        elif plan.action == "mountvol" and plan.letter:
-            io.mountvol_delete(plan.letter)
+        if plan.letter and plan.action in ("assign_letter", "diskpart_assign", "mountvol", "mountvol_guid"):
+            from .stale_letters import release_letter
+
+            release_letter(plan.letter, volume, io)
         elif plan.action == "folder":
             io.remove_folder(volume, plan.path)
     except Exception as exc:
@@ -285,6 +285,11 @@ def _apply(
             ok = bool(assigner(volume, item.letter)) if assigner else bool(io.assign(volume, item.letter))
             if not ok:
                 errors.append(f"diskpart assign {item.letter}: failed")
+        elif item.action == "mountvol_guid" and item.letter:
+            mounter = getattr(io, "mountvol_guid", None)
+            ok = bool(mounter(volume, item.letter)) if mounter else False
+            if not ok:
+                errors.append(f"mountvol {item.letter}: \\\\?\\Volume{{GUID}}\\ failed")
         elif item.action == "mountvol" and item.letter:
             ok = bool(io.mountvol(volume, item.letter))
             if not ok:
@@ -720,6 +725,23 @@ class WindowsVolumeIO(VolumeIO):
                 return True
         return False
 
+    def mountvol_guid(self, volume: VolumeRecord | None, letter: str) -> bool:
+        """Mount ``\\\\?\\Volume{GUID}\\`` on a free letter, then check that letter."""
+        from .stale_letters import volume_guid_path
+
+        if volume is None:
+            return False
+        target = volume_guid_path(volume.volume_guid)
+        if not target:
+            return False
+        code, out = _run(["mountvol", f"{letter.upper()[:1]}:", target], timeout=60)
+        root = Path(f"{letter.upper()[:1]}:\\")
+        if code == 0 and root.exists():
+            log(f"mountvol {letter.upper()[:1]}: {target} verified", "OK")
+            return True
+        log(f"mountvol {letter}: volume GUID failed ({code}): {(out or '')[:200]}", "WARN")
+        return False
+
     def mountvol(self, volume: VolumeRecord | None, letter: str) -> bool:
         """Optional UEFI-only attempt. Failure is not fatal; the caller falls through."""
         del volume
@@ -769,21 +791,37 @@ class WindowsVolumeIO(VolumeIO):
         )
         return code == 0 and path.exists()
 
-    def remove_letter(self, volume: VolumeRecord | None, letter: str) -> None:
+    def remove_letter(self, volume: VolumeRecord | None, letter: str) -> bool:
         if volume is not None and volume.partition is not None and volume.disk >= 0:
             script = (
                 f"Remove-PartitionAccessPath -DiskNumber {int(volume.disk)} "
                 f"-PartitionNumber {int(volume.partition)} -AccessPath '{letter.upper()[:1]}:' -EA SilentlyContinue"
             )
-            _run(
+            code, _out = _run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
                 timeout=60,
             )
-            return
-        _run(["mountvol", f"{letter.upper()[:1]}:", "/d"])
+            return code == 0
+        code, _out = _run(["mountvol", f"{letter.upper()[:1]}:", "/D"], timeout=30)
+        return code == 0
 
-    def mountvol_delete(self, letter: str) -> None:
-        _run(["mountvol", f"{letter.upper()[:1]}:", "/d"])
+    def diskpart_remove(self, volume: VolumeRecord | None, letter: str) -> bool:
+        if volume is None or volume.partition is None or volume.disk < 0:
+            return False
+        cleaned = letter.upper()[:1]
+        if cleaned == "C":
+            return False
+        script = (
+            f"select disk {int(volume.disk)}\r\n"
+            f"select partition {int(volume.partition)}\r\n"
+            f"remove letter={cleaned}\r\n"
+        )
+        code, _out = _run(["diskpart"], input_text=script, timeout=40)
+        return code == 0
+
+    def mountvol_delete(self, letter: str) -> bool:
+        code, _out = _run(["mountvol", f"{letter.upper()[:1]}:", "/D"], timeout=30)
+        return code == 0
 
     def remove_folder(self, volume: VolumeRecord | None, folder: str) -> None:
         if volume is not None and volume.partition is not None and volume.disk >= 0:
@@ -882,6 +920,7 @@ def mount_system_partition(*, role: str = "auto", prefer_letter: str | None = No
     method = {
         "assign_letter": "Add-PartitionAccessPath",
         "diskpart_assign": "diskpart assign",
+        "mountvol_guid": "mountvol volume GUID",
         "mountvol": "mountvol /S",
         "folder": "folder mount",
         "reuse_letter": "existing letter",
