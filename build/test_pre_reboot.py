@@ -28,6 +28,7 @@ from engine.pre_reboot import (  # noqa: E402
     boot_guard_skipped,
     collect_diag_inventory,
     guard_blocks_action,
+    no_args_entrypoint,
     startup_action,
     startup_boot_guard,
     attach_export_times,
@@ -295,6 +296,21 @@ def test_startup_guard_skips_only_when_asked_and_blocks_upgrade(tmp: Path) -> No
     assert source.index("startup_update(argv)") < source.index("startup_boot_guard(argv)")
 
 
+def test_no_args_entrypoint_calls_guard_first() -> None:
+    order: list[str] = []
+    no_args_entrypoint(
+        guard=lambda: order.append("guard"),
+        update=lambda: order.append("update"),
+        continue_app=lambda: order.append("app"),
+    )
+    assert order == ["guard", "update", "app"]
+    source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
+    main = source.split("def main()", 1)[1].split("def _main_after_no_args", 1)[0]
+    assert "if not sys.argv[1:]" in main
+    assert main.index("no_args_entrypoint") < main.index("return")
+    assert "startup_update" not in main
+
+
 def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
     import os
 
@@ -341,6 +357,7 @@ def main() -> None:
     test_gpt_style_from_guid_and_star()
     test_postflight_ignores_mountvol_when_storage_works()
     test_one_click_does_not_expand_without_opt_in()
+    test_no_args_entrypoint_calls_guard_first()
     test_oneclick_stops_unless_go_and_issue_url_is_redacted()
     with tempfile.TemporaryDirectory() as name:
         test_startup_guard_skips_only_when_asked_and_blocks_upgrade(Path(name))

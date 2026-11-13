@@ -838,6 +838,13 @@ _UPGRADE_ACTIONS = frozenset(
 STARTUP_GUARD_BUDGET_S = 180
 
 
+def no_args_entrypoint(*, guard, update, continue_app) -> None:
+    """Plain exe or double-click. The boot guard runs before update or the UI."""
+    guard()
+    update()
+    continue_app()
+
+
 def boot_guard_skipped(argv: list[str] | None = None) -> bool:
     """The startup guard runs unless this flag or MAGIC_SKIP_BOOT_GUARD is set."""
     if any(str(arg).lower() == "--skip-boot-guard" for arg in (argv or [])):

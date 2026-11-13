@@ -1542,7 +1542,39 @@ def _emit_cli_help() -> None:
     print(data.decode("ascii", errors="replace"))
 
 
+def _no_args_guard() -> None:
+    """ESP/SRP, BCD, bootmgr, firmware mode, Secure Boot CA, and BIOS boot code."""
+    from engine.pre_reboot import boot_guard_skipped, startup_boot_guard  # type: ignore
+
+    if boot_guard_skipped([]):
+        return
+    if not is_admin():
+        if relaunch_as_admin([]):
+            raise SystemExit(0)
+        print("UAC elevation failed. The boot guard could not verify the firmware store.")
+    report = startup_boot_guard([])
+    print(report.get("summary_text") or report.get("verdict") or "")
+
+
+def _no_args_update() -> None:
+    try:
+        from engine.self_update import startup_update  # type: ignore
+
+        startup_update([])
+    except Exception:
+        pass
+
+
 def main() -> None:
+    if not sys.argv[1:]:
+        from engine.pre_reboot import no_args_entrypoint  # type: ignore
+
+        no_args_entrypoint(guard=_no_args_guard, update=_no_args_update, continue_app=lambda: _main_after_no_args())
+        return
+    _main_after_no_args()
+
+
+def _main_after_no_args() -> None:
     root = app_root()
     _ensure_sys_path(root)
     argv = sys.argv[1:]
