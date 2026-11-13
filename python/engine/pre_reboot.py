@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -678,10 +679,24 @@ def repair_before_reboot(
     uefi: bool = True,
     unmount_letter: Callable[[str], None] | None = None,
     esp_root_for: Callable[[dict[str, Any]], Path | None] | None = None,
+    budget_s: int | None = None,
 ) -> dict[str, Any]:
     """Inventory, validate, restore the pre-run BCD, and print GO or NO-GO."""
     state = root or STATE_DIR
-    run = runner or _default_runner
+    inner = runner or _default_runner
+    started = time.monotonic()
+    budget_hit = False
+
+    def run(cmd: list[str], timeout: int) -> tuple[int, str]:
+        nonlocal budget_hit
+        limit = timeout
+        if budget_s is not None:
+            left = budget_s - (time.monotonic() - started)
+            if left < 1:
+                budget_hit = True
+                return 124, "boot guard budget exceeded"
+            limit = min(int(timeout), max(1, int(left)))
+        return inner(cmd, limit)
     inventory, log_text = collect_diag_inventory(state)
     diag_analysis = analyze_runs(log_text, inventory)
     backups = inventory_bcd_backups(state)
@@ -750,6 +765,8 @@ def repair_before_reboot(
         for letter in history.get("letters_assigned") or []:
             unmount_letter(letter)
             applied.append(f"removed_letter:{letter}")
+    if budget_hit:
+        plan.setdefault("go_blockers", []).append("startup_budget_exceeded")
     blockers = list(plan.get("go_blockers") or [])
     if plan.get("need_import") and not any(item.startswith("import:0") for item in applied):
         if apply:
@@ -797,6 +814,129 @@ def default_uefi() -> bool:
     except Exception:
         return True
     return True
+
+
+_LAST_GUARD: dict[str, Any] | None = None
+_UPGRADE_ACTIONS = frozenset(
+    {
+        "oneclick",
+        "mbr",
+        "srp",
+        "boot-fix",
+        "boot-heal",
+        "hybrid",
+        "hybrid-activate",
+        "resume",
+        "boot-resume",
+        "patch",
+        "patch-deep",
+        "install-patches",
+        "bypass",
+        "reboot",
+    }
+)
+STARTUP_GUARD_BUDGET_S = 180
+
+
+def boot_guard_skipped(argv: list[str] | None = None) -> bool:
+    """The startup guard runs unless this flag or MAGIC_SKIP_BOOT_GUARD is set."""
+    if any(str(arg).lower() == "--skip-boot-guard" for arg in (argv or [])):
+        return True
+    return os.environ.get("MAGIC_SKIP_BOOT_GUARD", "").strip().lower() in ("1", "true", "yes")
+
+
+def startup_action(argv: list[str] | None) -> str:
+    """The upgrade action this launch would run. Empty means read-only."""
+    args = [str(arg).lower() for arg in (argv or [])]
+    flags = {
+        "--oneclick": "oneclick",
+        "-oneclick": "oneclick",
+        "--mbr": "mbr",
+        "--srp": "srp",
+        "--boot-fix": "boot-fix",
+        "--boot-heal": "boot-heal",
+        "--hybrid": "hybrid",
+        "--hybrid-activate": "hybrid-activate",
+        "--resume": "resume",
+        "--boot-resume": "boot-resume",
+        "--patch": "patch",
+        "--patch-deep": "patch-deep",
+        "--install-patches": "install-patches",
+        "--bypass": "bypass",
+    }
+    for flag, name in flags.items():
+        if flag in args:
+            return name
+    read_only = {
+        "--diagnose",
+        "--stats",
+        "--support-zip",
+        "--offline-pack",
+        "--research",
+        "--dry-run",
+        "--dryrun",
+        "--repair-before-reboot",
+        "--update",
+        "--no-update",
+        "--help",
+        "-h",
+        "/?",
+        "--skip-boot-guard",
+        "--openduet-prepare",
+        "--openduet-write",
+    }
+    if not args or args == ["--cli"] or not any(arg in read_only for arg in args):
+        return "oneclick"
+    return ""
+
+
+def guard_blocks_action(action: str, verdict: str) -> bool:
+    """NO-GO stops upgrade and reboot. Read-only commands and an explicit skip do not."""
+    if (verdict or "").strip().upper() in ("GO", "SKIPPED"):
+        return False
+    return (action or "").strip().lower() in _UPGRADE_ACTIONS
+
+
+def last_boot_guard() -> dict[str, Any] | None:
+    return _LAST_GUARD
+
+
+def startup_boot_guard(argv: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Run the anti-failed-boot guard once per process, inside a wall-clock budget."""
+    global _LAST_GUARD
+    if _LAST_GUARD is not None:
+        return _LAST_GUARD
+    if boot_guard_skipped(argv):
+        _LAST_GUARD = {
+            "verdict": "SKIPPED",
+            "skipped": True,
+            "summary_text": "Startup boot guard skipped.\n",
+            "bundle": "",
+        }
+        return _LAST_GUARD
+    raw_budget = os.environ.get("MAGIC_BOOT_GUARD_BUDGET", str(STARTUP_GUARD_BUDGET_S))
+    try:
+        budget = max(5, int(raw_budget))
+    except ValueError:
+        budget = STARTUP_GUARD_BUDGET_S
+    allowed = {
+        "root",
+        "runner",
+        "apply",
+        "esps",
+        "firmware_text",
+        "uefi",
+        "unmount_letter",
+        "esp_root_for",
+        "budget_s",
+    }
+    options = {key: value for key, value in kwargs.items() if key in allowed}
+    options.setdefault("uefi", default_uefi())
+    options.setdefault("budget_s", budget)
+    report = repair_before_reboot(**options)
+    open_repair_issue(report)
+    _LAST_GUARD = report
+    return report
 
 
 def upgrade_allowed(verdict: str) -> bool:

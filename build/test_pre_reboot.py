@@ -25,7 +25,11 @@ from engine.boot_safe import (  # noqa: E402
 from engine.pre_reboot import (  # noqa: E402
     analyze_history,
     analyze_runs,
+    boot_guard_skipped,
     collect_diag_inventory,
+    guard_blocks_action,
+    startup_action,
+    startup_boot_guard,
     attach_export_times,
     inventory_bcd_backups,
     parse_store_enum,
@@ -259,6 +263,38 @@ def test_diag_collects_every_run_and_error_code(tmp: Path) -> None:
     assert "Full+diagnostic+zip" in url or "Full%20diagnostic%20zip" in url or "Full diagnostic zip" in url
 
 
+def test_startup_guard_skips_only_when_asked_and_blocks_upgrade(tmp: Path) -> None:
+    import engine.pre_reboot as guard
+    import os
+
+    os.environ.pop("MAGIC_SKIP_BOOT_GUARD", None)
+    guard._LAST_GUARD = None
+    assert boot_guard_skipped([]) is False
+    assert boot_guard_skipped(["--skip-boot-guard"]) is True
+    os.environ["MAGIC_SKIP_BOOT_GUARD"] = "1"
+    assert boot_guard_skipped([]) is True
+    os.environ.pop("MAGIC_SKIP_BOOT_GUARD", None)
+    assert startup_action([]) == "oneclick"
+    assert startup_action(["--diagnose"]) == ""
+    assert startup_action(["--cli", "--mbr"]) == "mbr"
+    assert guard_blocks_action("oneclick", "NO-GO") is True
+    assert guard_blocks_action("oneclick", "GO") is False
+    assert guard_blocks_action("oneclick", "SKIPPED") is False
+    assert guard_blocks_action("", "NO-GO") is False
+    skipped = startup_boot_guard(["--skip-boot-guard"])
+    assert skipped["verdict"] == "SKIPPED"
+    guard._LAST_GUARD = None
+
+    def runner(cmd: list[str], timeout: int) -> tuple[int, str]:
+        raise AssertionError(f"budget should stop before {cmd}")
+
+    report = repair_before_reboot(root=tmp, runner=runner, budget_s=0, esps=[])
+    assert report["verdict"] == "NO-GO"
+    assert "startup_budget_exceeded" in (report.get("plan") or {}).get("go_blockers", [])
+    source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
+    assert source.index("startup_update(argv)") < source.index("startup_boot_guard(argv)")
+
+
 def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
     import os
 
@@ -306,6 +342,8 @@ def main() -> None:
     test_postflight_ignores_mountvol_when_storage_works()
     test_one_click_does_not_expand_without_opt_in()
     test_oneclick_stops_unless_go_and_issue_url_is_redacted()
+    with tempfile.TemporaryDirectory() as name:
+        test_startup_guard_skips_only_when_asked_and_blocks_upgrade(Path(name))
     with tempfile.TemporaryDirectory() as name:
         test_diag_collects_every_run_and_error_code(Path(name))
     with tempfile.TemporaryDirectory() as name:
