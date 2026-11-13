@@ -129,7 +129,14 @@ def _cleanup_stale_windows_setup_dirs() -> list[str]:
     return cleaned
 
 
-def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
+def _run_setup(
+    setup_root: str,
+    use_server: bool,
+    quiet: bool = False,
+    *,
+    args_override: list[str] | None = None,
+    skip_side_effects: bool = False,
+) -> int:
     """
     Launch Setup (Flyby11/FlyOOBE style) and return promptly.
     Prefer sources\\setupprep.exe + /Product Server like Flyby11 IsoHandler.
@@ -190,8 +197,15 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     except Exception:
         offline_du = False
 
-    if use_server:
-        apply_hardware_bypass()
+    if args_override is not None:
+        exe = setup
+        args = list(args_override)
+        log("Launching official setup.exe /auto upgrade (no bypass, no boot changes)", "STEP")
+    elif use_server:
+        if not skip_side_effects:
+            apply_hardware_bypass()
+        else:
+            log("Least-invasive path: hardware bypass registry pack skipped", "INFO")
         # Flyby11: always prefer setupprep.exe when present
         exe = prep if prep.exists() else setup
         args = setup_bypass_args(quiet=quiet, experimental=True)
@@ -236,13 +250,14 @@ def _run_setup(setup_root: str, use_server: bool, quiet: bool = False) -> int:
     if not exe.exists():
         raise FileNotFoundError(exe)
 
-    # Arm autonomous boot safety net BEFORE Setup (ESP/GRUB snapshots + WinRE + watchdog)
-    try:
-        from .boot_guard import arm_boot_safety_net
+    if not skip_side_effects and args_override is None:
+        # Arm autonomous boot safety net BEFORE Setup (ESP/GRUB snapshots + WinRE + watchdog)
+        try:
+            from .boot_guard import arm_boot_safety_net
 
-        arm_boot_safety_net(before_setup=True)
-    except Exception as e:
-        log(f"Boot guard arm (pre-Setup): {e}", "WARN")
+            arm_boot_safety_net(before_setup=True)
+        except Exception as e:
+            log(f"Boot guard arm (pre-Setup): {e}", "WARN")
 
     def _launch_once() -> int:
         cmd = [str(exe), *args]
@@ -1036,6 +1051,119 @@ def _prefetch_chain_isos(
     return cached
 
 
+def _maybe_win11_least(report, target, *, dry_run: bool, quiet: bool) -> int | None:
+    """Return an exit code when One-Click must not use the full migration path."""
+    from .win11_inplace_policy import decide_oneclick, run_inplace_attempts
+
+    plan = decide_oneclick(
+        build=int(getattr(report, "build", 0) or 0),
+        ubr=int(getattr(report, "ubr", 0) or 0),
+        display_version=str(getattr(report, "display_version", "") or ""),
+        target_version=str(getattr(target, "version", "") or ""),
+        target_build=int(getattr(target, "major", 0) or 0),
+        target_ubr=int(getattr(target, "ubr", 0) or 0),
+    )
+    log(f"One-Click path: {plan.path}. {plan.reason}", "STEP")
+    if plan.path == "full_migration":
+        return None
+    if plan.path == "health_check_only":
+        log(
+            "Already on the latest Windows 11. No bypass, disk, or boot changes. "
+            "The anti-failed-boot health check is the only action.",
+            "OK",
+        )
+        if not dry_run:
+            try:
+                from .pre_reboot import last_boot_guard, startup_boot_guard
+
+                if last_boot_guard() is None:
+                    startup_boot_guard([])
+            except ImportError:
+                try:
+                    from .pre_reboot import repair_before_reboot
+
+                    repair_before_reboot()
+                except Exception as exc:
+                    log(f"Boot health check skipped: {exc}", "WARN")
+            except Exception as exc:
+                log(f"Boot health check skipped: {exc}", "WARN")
+        return 0
+    if dry_run:
+        log("Dry-run: official in-place update only. No bypass, MBR, ESP, or Boot Fix.", "OK")
+        return 0
+
+    def read_text() -> str:
+        chunks = []
+        for path in (
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Panther" / "setuperr.log",
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Panther" / "setupact.log",
+            Path(r"C:\$WINDOWS.~BT\Sources\Panther\setuperr.log"),
+            Path(r"C:\$WINDOWS.~BT\Sources\Rollback\setuperr.log"),
+        ):
+            try:
+                if path.is_file():
+                    chunks.append(path.read_text(encoding="utf-8", errors="replace")[-20000:])
+            except OSError:
+                continue
+        return "\n".join(chunks)
+
+    def remediate(kind: str) -> None:
+        log(f"In-place failure cause {kind}: one matching remediation, then one retry", "WARN")
+        if kind == "driver":
+            try:
+                from .patches import audit_filter_drivers
+
+                audit_filter_drivers()
+            except Exception as exc:
+                log(f"Driver cleanup skipped: {exc}", "WARN")
+        elif kind == "boot":
+            try:
+                from .boot_guard import verify_and_heal_boot
+
+                verify_and_heal_boot(force=False)
+            except Exception as exc:
+                log(f"Boot remediation skipped: {exc}", "WARN")
+
+    def launch(args: list[str]) -> int:
+        if plan.path == "cumulative_update":
+            log("Least-invasive path: Windows Update cumulative scan (UsoClient)", "STEP")
+            uso = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "UsoClient.exe"
+            if not uso.is_file():
+                return 2
+            try:
+                from .proc_guard import run_bounded
+
+                result = run_bounded([str(uso), "StartScan"], timeout=120)
+                return 0 if result.code == 0 else int(result.code)
+            except Exception as exc:
+                log(f"Windows Update scan failed: {exc}", "WARN")
+                return 2
+        log("Least-invasive path: official setup.exe /auto upgrade", "STEP")
+        try:
+            from .iso import get_iso
+            from .virtdisk import mount_iso
+
+            iso = get_iso(
+                "11",
+                str(getattr(report, "locale", "") or "en-us"),
+                arch="x64",
+                min_build=int(getattr(target, "major", 0) or 0),
+            )
+            setup_root = mount_iso(iso)
+            return _run_setup(
+                setup_root,
+                False,
+                quiet,
+                args_override=args,
+                skip_side_effects=True,
+            )
+        except Exception as exc:
+            log(f"Official in-place setup was not launched: {exc}", "WARN")
+            return 2
+
+    return run_inplace_attempts(launch=launch, read_text=read_text, remediate=remediate, quiet=quiet)
+
+
 def run_pipeline(
     sink: Callable[[str], None] | None = None,
     *,
@@ -1101,6 +1229,9 @@ def run_pipeline(
         except Exception as e:
             log(f"Update check: {e}", "INFO")
         r = collect_report()
+        from .win11_release import floor_target
+
+        rel = floor_target()
         try:
             from .win11_release import refresh_latest_win11
 
@@ -1118,6 +1249,13 @@ def run_pipeline(
         for note in va.notes:
             log(note, "INFO")
         save_state({"VersionAssessment": va.as_dict()})
+        least = _maybe_win11_least(r, rel, dry_run=dry_run, quiet=quiet)
+        if least is not None:
+            write_migration_report(
+                extra={"Result": "WIN11_INPLACE" if least == 0 else "WIN11_INPLACE_FAILED", "Mode": "ONECLICK"}
+            )
+            end_session(success=least == 0)
+            return least
         if getattr(r, "is_arm64", False):
             from .errors import UpgradeBlockedError
 
