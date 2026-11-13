@@ -40,6 +40,25 @@ Windows 11 boot requires the Windows UEFI CA 2023 in `db`. `dbx` is checked befo
 
 Sources: [key guidance](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-secure-boot-key-creation-and-management-guidance?view=windows-11), [certificate update](https://learn.microsoft.com/en-us/troubleshoot/windows-client/windows-security/update-secure-boot-certificates), [2023 CA transition](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/linux-distribution-guidance-handling-2023keys?view=windows-11).
 
+## Free and open tools
+
+No source from these projects is copied into this repository. The list records what each one does, the license, and which repair name in `data/error_catalog.json` the idea maps to.
+
+| Tool | License | What we took from it |
+| --- | --- | --- |
+| Startup Repair, bootrec, bcdboot, bcdedit, bootsect, DISM, SFC, reagentc | Microsoft Windows | The command order in the catalog. SFC offline uses `/offbootdir` and `/offwindir` only after the Windows letter is known. |
+| SetupDiag | Microsoft, included with Setup | Read the logs before changing the disk. [SetupDiag](https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag) |
+| Media Creation Tool | Microsoft, free download, not open source | Official media only. Not redistributed. |
+| Boot-Repair | GPL-3.0-only | Back up first and write a diagnosis. [Launchpad](https://launchpad.net/boot-repair) |
+| rEFInd | GPL-3.0-only for the rEFInd changes | Scan the ESP for loaders before replacing `bootmgfw.efi`. [Features](https://www.rodsbooks.com/refind/features.html) |
+| OpenCore | BSD-3-Clause | Optional chain already in this project. [OpenCorePkg](https://github.com/acidanthera/OpenCorePkg) |
+| GRUB | GPL-3.0-or-later | Leave the Linux EFI directory in place. [GRUB](https://www.gnu.org/software/grub/) |
+| SystemRescue | GPL-3.0-only | Optional live disk. The rescue plan does not download it. [system-rescue.org](https://www.system-rescue.org/) |
+| TestDisk | GPL-2.0-only | Manual partition-table recovery. Not launched automatically. [COPYING](https://github.com/cgsecurity/testdisk/blob/master/COPYING) |
+| ms-sys | GPL-2.0-only | Not shipped. Windows `bootsect` is used instead, because ms-sys embeds boot records whose copyright is disputed. [ms-sys](https://ms-sys.sourceforge.net/) and [ms-sys-free](https://sourceforge.net/projects/ms-sys-free/) |
+| EasyBCD | NeoSmart freeware, not open source | A menu entry and a one-time boot sequence. No EasyBCD files are included. |
+| Rufus | GPL-3.0-only | A USB is bootable only after the boot files verify. [Rufus](https://github.com/pbatard/rufus/) |
+
 ## reagentc
 
 `reagentc /info` shows whether Windows RE is enabled. `reagentc /enable` registers the default `Winre.wim` when no other image is set.

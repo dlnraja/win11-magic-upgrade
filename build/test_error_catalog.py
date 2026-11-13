@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
 
-from engine.error_catalog import catalog_path, load_catalog, match_catalog, repairs_for_ids  # noqa: E402
+from engine.error_catalog import catalog_path, load_catalog, load_tools, match_catalog, repairs_for_ids  # noqa: E402
 from engine.post_op_verify import regeneration_plan  # noqa: E402
 from engine.win11_inplace_policy import classify_setup_failure  # noqa: E402
 
@@ -26,8 +26,20 @@ def test_catalog_is_sourced_and_complete() -> None:
         ids.add(entry["id"])
         assert entry["patterns"]
         assert entry["repair"]
+        allowed = (
+            "https://learn.microsoft.com/",
+            "https://sourceforge.net/",
+            "https://github.com/",
+            "https://www.gnu.org/",
+            "https://www.rodsbooks.com/",
+            "https://www.system-rescue.org/",
+            "https://www.microsoft.com/",
+            "https://launchpad.net/",
+            "https://ms-sys.sourceforge.net/",
+            "https://neosmart.net/",
+        )
         for url in entry["sources"]:
-            assert url.startswith("https://learn.microsoft.com/"), url
+            assert url.startswith(allowed), url
     doc = (ROOT / "docs" / "ERROR_REFERENCE.md").read_text(encoding="utf-8")
     assert "learn.microsoft.com" in doc
     print("catalog shape OK")
@@ -50,6 +62,34 @@ def test_classifier_uses_the_catalog() -> None:
     assert plan[0] == "bcdedit-import"
     assert plan == repairs_for_ids(["file:BCD"])[:4]
     assert len(load_catalog()) >= 20
+    grub = match_catalog("error: GRUB rescue")
+    assert grub[0]["id"] == "grub-rescue"
+    assert grub[0]["repair"][0] == "preserve-linux-efi"
+    tools = load_tools()
+    names = {item["name"] for item in tools}
+    for required in ("Boot-Repair", "rEFInd", "OpenCore", "GRUB", "SystemRescue", "TestDisk", "ms-sys", "EasyBCD", "Rufus", "SetupDiag"):
+        assert required in names
+    for tool in tools:
+        assert tool["reuse"] is False
+        assert tool["license"]
+        assert tool["source"].startswith(
+            (
+                "https://learn.microsoft.com/",
+                "https://sourceforge.net/",
+                "https://github.com/",
+                "https://www.gnu.org/",
+                "https://www.rodsbooks.com/",
+                "https://www.system-rescue.org/",
+                "https://www.microsoft.com/",
+                "https://launchpad.net/",
+                "https://ms-sys.sourceforge.net/",
+                "https://neosmart.net/",
+            )
+        )
+        assert tool["maps_to"]
+        assert "paid" not in tool["license"].lower()
+    assert next(item for item in tools if item["name"] == "OpenCore")["license"] == "BSD-3-Clause"
+    assert next(item for item in tools if item["name"] == "ms-sys")["reuse"] is False
     print("classifier OK")
 
 

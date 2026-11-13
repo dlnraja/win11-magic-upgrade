@@ -640,6 +640,175 @@
       "sources": [
         "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
       ]
+    },
+    {
+      "id": "grub-rescue",
+      "patterns": ["GRUB rescue", "grub rescue"],
+      "cause": "boot",
+      "detection": "Firmware or a log says GRUB rescue. The Linux loader is what failed, not a reason to delete other EFI directories.",
+      "syntax": {
+        "notes": "Boot-Repair reinstalls GRUB and writes a Boot-Info report. This project keeps the Linux EFI tree and still uses bcdboot only for the Windows loader."
+      },
+      "repair": ["preserve-linux-efi", "bcdboot-uefi"],
+      "rollback": "Restore the ESP file backup before any GRUB reinstall. Do not format the EFI partition.",
+      "sources": [
+        "https://sourceforge.net/p/boot-repair/home/Home/",
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Startup Repair",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Windows automatic repair from WinRE. It is the signed path this project prefers.",
+      "maps_to": ["bcdboot-uefi", "bcdboot-bios", "bootrec-fixmbr"],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "bootrec",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "fixmbr rewrites master boot code only. fixboot rewrites the boot sector. scanos and rebuildbcd rebuild the store after an export.",
+      "maps_to": ["bootrec-fixmbr", "bootrec-rebuildbcd"],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "bcdboot",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Copies boot files from a Windows directory. /f UEFI, BIOS, or ALL. /f requires /s.",
+      "maps_to": ["bcdboot-uefi", "bcdboot-bios", "bcdboot-all"],
+      "source": "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11"
+    },
+    {
+      "name": "bcdedit",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Exports, imports, and creates BCD stores, and sets device and osdevice.",
+      "maps_to": ["bcdedit-import", "bcdedit-createstore", "fix-device-refs"],
+      "source": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdedit"
+    },
+    {
+      "name": "bootsect",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Writes Bootmgr-compatible boot code with /nt60 and can update the MBR with /mbr.",
+      "maps_to": ["bootsect-nt60-mbr"],
+      "source": "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bootsect-command-line-options?view=windows-11"
+    },
+    {
+      "name": "SetupDiag",
+      "license": "Microsoft, included with Windows Setup",
+      "reuse": false,
+      "does": "Reads Setup logs and writes SetupDiagResults.xml. It does not change the disk.",
+      "maps_to": ["read-setup-logs"],
+      "source": "https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag"
+    },
+    {
+      "name": "DISM",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Offline image repair. /get-packages then /Cleanup-Image /RevertPendingActions for a pending update that blocks boot.",
+      "maps_to": ["dism-revert-pending"],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "SFC",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Offline system-file check from WinRE with /offbootdir and /offwindir after the Windows letter is confirmed.",
+      "maps_to": ["sfc-offline"],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "reagentc",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Enables the signed Winre.wim recovery image.",
+      "maps_to": ["reagentc-enable"],
+      "source": "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/reagentc-command-line-options?view=windows-11"
+    },
+    {
+      "name": "Media Creation Tool",
+      "license": "Microsoft, free download, not open source",
+      "reuse": false,
+      "does": "Builds official Windows installation media. This project does not redistribute it.",
+      "maps_to": ["official-install-media"],
+      "source": "https://www.microsoft.com/software-download/windows11"
+    },
+    {
+      "name": "Boot-Repair",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "One-click boot repair with a backup and a Boot-Info report, including GRUB reinstall. Idea used here: back up first and keep a written diagnosis. No Boot-Repair code is included.",
+      "maps_to": ["preserve-linux-efi", "bcdboot-uefi"],
+      "source": "https://launchpad.net/boot-repair"
+    },
+    {
+      "name": "rEFInd",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "EFI boot manager that scans for loaders. Idea used here: identify bootmgfw.efi before rewriting it. No rEFInd code is included. The original rEFIt tree is BSD; the rEFInd changes are GPL-3.0.",
+      "maps_to": ["copy-bootmgfw"],
+      "source": "https://www.rodsbooks.com/refind/features.html"
+    },
+    {
+      "name": "OpenCore",
+      "license": "BSD-3-Clause",
+      "reuse": false,
+      "does": "UEFI boot loader. This project already has an optional OpenDuet chain and does not vendor OpenCore source in this change.",
+      "maps_to": ["openduet-plan"],
+      "source": "https://github.com/acidanthera/OpenCorePkg"
+    },
+    {
+      "name": "GRUB",
+      "license": "GPL-3.0-or-later",
+      "reuse": false,
+      "does": "Chainloads Windows from an EFI or BIOS menu. Idea used here: do not delete the Linux EFI directory while repairing Windows.",
+      "maps_to": ["preserve-linux-efi"],
+      "source": "https://www.gnu.org/software/grub/"
+    },
+    {
+      "name": "SystemRescue",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "Live Linux rescue disk. The optional Linux plan does not download or write it.",
+      "maps_to": ["linux-rescue-plan"],
+      "source": "https://www.system-rescue.org/"
+    },
+    {
+      "name": "TestDisk",
+      "license": "GPL-2.0-only",
+      "reuse": false,
+      "does": "Recovers partition tables. It is a manual last resort and is not launched by this project.",
+      "maps_to": ["testdisk-manual"],
+      "source": "https://github.com/cgsecurity/testdisk/blob/master/COPYING"
+    },
+    {
+      "name": "ms-sys",
+      "license": "GPL-2.0-only",
+      "reuse": false,
+      "does": "Writes a Microsoft-compatible boot record from Linux. This project uses Windows bootsect instead and does not ship ms-sys or its embedded boot records. ms-sys-free is the fork without those records.",
+      "maps_to": ["bootsect-nt60-mbr"],
+      "source": "https://ms-sys.sourceforge.net/"
+    },
+    {
+      "name": "EasyBCD",
+      "license": "NeoSmart freeware, not open source",
+      "reuse": false,
+      "does": "Edits the Windows boot menu. Idea used here: a visible menu entry and a one-time boot sequence. No EasyBCD code or installer is included.",
+      "maps_to": ["bcd-bootsequence"],
+      "source": "https://neosmart.net/EasyBCD/"
+    },
+    {
+      "name": "Rufus",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "Writes a bootable USB stick. Idea used here: do not treat media as bootable until the partition type and boot files verify. No Rufus code is included.",
+      "maps_to": ["verify-boot-files"],
+      "source": "https://github.com/pbatard/rufus/"
     }
   ]
 }

@@ -34,6 +34,12 @@ def match_catalog(text: str, exit_code: int = 0) -> list[dict[str, Any]]:
     return [entry for _, entry in hits]
 
 
+def load_tools() -> list[dict[str, Any]]:
+    payload = json.loads(catalog_path().read_text(encoding="utf-8"))
+    tools = payload.get("tools") or []
+    return [item for item in tools if isinstance(item, dict) and item.get("name")]
+
+
 def repairs_for_ids(names: list[str]) -> list[str]:
     """Repair order from the catalog for these entry ids, each strategy once."""
     by_id = {str(entry.get("id")): entry for entry in load_catalog()}
