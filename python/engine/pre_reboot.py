@@ -683,6 +683,17 @@ def repair_before_reboot(
 ) -> dict[str, Any]:
     """Inventory, validate, restore the pre-run BCD, and print GO or NO-GO."""
     state = root or STATE_DIR
+    from .post_op_verify import regen_is_exhausted
+
+    if regen_is_exhausted(state / "post-op-regen.json"):
+        log("Startup repair refused: post-op regeneration budget is already exhausted", "ERROR")
+        return {
+            "verdict": "NO-GO",
+            "reason": "regen-loop-guard",
+            "summary_text": "NO-GO: regeneration budget exhausted. Not trying again.\n",
+            "bundle": "",
+            "delete_partitions": False,
+        }
     inner = runner or _default_runner
     started = time.monotonic()
     budget_hit = False
@@ -697,6 +708,7 @@ def repair_before_reboot(
                 return 124, "boot guard budget exceeded"
             limit = min(int(timeout), max(1, int(left)))
         return inner(cmd, limit)
+
     inventory, log_text = collect_diag_inventory(state)
     diag_analysis = analyze_runs(log_text, inventory)
     backups = inventory_bcd_backups(state)

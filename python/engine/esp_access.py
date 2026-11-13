@@ -721,7 +721,13 @@ class WindowsVolumeIO(VolumeIO):
                 continue
             if volume.label and row.label and volume.label.lower() not in row.label.lower() and row.label.lower() not in volume.label.lower():
                 continue
-            if assign_letter_to_volume(row.index, letter):
+            if assign_letter_to_volume(
+                row.index,
+                letter,
+                disk=volume.disk if volume is not None and volume.disk >= 0 else None,
+                partition=volume.partition if volume is not None else None,
+                volume_guid=volume.volume_guid if volume is not None else None,
+            ):
                 return True
         return False
 
@@ -774,7 +780,13 @@ class WindowsVolumeIO(VolumeIO):
         if chosen is None:
             log("diskpart assign: no unlettered volume matched the drive map", "WARN")
             return False
-        return assign_letter_to_volume(chosen.index, letter)
+        return assign_letter_to_volume(
+            chosen.index,
+            letter,
+            disk=volume.disk if volume is not None and volume.disk >= 0 else None,
+            partition=volume.partition if volume is not None else None,
+            volume_guid=volume.volume_guid if volume is not None else None,
+        )
 
     def folder_mount(self, volume: VolumeRecord | None, folder: str) -> bool:
         if volume is None or volume.partition is None or volume.disk < 0:

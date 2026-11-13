@@ -20,7 +20,6 @@ from pathlib import Path
 from .diskpart_safe import (
     assign_letter_to_volume,
     ensure_select_disk,
-    ensure_select_volume,
     find_esp_candidates,
     find_system_reserved_candidates,
     find_volume_by_letter,
@@ -430,6 +429,11 @@ def create_larger_esp(
             # Do NOT report success — caller must not mark expand ok
             return None
 
+    from .post_op_verify import gate_after_boot_work
+
+    if not gate_after_boot_work(scopes=("uefi",), root=root):
+        log("post-op verification returned NO-GO after EFI create", "ERROR")
+        return None
     log(f"New ESP ready at {root} with boot files", "OK")
     return root
 
@@ -520,28 +524,20 @@ def create_larger_system_reserved_mbr(
         return None
 
     # Mark active only after bcdboot OK — select by volume index (never letter-after-dismount)
+    from .post_op_verify import gate_after_boot_work
+
     vol = find_volume_by_letter(letter)
     if vol is None:
         log(f"Cannot resolve volume for {letter}: to mark active", "WARN")
-        return root
-    ok_sel_v, _ = ensure_select_volume(vol.index)
-    if not ok_sel_v:
-        log(f"Cannot select volume {vol.index} for active", "WARN")
-        return root
-    ok_act, act_out = run_diskpart(
-        f"select volume {int(vol.index)}\n"
-        f"detail volume\n"
-        f"active\n"
-        f"exit\n"
-    )
-    if ok_act and not re.search(
-        r"No volume selected|Aucun volume|error|failed|échec|echec|erreur",
-        act_out or "",
-        re.I,
-    ):
-        log(f"Marked volume {vol.index} ({letter}:) active after successful bcdboot", "OK")
     else:
-        log(f"Could not mark active (non-fatal): {(act_out or '')[-160:]}", "WARN")
+        log(
+            f"Volume {vol.index} ({letter}:) was not marked active. "
+            "diskpart active needs the MBR disk and partition numbers, not a volume number.",
+            "WARN",
+        )
+    if not gate_after_boot_work(scopes=("mbr",), root=root):
+        log("post-op verification returned NO-GO after MBR system create", "ERROR")
+        return None
     return root
 
 

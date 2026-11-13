@@ -154,7 +154,18 @@ def actions_for_failure(cause: str, architecture: str) -> tuple[str, ...]:
 def assess_failure(exit_code: int, text: str, *, firmware: str = "") -> FailureAssessment:
     blob = f"{exit_code}\n{text or ''}".upper()
     raw = text or ""
-    if _BOOT.search(raw) or "0X20017" in blob:
+    catalog_cause = ""
+    try:
+        from .error_catalog import match_catalog
+
+        hits = match_catalog(raw, exit_code)
+        if hits and hits[0].get("cause") in ("boot", "driver", "compat"):
+            catalog_cause = str(hits[0]["cause"])
+    except Exception:
+        catalog_cause = ""
+    if catalog_cause:
+        cause = catalog_cause
+    elif _BOOT.search(raw) or "0X20017" in blob:
         cause = "boot"
     elif _DRIVER in blob:
         cause = "driver"

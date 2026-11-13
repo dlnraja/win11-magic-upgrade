@@ -8,7 +8,14 @@
         "The specified entry"
       ],
       "cause": "bcdedit was aimed at {current}. That identifier does not exist in an offline BCD store or in WinRE, and braces are mangled when the command is sent through a shell.",
+      "detection": "bcdedit prints that it cannot reference the specified entry.",
       "syntax": "bcdedit /enum {default} /v",
+      "repair": [
+        "bcdedit-enum-osloader",
+        "use-loader-guid",
+        "never-current-with-store"
+      ],
+      "rollback": "Export a fresh BCD before the next set. Do not import a store that was edited with {current}.",
       "repair_order": [
         "Run bcdedit as an argument list, with no shell.",
         "Parse bcdedit /enum {default} /v and bcdedit /enum osloader /v.",
@@ -46,6 +53,11 @@
       "sources": [
         "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdboot",
         "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-"
+      ],
+      "repair": [
+        "bare-letter",
+        "mountvol-guid",
+        "verify-bootmgr"
       ]
     },
     {
@@ -75,7 +87,797 @@
       "sources": [
         "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdboot",
         "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-"
+      ],
+      "repair": [
+        "trim-esp-fonts",
+        "bcdboot-locale",
+        "no-resize"
       ]
+    },
+    {
+      "id": "diskpart-arguments",
+      "patterns": [
+        "arguments specified for this command are not valid",
+        "arguments sp[e\u00e9]cifi[e\u00e9]s.+ne sont pas valides"
+      ],
+      "cause": "boot",
+      "detection": "diskpart stdout, English or French, after a script command.",
+      "syntax": {
+        "windows-8-and-later": "select volume <n> then assign letter=S or remove letter=S. select disk <n> and select partition <n> before active or set id. No trailing colon on the letter."
+      },
+      "repair": [
+        "select-volume-then-assign",
+        "powershell-storage",
+        "cim-msft-partition",
+        "mountvol"
+      ],
+      "rollback": "Do not continue the script. Export the BCD store before any later import.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/diskpart",
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcd-system-store-settings-for-uefi?view=windows-11"
+      ]
+    },
+    {
+      "id": "diskpart-vds",
+      "patterns": [
+        "virtual disk service",
+        "service de disque virtuel",
+        "vds"
+      ],
+      "cause": "disk",
+      "detection": "diskpart or Service Control text naming the Virtual Disk service.",
+      "syntax": {
+        "windows-8-and-later": "diskpart rescan, after the Virtual Disk service is running. rescan only locates disks; it does not repair a bad command."
+      },
+      "repair": [
+        "rescan-map"
+      ],
+      "rollback": "Stop if rescan does not change the disk list. Do not clean or convert.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/diskpart"
+      ]
+    },
+    {
+      "id": "bootsect-signature",
+      "patterns": [
+        "bootsect-signature",
+        "invalid partition table",
+        "missing operating system"
+      ],
+      "cause": "boot",
+      "detection": "First 512 bytes of the system volume do not end in 55 AA, or the BIOS boot text names an invalid partition table.",
+      "syntax": {
+        "windows-8-and-later": "bootsect /nt60 S: /mbr"
+      },
+      "repair": [
+        "bootsect-nt60-mbr"
+      ],
+      "rollback": "The previous volume boot sector is not restored by bootsect. Restore the pre-op partition backup if the signature check still fails.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bootsect-command-line-options?view=windows-11",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+      ]
+    },
+    {
+      "id": "mbr-active",
+      "patterns": [
+        "mbr-active"
+      ],
+      "cause": "boot",
+      "detection": "MBR boot partition is present but not marked active.",
+      "syntax": {
+        "windows-8-and-later": "select disk <n> then select partition <n> then active. active applies only to MBR."
+      },
+      "repair": [
+        "mark-active",
+        "bootsect-nt60-mbr"
+      ],
+      "rollback": "Do not mark a second partition active. Restore the pre-op backup if boot still fails.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/diskpart"
+      ]
+    },
+    {
+      "id": "file:bootmgfw.efi",
+      "patterns": [
+        "bootmgfw\\.efi",
+        "file:bootmgfw.efi"
+      ],
+      "cause": "boot",
+      "detection": "EFI\\Microsoft\\Boot\\bootmgfw.efi is missing on the ESP.",
+      "syntax": {
+        "windows-8-and-later": "bcdboot C:\\Windows /s S: /f UEFI /l en-us"
+      },
+      "repair": [
+        "copy-bootmgfw",
+        "bcdboot-uefi",
+        "bcdboot-uefi-clean"
+      ],
+      "rollback": "bcdboot /c does not keep the previous BCD elements. Import the exported store if the new store does not verify.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11"
+      ]
+    },
+    {
+      "id": "file:bootmgr",
+      "patterns": [
+        "file:bootmgr",
+        "bootmgr is missing",
+        "bootmgr manquant"
+      ],
+      "cause": "boot",
+      "detection": "BIOS boot manager file is missing from the system partition.",
+      "syntax": {
+        "windows-8-and-later": "bcdboot C:\\Windows /s S: /f BIOS /l en-us"
+      },
+      "repair": [
+        "copy-bootmgr",
+        "bcdboot-bios",
+        "bcdboot-all"
+      ],
+      "rollback": "Keep the exported BCD and the pre-op copy of bootmgr. bootrec /fixmbr replaces only the MBR code, not the partition table.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+      ]
+    },
+    {
+      "id": "file:BCD",
+      "patterns": [
+        "file:BCD"
+      ],
+      "cause": "boot",
+      "detection": "The BCD file is missing or its hash does not match the expected pre-op record.",
+      "syntax": {
+        "windows-vista-and-later": "bcdedit /export <file> then bcdedit /import <file>. bcdedit /createstore creates an empty store that is not the system store."
+      },
+      "repair": [
+        "bcdedit-import",
+        "bcdedit-createstore",
+        "bcdboot-all"
+      ],
+      "rollback": "Import is valid only for a file previously created by /export. Import deletes the current system-store entries first.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdedit"
+      ]
+    },
+    {
+      "id": "bcd-enum",
+      "patterns": [
+        "bcd-enum",
+        "could not be opened",
+        "ne peut pas .{0,40}ouvrir",
+        "BcdOpenStore"
+      ],
+      "cause": "boot",
+      "detection": "bcdedit /enum all fails to open the store, or device and osdevice do not name an existing partition.",
+      "syntax": {
+        "windows-vista-and-later": "bcdedit /set {default} device partition=C: and bcdedit /set {default} osdevice partition=C: and bcdedit /set {bootmgr} device partition=S:"
+      },
+      "repair": [
+        "fix-device-refs",
+        "bcdedit-import",
+        "bcdedit-createstore"
+      ],
+      "rollback": "Export the current store before /set or /import. Re-import the export if the following /enum is not a known-good store.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdedit",
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcd-system-store-settings-for-uefi?view=windows-11",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-server/performance/windows-fail-to-start-status-0xc000000e"
+      ]
+    },
+    {
+      "id": "firmware-bootmgr",
+      "patterns": [
+        "firmware-bootmgr"
+      ],
+      "cause": "boot",
+      "detection": "bcdedit /enum firmware does not list Windows Boot Manager.",
+      "syntax": {
+        "windows-8-and-later": "bcdboot C:\\Windows /s S: /f UEFI /l en-us. /s does not itself create the NVRAM entry; omit /s when the ESP is the firmware system partition and an NVRAM entry is required."
+      },
+      "repair": [
+        "bcdboot-uefi",
+        "bcdboot-uefi-clean"
+      ],
+      "rollback": "If /s was required to target a specific ESP, confirm the firmware list after reboot before deleting the previous boot entry.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11"
+      ]
+    },
+    {
+      "id": "esp-type",
+      "patterns": [
+        "esp-type"
+      ],
+      "cause": "boot",
+      "detection": "The GPT system partition is not type c12a7328-f81f-11d2-ba4b-00a0c93ec93b and is not marked system.",
+      "syntax": {
+        "windows-8-and-later": "bcdboot C:\\Windows /s S: /f UEFI. set id on a GPT disk uses the GUID form with override and only after select partition."
+      },
+      "repair": [
+        "bcdboot-uefi",
+        "bcdboot-uefi-clean"
+      ],
+      "rollback": "Do not change the partition type unless the pre-op backup of the partition table exists.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11",
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/diskpart"
+      ]
+    },
+    {
+      "id": "drive-map",
+      "patterns": [
+        "drive-map"
+      ],
+      "cause": "disk",
+      "detection": "The live disk scan did not return a map.",
+      "syntax": {
+        "windows-8-and-later": "diskpart rescan"
+      },
+      "repair": [
+        "rescan-map"
+      ],
+      "rollback": "A failed rescan is not a reason to clean a disk.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/diskpart"
+      ]
+    },
+    {
+      "id": "stop-0xc000000e",
+      "patterns": [
+        "0xc000000e"
+      ],
+      "cause": "boot",
+      "detection": "Boot status 0xc000000e: the boot selection failed because a required device is inaccessible.",
+      "syntax": {
+        "windows-vista-and-later": "bcdedit /set {default} device partition=C: and bcdedit /set {default} osdevice partition=C: and bcdedit /set {bootmgr} device partition=C:"
+      },
+      "repair": [
+        "fix-device-refs",
+        "bcdboot-uefi",
+        "bcdboot-bios"
+      ],
+      "rollback": "Export the BCD store before /set. The Microsoft recovery note for this status is to correct unknown device values, not to recreate partitions.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-server/performance/windows-fail-to-start-status-0xc000000e"
+      ]
+    },
+    {
+      "id": "stop-0xc0000225",
+      "patterns": [
+        "0xc0000225"
+      ],
+      "cause": "boot",
+      "detection": "WinRE or Setup text contains status 0xc0000225.",
+      "syntax": {
+        "windows-8-and-later": "bcdboot C:\\Windows /s S: /f UEFI"
+      },
+      "repair": [
+        "bcdboot-uefi",
+        "bcdedit-import"
+      ],
+      "rollback": "Repair the boot files from the installed Windows directory. Do not format the Windows volume.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+      ]
+    },
+    {
+      "id": "stop-0xc000000f",
+      "patterns": [
+        "0xc000000f"
+      ],
+      "cause": "boot",
+      "detection": "WinRE or Setup text contains status 0xc000000f.",
+      "syntax": {
+        "windows-8-and-later": "bcdboot C:\\Windows /s S: /f UEFI or bcdboot C:\\Windows /s S: /f BIOS"
+      },
+      "repair": [
+        "bcdboot-uefi",
+        "bcdboot-bios",
+        "bcdedit-import"
+      ],
+      "rollback": "Import the exported BCD if the rebuilt store does not enumerate a known-good loader.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+      ]
+    },
+    {
+      "id": "stop-0xc0000098",
+      "patterns": [
+        "0xc0000098"
+      ],
+      "cause": "boot",
+      "detection": "WinRE or Setup text contains status 0xc0000098.",
+      "syntax": {
+        "windows-8-and-later": "bcdboot C:\\Windows /s S: /f UEFI"
+      },
+      "repair": [
+        "copy-bootmgfw",
+        "bcdboot-uefi"
+      ],
+      "rollback": "Replace only the missing boot file from the Windows Boot directory or from bcdboot. Keep the pre-op ESP copy.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11"
+      ]
+    },
+    {
+      "id": "stop-inaccessible-boot-device",
+      "patterns": [
+        "INACCESSIBLE_BOOT_DEVICE",
+        "0x0000007[Bb]"
+      ],
+      "cause": "driver",
+      "detection": "Stop 0x7B during startup, including after an upgrade rollback.",
+      "syntax": {
+        "windows-10-and-later": "In WinRE: DISM /image:C:\\ /get-packages and, for a pending package, DISM /Image:C:\\ /Cleanup-Image /RevertPendingActions"
+      },
+      "repair": [
+        "dism-revert-pending",
+        "driver_cleanup"
+      ],
+      "rollback": "Filter edits and package removal are destructive. Confirm the Windows directory letter in WinRE before /image.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+      ]
+    },
+    {
+      "id": "setup-0xC1900101-0x20017",
+      "patterns": [
+        "0xC1900101\\s*[-\u2013]?\\s*0x20017",
+        "0x20017"
+      ],
+      "cause": "boot",
+      "detection": "Setup result 0xC1900101 with extend code 0x20017.",
+      "syntax": {
+        "windows-10-and-later": "No single repair command. Update storage and network drivers, remove conflicting security software, then retry Setup."
+      },
+      "repair": [
+        "driver_cleanup",
+        "bcdboot_uefi",
+        "bcdboot_bios"
+      ],
+      "rollback": "0xC1900101 means Setup rolled back. Read $Windows.~BT\\Sources\\Rollback before changing boot files.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/upgrade-fails-with-error-0xc1900101-0x20017",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-error-codes"
+      ]
+    },
+    {
+      "id": "setup-0xC1900101",
+      "patterns": [
+        "0xC1900101"
+      ],
+      "cause": "driver",
+      "detection": "Setup result 0xC1900101 without a more specific extend code. This is a generic rollback, usually a driver.",
+      "syntax": {
+        "windows-10-and-later": "Review setupmem.dmp and setupapi.dev.log under $Windows.~BT\\Sources\\Rollback, then retry from a clean boot."
+      },
+      "repair": [
+        "driver_cleanup"
+      ],
+      "rollback": "Setup already restored the previous OS. Do not run boot repairs unless the extend code is a boot phase.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-resolution-procedures",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-error-codes",
+        "https://learn.microsoft.com/en-us/windows/deployment/upgrade/log-files"
+      ]
+    },
+    {
+      "id": "setup-0xC1900200",
+      "patterns": [
+        "0xC1900200"
+      ],
+      "cause": "compat",
+      "detection": "Setup.exe reports the computer does not meet minimum requirements.",
+      "syntax": {
+        "windows-10-and-later": "No bypass on the first attempt. Confirm the published requirement list, then retry."
+      },
+      "repair": [
+        "requirements_bypass"
+      ],
+      "rollback": "Do not change partitions because of this code alone.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-resolution-procedures"
+      ]
+    },
+    {
+      "id": "setup-0xC1900202",
+      "patterns": [
+        "0xC1900202"
+      ],
+      "cause": "compat",
+      "detection": "Setup compatibility block in the same family as other 0xC19002xx requirement failures.",
+      "syntax": {
+        "windows-10-and-later": "Read the compatibility report in the Setup logs before any second attempt."
+      },
+      "repair": [
+        "requirements_bypass"
+      ],
+      "rollback": "The first attempt stays an official upgrade without boot changes.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows/deployment/upgrade/resolve-windows-upgrade-errors",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-error-codes"
+      ]
+    },
+    {
+      "id": "setup-0xC1900107",
+      "patterns": [
+        "0xC1900107"
+      ],
+      "cause": "unknown",
+      "detection": "A previous setup cleanup is still pending and the computer must restart.",
+      "syntax": {
+        "windows-10-and-later": "Restart, then run Setup again. If it persists, clean temporary and system files with Disk Cleanup."
+      },
+      "repair": [
+        "reboot"
+      ],
+      "rollback": "Do not delete $Windows.~BT until after the required restart.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-resolution-procedures"
+      ]
+    },
+    {
+      "id": "setup-0x80070070",
+      "patterns": [
+        "0x80070070"
+      ],
+      "cause": "disk",
+      "detection": "Setup extend codes 0x80070070-0x50011, 0x50012, or 0x60000: not enough free space.",
+      "syntax": {
+        "windows-10-and-later": "Free disk space and retry. The published Windows 10 figures are 16 GB for 32-bit and 20 GB for 64-bit."
+      },
+      "repair": [
+        "free-disk-space"
+      ],
+      "rollback": "Do not shrink the Windows volume below the space Setup still needs.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-resolution-procedures"
+      ]
+    },
+    {
+      "id": "setup-0x80070002",
+      "patterns": [
+        "0x80070002"
+      ],
+      "cause": "disk",
+      "detection": "0x80070002 with extend 0x20009 during partition analysis, often a second system disk.",
+      "syntax": {
+        "windows-10-and-later": "Disconnect the unused system disk and retry. Delete that system partition only when it is known to be unused."
+      },
+      "repair": [
+        "disconnect-secondary-disk"
+      ],
+      "rollback": "Reconnect the data disk after Setup. Do not delete a partition that still holds a bootable Windows.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-resolution-procedures"
+      ]
+    },
+    {
+      "id": "secure-boot-ca-2023",
+      "patterns": [
+        "Windows UEFI CA 2023",
+        "UEFICA2023",
+        "Event ID 1801",
+        "Event ID 1808"
+      ],
+      "cause": "secure-boot",
+      "detection": "Secure Boot certificate status or event 1801. Event 1808 indicates the 2023 certificates and boot manager update completed.",
+      "syntax": {
+        "windows-11": "Update OEM firmware first. Windows then applies the Secure Boot certificate update. Do not replace bootmgfw.efi with an unsigned copy."
+      },
+      "repair": [
+        "firmware-update-first",
+        "read-secure-boot-events"
+      ],
+      "rollback": "Do not delete the 2011 CA until the device boots with the 2023-signed Windows Boot Manager.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-secure-boot-key-creation-and-management-guidance?view=windows-11",
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/windows-security/update-secure-boot-certificates"
+      ]
+    },
+    {
+      "id": "secure-boot-dbx-sbat",
+      "patterns": [
+        "\\bdbx\\b",
+        "\\bSBAT\\b",
+        "Event ID 1796"
+      ],
+      "cause": "secure-boot",
+      "detection": "dbx or SBAT revocation text, including event 1796 while a certificate update is applied.",
+      "syntax": {
+        "windows-11": "Check db before dbx. A dbx match must block the image. Update KEK so later db and dbx updates can apply."
+      },
+      "repair": [
+        "read-secure-boot-events"
+      ],
+      "rollback": "Do not clear dbx to force a revoked loader to boot.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-secure-boot-key-creation-and-management-guidance?view=windows-11",
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/linux-distribution-guidance-handling-2023keys?view=windows-11"
+      ]
+    },
+    {
+      "id": "reagentc",
+      "patterns": [
+        "reagentc",
+        "Winre.wim"
+      ],
+      "cause": "boot",
+      "detection": "reagentc /info shows Windows RE disabled or the image path missing.",
+      "syntax": {
+        "windows-8-and-later": "reagentc /info then reagentc /enable"
+      },
+      "repair": [
+        "reagentc-enable"
+      ],
+      "rollback": "/disable removes the current RE registration. Record reagentc /info output first.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/reagentc-command-line-options?view=windows-11"
+      ]
+    },
+    {
+      "id": "dism-pending",
+      "patterns": [
+        "RevertPendingActions",
+        "pending.xml"
+      ],
+      "cause": "driver",
+      "detection": "The computer does not start after updates and WinRE shows a pending package.",
+      "syntax": {
+        "windows-10-and-later": "DISM /image:C:\\ /get-packages then DISM /Image:C:\\ /Cleanup-Image /RevertPendingActions"
+      },
+      "repair": [
+        "dism-revert-pending"
+      ],
+      "rollback": "Confirm the offline Windows letter before /image. RevertPendingActions undoes pending updates.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+      ]
+    },
+    {
+      "id": "bootrec-fixmbr",
+      "patterns": [
+        "bootrec",
+        "BOOTREC /FIXMBR"
+      ],
+      "cause": "boot",
+      "detection": "BIOS startup repair needs boot code rewritten. Fixmbr does not repair a damaged partition table.",
+      "syntax": {
+        "windows-7-and-later": "bootrec /fixmbr then bootrec /fixboot. For BCD: bcdedit /export then bootrec /rebuildbcd"
+      },
+      "repair": [
+        "bootrec-fixmbr",
+        "bootrec-rebuildbcd"
+      ],
+      "rollback": "Export BCD before rebuildbcd. Do not use fixmbr as the UEFI repair; use bcdboot /f UEFI.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+      ]
+    },
+    {
+      "id": "grub-rescue",
+      "patterns": [
+        "GRUB rescue",
+        "grub rescue"
+      ],
+      "cause": "boot",
+      "detection": "Firmware or a log says GRUB rescue. The Linux loader is what failed, not a reason to delete other EFI directories.",
+      "syntax": {
+        "notes": "Boot-Repair reinstalls GRUB and writes a Boot-Info report. This project keeps the Linux EFI tree and still uses bcdboot only for the Windows loader."
+      },
+      "repair": [
+        "preserve-linux-efi",
+        "bcdboot-uefi"
+      ],
+      "rollback": "Restore the ESP file backup before any GRUB reinstall. Do not format the EFI partition.",
+      "sources": [
+        "https://sourceforge.net/p/boot-repair/home/Home/",
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Startup Repair",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Windows automatic repair from WinRE. It is the signed path this project prefers.",
+      "maps_to": [
+        "bcdboot-uefi",
+        "bcdboot-bios",
+        "bootrec-fixmbr"
+      ],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "bootrec",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "fixmbr rewrites master boot code only. fixboot rewrites the boot sector. scanos and rebuildbcd rebuild the store after an export.",
+      "maps_to": [
+        "bootrec-fixmbr",
+        "bootrec-rebuildbcd"
+      ],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "bcdboot",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Copies boot files from a Windows directory. /f UEFI, BIOS, or ALL. /f requires /s.",
+      "maps_to": [
+        "bcdboot-uefi",
+        "bcdboot-bios",
+        "bcdboot-all"
+      ],
+      "source": "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11"
+    },
+    {
+      "name": "bcdedit",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Exports, imports, and creates BCD stores, and sets device and osdevice.",
+      "maps_to": [
+        "bcdedit-import",
+        "bcdedit-createstore",
+        "fix-device-refs"
+      ],
+      "source": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/bcdedit"
+    },
+    {
+      "name": "bootsect",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Writes Bootmgr-compatible boot code with /nt60 and can update the MBR with /mbr.",
+      "maps_to": [
+        "bootsect-nt60-mbr"
+      ],
+      "source": "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bootsect-command-line-options?view=windows-11"
+    },
+    {
+      "name": "SetupDiag",
+      "license": "Microsoft, included with Windows Setup",
+      "reuse": false,
+      "does": "Reads Setup logs and writes SetupDiagResults.xml. It does not change the disk.",
+      "maps_to": [
+        "read-setup-logs"
+      ],
+      "source": "https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag"
+    },
+    {
+      "name": "DISM",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Offline image repair. /get-packages then /Cleanup-Image /RevertPendingActions for a pending update that blocks boot.",
+      "maps_to": [
+        "dism-revert-pending"
+      ],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "SFC",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Offline system-file check from WinRE with /offbootdir and /offwindir after the Windows letter is confirmed.",
+      "maps_to": [
+        "sfc-offline"
+      ],
+      "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting"
+    },
+    {
+      "name": "reagentc",
+      "license": "Microsoft Windows, no separate open-source grant",
+      "reuse": false,
+      "does": "Enables the signed Winre.wim recovery image.",
+      "maps_to": [
+        "reagentc-enable"
+      ],
+      "source": "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/reagentc-command-line-options?view=windows-11"
+    },
+    {
+      "name": "Media Creation Tool",
+      "license": "Microsoft, free download, not open source",
+      "reuse": false,
+      "does": "Builds official Windows installation media. This project does not redistribute it.",
+      "maps_to": [
+        "official-install-media"
+      ],
+      "source": "https://www.microsoft.com/software-download/windows11"
+    },
+    {
+      "name": "Boot-Repair",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "One-click boot repair with a backup and a Boot-Info report, including GRUB reinstall. Idea used here: back up first and keep a written diagnosis. No Boot-Repair code is included.",
+      "maps_to": [
+        "preserve-linux-efi",
+        "bcdboot-uefi"
+      ],
+      "source": "https://launchpad.net/boot-repair"
+    },
+    {
+      "name": "rEFInd",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "EFI boot manager that scans for loaders. Idea used here: identify bootmgfw.efi before rewriting it. No rEFInd code is included. The original rEFIt tree is BSD; the rEFInd changes are GPL-3.0.",
+      "maps_to": [
+        "copy-bootmgfw"
+      ],
+      "source": "https://www.rodsbooks.com/refind/features.html"
+    },
+    {
+      "name": "OpenCore",
+      "license": "BSD-3-Clause",
+      "reuse": false,
+      "does": "UEFI boot loader. This project already has an optional OpenDuet chain and does not vendor OpenCore source in this change.",
+      "maps_to": [
+        "openduet-plan"
+      ],
+      "source": "https://github.com/acidanthera/OpenCorePkg"
+    },
+    {
+      "name": "GRUB",
+      "license": "GPL-3.0-or-later",
+      "reuse": false,
+      "does": "Chainloads Windows from an EFI or BIOS menu. Idea used here: do not delete the Linux EFI directory while repairing Windows.",
+      "maps_to": [
+        "preserve-linux-efi"
+      ],
+      "source": "https://www.gnu.org/software/grub/"
+    },
+    {
+      "name": "SystemRescue",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "Live Linux rescue disk. The optional Linux plan does not download or write it.",
+      "maps_to": [
+        "linux-rescue-plan"
+      ],
+      "source": "https://www.system-rescue.org/"
+    },
+    {
+      "name": "TestDisk",
+      "license": "GPL-2.0-only",
+      "reuse": false,
+      "does": "Recovers partition tables. It is a manual last resort and is not launched by this project.",
+      "maps_to": [
+        "testdisk-manual"
+      ],
+      "source": "https://github.com/cgsecurity/testdisk/blob/master/COPYING"
+    },
+    {
+      "name": "ms-sys",
+      "license": "GPL-2.0-only",
+      "reuse": false,
+      "does": "Writes a Microsoft-compatible boot record from Linux. This project uses Windows bootsect instead and does not ship ms-sys or its embedded boot records. ms-sys-free is the fork without those records.",
+      "maps_to": [
+        "bootsect-nt60-mbr"
+      ],
+      "source": "https://ms-sys.sourceforge.net/"
+    },
+    {
+      "name": "EasyBCD",
+      "license": "NeoSmart freeware, not open source",
+      "reuse": false,
+      "does": "Edits the Windows boot menu. Idea used here: a visible menu entry and a one-time boot sequence. No EasyBCD code or installer is included.",
+      "maps_to": [
+        "bcd-bootsequence"
+      ],
+      "source": "https://neosmart.net/EasyBCD/"
+    },
+    {
+      "name": "Rufus",
+      "license": "GPL-3.0-only",
+      "reuse": false,
+      "does": "Writes a bootable USB stick. Idea used here: do not treat media as bootable until the partition type and boot files verify. No Rufus code is included.",
+      "maps_to": [
+        "verify-boot-files"
+      ],
+      "source": "https://github.com/pbatard/rufus/"
     }
   ]
 }
