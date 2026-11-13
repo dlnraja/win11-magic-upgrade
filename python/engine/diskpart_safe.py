@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
+import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .logutil import log
 
@@ -66,43 +68,270 @@ def _run(cmd: list[str], input_text: str | None = None, timeout: int = 300) -> t
     return result.code, result.output or result.reason
 
 
+def oem_encoding() -> str:
+    """Console OEM code page. French diskpart reads this, not UTF-8."""
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            page = int(ctypes.windll.kernel32.GetOEMCP())
+            if page > 0:
+                return f"cp{page}"
+        except Exception:
+            pass
+    return "cp850"
+
+
+def diskpart_script_bytes(script: str, *, encoding: str | None = None) -> bytes:
+    """ANSI/OEM, CRLF, no BOM. diskpart /s rejects UTF-8 scripts on the real PC."""
+    text = (script or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        text = "exit"
+    if not text.lower().endswith("exit"):
+        text += "\nexit"
+    body = text.replace("\n", "\r\n") + "\r\n"
+    data = body.encode(encoding or oem_encoding(), errors="replace")
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        data = data[2:]
+    return data
+
+
+def decode_diskpart_output(raw: bytes | str, *, encoding: str | None = None) -> str:
+    if isinstance(raw, str):
+        return raw
+    for name in (encoding or oem_encoding(), "cp850", "cp437", "mbcs", "utf-8"):
+        try:
+            return raw.decode(name)
+        except Exception:
+            continue
+    return raw.decode("cp850", errors="replace")
+
+
+def vds_is_running(text: str) -> bool:
+    """sc query vds, in English or French. A stopped service is not running."""
+    if re.search(r"\bSTOPPED\b|ARR[EÊ]T[EÉ]", text or "", re.I):
+        return False
+    return bool(re.search(r"RUNNING|EX[EÉ]CUTION", text or "", re.I))
+
+
+def select_lines(*, disk: int | None = None, partition: int | None = None, volume: int | None = None) -> list[str]:
+    """Select by numbers taken from the live map. A drive letter is not a selector."""
+    if isinstance(volume, str) or isinstance(disk, str) or isinstance(partition, str):
+        raise ValueError("diskpart select needs numbers from the live map, not a letter")
+    if disk is not None and partition is not None:
+        return [f"select disk {int(disk)}", f"select partition {int(partition)}"]
+    if volume is not None:
+        return [f"select volume {int(volume)}"]
+    raise ValueError("diskpart select needs a disk and partition number, or a volume number")
+
+
 def diskpart_failed(out: str) -> bool:
+    """Only the 'nothing selected' result. Other French words are not a failure by themselves."""
     if not out:
         return False
-    if NO_VOLUME_RE.search(out) or NO_DISK_RE.search(out):
-        return True
-    # diskpart often returns 0 even on script errors — scan text
-    if NO_VOLUME_RE.search(out) or NO_DISK_RE.search(out):
-        return True
-    return False
+    return bool(NO_VOLUME_RE.search(out) or NO_DISK_RE.search(out))
 
 
-def run_diskpart(script: str, *, timeout: int = 300) -> tuple[bool, str]:
+def _write_script_file(data: bytes) -> Path:
+    folder = Path(tempfile.gettempdir()) / "Win11MagicUpgrade"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"dp-{os.getpid()}-{uuid.uuid4().hex}.txt"
+    path.write_bytes(data)
+    return path
+
+
+def _run_diskpart_file(argv: list[str], timeout: int) -> tuple[int, str]:
+    return _run(argv, timeout=timeout)
+
+
+def run_diskpart(
+    script: str,
+    *,
+    timeout: int = 180,
+    runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+    encoding: str | None = None,
+    wait_vds: Callable[[], None] | None = None,
+) -> tuple[bool, str]:
     """
-    Run a diskpart script. Returns (ok, full_output).
-    ok=False if selection/error markers (EN+FR) appear.
+    Write an OEM CRLF script and run ``diskpart /s <file>``.
+    Exit code 0 is success. One retry prepends ``rescan`` after the Virtual Disk service is up.
     """
-    code, out = _run(["diskpart"], input_text=script if script.endswith("\n") else script + "\n", timeout=timeout)
+    if wait_vds is not None:
+        wait_vds()
+    else:
+        _wait_for_virtual_disk()
+
+    def once(text: str) -> tuple[int, str]:
+        data = diskpart_script_bytes(text, encoding=encoding)
+        path = _write_script_file(data)
+        argv = ["diskpart", "/s", str(path)]
+        try:
+            if runner is not None:
+                code, raw = runner(argv, data, timeout)
+            else:
+                code, raw = _run_diskpart_file(argv, timeout)
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        if isinstance(raw, bytes):
+            raw = decode_diskpart_output(raw, encoding=encoding)
+        return int(code), raw or ""
+
+    code, out = once(script)
     if code == 124:
         log("diskpart TIMEOUT", "ERROR")
         return False, out
-    if diskpart_failed(out):
-        # Surface the localized error line
-        for line in out.splitlines():
-            if NO_VOLUME_RE.search(line) or NO_DISK_RE.search(line) or ERROR_RE.search(line):
-                log(f"diskpart: {line.strip()}", "WARN")
-                break
-        return False, out
-    if ERROR_RE.search(out) and not SUCCESS_SHRINK_RE.search(out):
-        # Soft: some informational lines contain "error" in paths — keep cautious
-        if re.search(
-            r"DiskPart.*(error|failed|échec|echec|erreur)|"
-            r"(error|failed|échec|echec|erreur).*(DiskPart|volume|disque|disk)",
-            out,
-            re.I,
-        ):
-            return False, out
-    return True, out
+    if code == 0 and not diskpart_failed(out):
+        return True, out
+    log("diskpart failed; retrying once after rescan", "WARN")
+    code2, out2 = once("rescan\n" + script)
+    if code2 == 124:
+        log("diskpart TIMEOUT", "ERROR")
+        return False, out2
+    if diskpart_failed(out2):
+        log("diskpart: no disk or volume selected after rescan", "WARN")
+        return False, out2
+    return code2 == 0, out2
+
+
+def _wait_for_virtual_disk() -> None:
+    if os.name != "nt":
+        return
+    code, out = _run(["sc", "query", "vds"], timeout=20)
+    if code == 0 and vds_is_running(out or ""):
+        return
+    log("Virtual Disk service is not running; starting it", "INFO")
+    _run(["sc", "start", "vds"], timeout=30)
+    _run(["sc", "query", "vds"], timeout=20)
+
+
+def run_methods(op: str, methods: list[tuple[str, Callable[[], bool]]]) -> str | None:
+    """Try each method. The first one whose result verifies is the one that is logged."""
+    for name, fn in methods:
+        try:
+            ok = bool(fn())
+        except Exception as exc:
+            log(f"{op} via {name} failed: {exc}", "WARN")
+            continue
+        if ok:
+            log(f"{op} succeeded via {name}", "OK")
+            return name
+        log(f"{op} via {name} did not verify", "WARN")
+    log(f"{op} failed on every method", "ERROR")
+    return None
+
+
+def powershell_args(script: str) -> list[str]:
+    return [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]
+
+
+def commands_for(
+    op: str,
+    *,
+    disk: int | None = None,
+    partition: int | None = None,
+    volume: int | None = None,
+    letter: str | None = None,
+    volume_guid: str | None = None,
+    folder: str | None = None,
+    gpt_type: str | None = None,
+    active: bool | None = None,
+) -> dict[str, str]:
+    """Command text for each fallback. Tests check the order and the selectors."""
+    lines = select_lines(disk=disk, partition=partition, volume=volume)
+    selected = "\n".join(lines)
+    letter_s = (letter or "").upper()[:1]
+    guid = (volume_guid or "").strip()
+    mount = folder or ""
+    ps = ""
+    cim = ""
+    mountvol = ""
+    folder_cmd = ""
+    if op == "assign":
+        ps = (
+            f"Add-PartitionAccessPath -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
+            f"-AccessPath '{letter_s}:' -ErrorAction Stop"
+        )
+        cim = (
+            "$p = Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition "
+            f"-Filter \"DiskNumber={int(disk or 0)} AND PartitionNumber={int(partition or 0)}\"; "
+            f"Invoke-CimMethod -InputObject $p -MethodName AddAccessPath -Arguments @{{AccessPath='{letter_s}:\\'}}"
+        )
+        mountvol = f"mountvol {letter_s}: {guid}" if guid else ""
+        folder_cmd = (
+            f"Add-PartitionAccessPath -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
+            f"-AccessPath '{mount}' -ErrorAction Stop"
+            if mount
+            else ""
+        )
+        diskpart = selected + f"\nassign letter={letter_s}\nexit"
+    elif op == "remove":
+        ps = (
+            f"Remove-PartitionAccessPath -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
+            f"-AccessPath '{letter_s}:' -ErrorAction Stop"
+        )
+        cim = (
+            "$p = Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition "
+            f"-Filter \"DiskNumber={int(disk or 0)} AND PartitionNumber={int(partition or 0)}\"; "
+            f"Invoke-CimMethod -InputObject $p -MethodName RemoveAccessPath -Arguments @{{AccessPath='{letter_s}:\\'}}"
+        )
+        mountvol = f"mountvol {letter_s}: /d" if letter_s else ""
+        folder_cmd = (
+            f"Remove-PartitionAccessPath -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
+            f"-AccessPath '{mount}' -ErrorAction SilentlyContinue"
+            if mount
+            else ""
+        )
+        diskpart = selected + (f"\nremove letter={letter_s}\nexit" if letter_s else "\nremove\nexit")
+    elif op == "active":
+        flag = "$true" if active is not False else "$false"
+        ps = (
+            f"Set-Partition -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
+            f"-IsActive {flag} -ErrorAction Stop"
+        )
+        cim = (
+            "$p = Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition "
+            f"-Filter \"DiskNumber={int(disk or 0)} AND PartitionNumber={int(partition or 0)}\"; "
+            "Invoke-CimMethod -InputObject $p -MethodName SetAttributes -Arguments @{IsActive=$true}"
+        )
+        diskpart = selected + "\nactive\nexit"
+    elif op == "set-id":
+        ident = gpt_type or ""
+        ps = (
+            f"Set-Partition -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
+            f"-GptType '{{{ident.strip('{}')}}}' -ErrorAction Stop"
+        )
+        cim = (
+            "$p = Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition "
+            f"-Filter \"DiskNumber={int(disk or 0)} AND PartitionNumber={int(partition or 0)}\"; "
+            f"Set-CimInstance -InputObject $p -Property @{{GptType='{{{ident.strip('{}')}}}'}}"
+        )
+        diskpart = selected + f"\nset id={ident}\nexit"
+    else:
+        diskpart = "list disk\nlist volume\nexit" if disk is None else f"select disk {int(disk)}\nlist partition\nlist volume\nexit"
+        ps = "Get-Partition | Select-Object DiskNumber,PartitionNumber,DriveLetter,GptType,IsActive | Format-Table | Out-String"
+        cim = "Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition | Out-String"
+        mountvol = "mountvol"
+        folder_cmd = ""
+    return {
+        "diskpart": diskpart,
+        "powershell": ps,
+        "cim": cim,
+        "mountvol": mountvol,
+        "folder": folder_cmd,
+    }
 
 
 def parse_list_volume(out: str) -> list[VolumeInfo]:
@@ -139,10 +368,10 @@ def parse_list_volume(out: str) -> list[VolumeInfo]:
             fs = fsm.group(1).upper()
 
         size_mb = None
-        sm = re.search(r"(\d+)\s*(GB|MB)\b", line, re.I)
+        sm = re.search(r"(\d+)\s*(GB|MB|Go|Mo)\b", line, re.I)
         if sm:
             size_mb = int(sm.group(1))
-            if sm.group(2).upper() == "GB":
+            if sm.group(2).upper() in ("GB", "GO"):
                 size_mb *= 1024
 
         # Label: between letter and FS — best-effort
@@ -193,17 +422,14 @@ def find_volume_by_letter(letter: str) -> VolumeInfo | None:
 
 
 def ensure_select_volume(vol: int | str) -> tuple[bool, str]:
-    """
-    Select volume by index (preferred) or letter. Verifies no 'no volume selected'.
-    """
-    script = f"select volume {vol}\ndetail volume\nexit\n"
+    """Select a volume by the number from ``list volume``. A letter is refused."""
+    token = str(vol).strip()
+    if token.rstrip(":\\").isalpha():
+        log("diskpart select by letter is refused; use the volume number from the live list", "ERROR")
+        return False, "select-by-letter-refused"
+    script = "\n".join(select_lines(volume=int(token)) + ["detail volume", "exit"])
     ok, out = run_diskpart(script)
-    if not ok:
-        return False, out
-    if NO_VOLUME_RE.search(out):
-        return False, out
-    # Must show volume detail markers
-    if not re.search(r"Volume|Disk|Disque", out, re.I):
+    if not ok or diskpart_failed(out):
         return False, out
     return True, out
 
@@ -290,7 +516,10 @@ def get_system_disk_number(letter: str | None = None) -> int | None:
     n: int | None = None
     detail = ""
 
-    ok, detail = ensure_select_volume(L)
+    match = find_volume_by_letter(L)
+    ok, detail = (False, "")
+    if match is not None:
+        ok, detail = ensure_select_volume(match.index)
     if ok:
         n = disk_number_from_detail(detail)
         if n is None:
@@ -344,60 +573,258 @@ def get_system_disk_number(letter: str | None = None) -> int | None:
     return n
 
 
-def assign_letter_to_volume(vol_index: int, letter: str) -> bool:
-    L = letter.upper()[:1]
-    ok, out = run_diskpart(
-        f"select volume {int(vol_index)}\n"
-        f"assign letter={L}\n"
-        f"detail volume\n"
-        f"exit\n"
+def _letter_present(letter: str) -> bool:
+    return Path(f"{letter.upper()[:1]}:\\").exists()
+
+
+def _exec_ok(argv: list[str], *, timeout: int, exec_command: Callable[[list[str], int], tuple[int, str]] | None) -> bool:
+    if not argv or not argv[-1]:
+        return False
+    if exec_command is None:
+        code, _out = _run(argv, timeout=timeout)
+        return code == 0
+    code, _out = exec_command(argv, timeout)
+    return int(code) == 0
+
+
+def assign_partition_letter(
+    disk: int | None,
+    partition: int | None,
+    letter: str,
+    *,
+    volume: int | None = None,
+    volume_guid: str | None = None,
+    folder: str | None = None,
+    verify: Callable[[], bool] | None = None,
+    exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
+    runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+) -> str | None:
+    """Assign a letter. Diskpart, then Storage, CIM, mountvol, then a folder mount."""
+    loc_letter = letter.upper()[:1]
+    check = verify or (lambda: _letter_present(loc_letter))
+    cmds = commands_for(
+        "assign",
+        disk=disk,
+        partition=partition,
+        volume=volume,
+        letter=loc_letter,
+        volume_guid=volume_guid,
+        folder=folder,
     )
-    if not ok:
-        log(f"assign letter {L}: failed for volume {vol_index}: {out[-200:]}", "WARN")
-        return False
-    if not Path(f"{L}:\\").exists():
-        log(f"Letter {L}: not present after assign", "WARN")
-        return False
-    return True
+
+    def via_diskpart() -> bool:
+        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
+        return ok and check()
+
+    def via_ps() -> bool:
+        if disk is None or partition is None:
+            return False
+        return _exec_ok(powershell_args(cmds["powershell"]), timeout=60, exec_command=exec_command) and check()
+
+    def via_cim() -> bool:
+        if disk is None or partition is None:
+            return False
+        return _exec_ok(powershell_args(cmds["cim"]), timeout=60, exec_command=exec_command) and check()
+
+    def via_mountvol() -> bool:
+        if not volume_guid:
+            return False
+        return _exec_ok(["mountvol", f"{loc_letter}:", volume_guid], timeout=60, exec_command=exec_command) and check()
+
+    def via_folder() -> bool:
+        if disk is None or partition is None or not folder:
+            return False
+        return _exec_ok(powershell_args(cmds["folder"]), timeout=60, exec_command=exec_command) and Path(folder).exists()
+
+    return run_methods(
+        f"assign {loc_letter}",
+        [
+            ("diskpart", via_diskpart),
+            ("powershell", via_ps),
+            ("cim", via_cim),
+            ("mountvol", via_mountvol),
+            ("folder", via_folder),
+        ],
+    )
 
 
-def remove_letter_from_volume(vol_index: int, letter: str | None = None) -> bool:
-    """Remove drive letter by volume index (safe). Optional letter for logging."""
-    cmds = [f"select volume {int(vol_index)}"]
-    if letter:
-        cmds.append(f"remove letter={letter.upper()[:1]}")
-    else:
-        cmds.append("remove all")
-    cmds.append("exit")
-    ok, out = run_diskpart("\n".join(cmds) + "\n")
-    if not ok:
-        # Letter may already be gone — not fatal
-        if NO_VOLUME_RE.search(out):
-            log(f"remove letter: volume {vol_index} not selectable (already gone?)", "INFO")
-            return True
-        log(f"remove letter volume {vol_index}: {out[-200:]}", "WARN")
-        return False
-    return True
+def assign_letter_to_volume(
+    vol_index: int,
+    letter: str,
+    *,
+    disk: int | None = None,
+    partition: int | None = None,
+    volume_guid: str | None = None,
+    folder: str | None = None,
+) -> bool:
+    return (
+        assign_partition_letter(
+            disk,
+            partition,
+            letter,
+            volume=int(vol_index),
+            volume_guid=volume_guid,
+            folder=folder,
+        )
+        is not None
+    )
+
+
+def remove_partition_letter(
+    disk: int | None,
+    partition: int | None,
+    letter: str | None = None,
+    *,
+    volume: int | None = None,
+    folder: str | None = None,
+    verify: Callable[[], bool] | None = None,
+    exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
+    runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+) -> str | None:
+    loc_letter = (letter or "").upper()[:1]
+    check = verify or (lambda: not loc_letter or not _letter_present(loc_letter))
+    cmds = commands_for(
+        "remove",
+        disk=disk,
+        partition=partition,
+        volume=volume,
+        letter=loc_letter or None,
+        folder=folder,
+    )
+
+    def via_diskpart() -> bool:
+        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
+        return ok and check()
+
+    def via_ps() -> bool:
+        if disk is None or partition is None or not loc_letter:
+            return False
+        return _exec_ok(powershell_args(cmds["powershell"]), timeout=60, exec_command=exec_command) and check()
+
+    def via_cim() -> bool:
+        if disk is None or partition is None or not loc_letter:
+            return False
+        return _exec_ok(powershell_args(cmds["cim"]), timeout=60, exec_command=exec_command) and check()
+
+    def via_mountvol() -> bool:
+        if not loc_letter:
+            return False
+        return _exec_ok(["mountvol", f"{loc_letter}:", "/d"], timeout=60, exec_command=exec_command) and check()
+
+    def via_folder() -> bool:
+        if not folder or disk is None or partition is None:
+            return False
+        ran = _exec_ok(powershell_args(cmds["folder"]), timeout=60, exec_command=exec_command)
+        return ran and not Path(folder).exists()
+
+    return run_methods(
+        f"remove {loc_letter or volume}",
+        [
+            ("diskpart", via_diskpart),
+            ("powershell", via_ps),
+            ("cim", via_cim),
+            ("mountvol", via_mountvol),
+            ("folder", via_folder),
+        ],
+    )
+
+
+def remove_letter_from_volume(
+    vol_index: int,
+    letter: str | None = None,
+    *,
+    disk: int | None = None,
+    partition: int | None = None,
+) -> bool:
+    """Remove a drive letter by volume number. A missing letter is success."""
+    if letter and not _letter_present(letter):
+        log(f"Letter {letter.upper()[:1]}: is already absent", "INFO")
+        return True
+    return (
+        remove_partition_letter(disk, partition, letter, volume=int(vol_index))
+        is not None
+    )
+
+
+def mark_partition_active(
+    disk: int,
+    partition: int,
+    *,
+    verify: Callable[[], bool] | None = None,
+    exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
+    runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+) -> str | None:
+    """Set the active flag by disk and partition number. mountvol cannot do this."""
+    cmds = commands_for("active", disk=disk, partition=partition, active=True)
+    check = verify or (lambda: True)
+
+    def via_diskpart() -> bool:
+        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
+        return ok and check()
+
+    def via_ps() -> bool:
+        return _exec_ok(powershell_args(cmds["powershell"]), timeout=60, exec_command=exec_command) and check()
+
+    def via_cim() -> bool:
+        return _exec_ok(powershell_args(cmds["cim"]), timeout=60, exec_command=exec_command) and check()
+
+    return run_methods(
+        f"active disk {disk} partition {partition}",
+        [
+            ("diskpart", via_diskpart),
+            ("powershell", via_ps),
+            ("cim", via_cim),
+            ("mountvol", lambda: False),
+            ("folder", lambda: False),
+        ],
+    )
+
+
+def set_partition_id(
+    disk: int,
+    partition: int,
+    gpt_type: str,
+    *,
+    verify: Callable[[], bool] | None = None,
+    exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
+    runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
+) -> str | None:
+    cmds = commands_for("set-id", disk=disk, partition=partition, gpt_type=gpt_type)
+    check = verify or (lambda: True)
+
+    def via_diskpart() -> bool:
+        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
+        return ok and check()
+
+    def via_ps() -> bool:
+        return _exec_ok(powershell_args(cmds["powershell"]), timeout=60, exec_command=exec_command) and check()
+
+    def via_cim() -> bool:
+        return _exec_ok(powershell_args(cmds["cim"]), timeout=60, exec_command=exec_command) and check()
+
+    return run_methods(
+        f"set id disk {disk} partition {partition}",
+        [
+            ("diskpart", via_diskpart),
+            ("powershell", via_ps),
+            ("cim", via_cim),
+            ("mountvol", lambda: False),
+            ("folder", lambda: False),
+        ],
+    )
 
 
 def shrink_volume_letter(letter: str, desired_mb: int, minimum_mb: int) -> bool:
     L = letter.upper()[:1]
-    ok_sel, _ = ensure_select_volume(L)
-    if not ok_sel:
-        log(f"shrink aborted: cannot select volume {L}:", "ERROR")
+    match = find_volume_by_letter(L)
+    if match is None:
+        log(f"shrink aborted: volume {L}: is not in the live list", "ERROR")
         return False
     ok, out = run_diskpart(
-        f"select volume {L}\n"
-        f"shrink desired={int(desired_mb)} minimum={int(minimum_mb)}\n"
-        f"exit\n"
+        "\n".join(select_lines(volume=match.index) + [f"shrink desired={int(desired_mb)} minimum={int(minimum_mb)}", "exit"])
     )
     log(f"shrink {L}: {(out.splitlines()[-1] if out else 'n/a')}")
-    if not ok:
-        return False
-    if ERROR_RE.search(out) and not SUCCESS_SHRINK_RE.search(out):
-        if re.search(r"not enough|insuffisant|failed|échec|echec|error|erreur", out, re.I):
-            return False
-    return True
+    return ok
 
 
 def find_esp_candidates() -> list[VolumeInfo]:

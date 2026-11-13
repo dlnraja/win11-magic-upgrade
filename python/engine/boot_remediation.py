@@ -81,51 +81,50 @@ def write_remediation_scripts(
     paths["winre_bcdboot"] = str(bcd)
 
     # --- diskpart: list + select system disk (read-only safe list) ---
+    from .diskpart_safe import diskpart_script_bytes
+
     dp_list = REMEDIATE_DIR / "diskpart-list-system.txt"
-    dp_list.write_text(
-        f"list disk\r\nselect disk {disk}\r\nlist partition\r\nlist volume\r\nexit\r\n",
-        encoding="utf-8",
+    dp_list.write_bytes(
+        diskpart_script_bytes(f"list disk\nselect disk {int(disk)}\nlist partition\nlist volume\nexit\n")
     )
     paths["diskpart_list"] = str(dp_list)
 
     # --- diskpart: shrink C then create EFI (manual — review before run) ---
     dp_efi = REMEDIATE_DIR / "diskpart-create-efi-MANUAL-REVIEW.txt"
-    dp_efi.write_text(
-        "\r\n".join(
-            [
-                f"REM MANUAL REVIEW — shrink C: and create 512MB EFI on disk {disk}",
-                f"REM Only if One-Click Boot Fix failed and you understand the risk.",
-                f"select disk {disk}",
-                "list partition",
-                "select volume C",
-                "shrink desired=512 minimum=300",
-                "create partition efi size=512",
-                "format quick fs=fat32 label=System",
-                "REM assign a free letter here after list volume; do not reuse one that is taken",
-                "REM assign letter=<FREE>",
-                "exit",
-                "",
-            ]
-        ),
-        encoding="utf-8",
+    dp_efi.write_bytes(
+        diskpart_script_bytes(
+            "\n".join(
+                [
+                    f"rem MANUAL REVIEW shrink the Windows partition by its number and create 512MB EFI on disk {int(disk)}",
+                    f"select disk {int(disk)}",
+                    "list partition",
+                    "rem select partition N   Windows partition number from the list above",
+                    "rem shrink desired=512 minimum=300",
+                    "rem create partition efi size=512",
+                    "rem format quick fs=fat32 label=System",
+                    "rem assign letter=Z",
+                    "exit",
+                ]
+            )
+        )
     )
     paths["diskpart_efi_manual"] = str(dp_efi)
 
     # --- diskpart: System Reserved grow hint (MBR) ---
     dp_srp = REMEDIATE_DIR / "diskpart-srp-extend-MANUAL-REVIEW.txt"
-    dp_srp.write_text(
-        "\r\n".join(
-            [
-                f"REM MANUAL REVIEW — extend System Reserved on disk {disk} if free space follows it",
-                f"select disk {disk}",
-                "list partition",
-                "REM select partition N  (System Reserved number from list)",
-                "REM extend size=300",
-                "exit",
-                "",
-            ]
-        ),
-        encoding="utf-8",
+    dp_srp.write_bytes(
+        diskpart_script_bytes(
+            "\n".join(
+                [
+                    f"rem MANUAL REVIEW extend System Reserved on disk {int(disk)} if free space follows it",
+                    f"select disk {int(disk)}",
+                    "list partition",
+                    "rem select partition N",
+                    "rem extend size=300",
+                    "exit",
+                ]
+            )
+        )
     )
     paths["diskpart_srp_manual"] = str(dp_srp)
 

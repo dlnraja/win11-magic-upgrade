@@ -453,14 +453,20 @@ def _finish_bios_boot(step: object, target: str) -> None:
                 log(f"bootsect {' '.join(cmd[1:])} ok", "OK")
             else:
                 log(f"bootsect failed: {result.reason or result.output[:200]}", "WARN")
-    if letter and "mark_active" in actions:
-        from .diskpart_safe import run_diskpart
+    if "mark_active" in actions:
+        from .diskpart_safe import mark_partition_active
 
-        ok_act, out = run_diskpart(f"select volume {letter}\nactive\nexit\n", timeout=60)
-        if ok_act:
-            log(f"Marked {letter}: active after BIOS bcdboot", "OK")
+        target_vol = getattr(step, "srp", None) or getattr(step, "esp", None)
+        disk_n = getattr(target_vol, "disk", None)
+        part_n = getattr(target_vol, "partition", None)
+        if disk_n is None or part_n is None or int(disk_n) < 0:
+            log("mark active skipped: the live map has no disk and partition number", "WARN")
         else:
-            log(f"Could not mark {letter}: active: {(out or '')[:200]}", "WARN")
+            method = mark_partition_active(int(disk_n), int(part_n))
+            if method:
+                log(f"Marked disk {disk_n} partition {part_n} active via {method}", "OK")
+            else:
+                log(f"Could not mark disk {disk_n} partition {part_n} active", "WARN")
 
 
 def convert_mbr_to_gpt(disk_number: int) -> tuple[bool, int, str]:

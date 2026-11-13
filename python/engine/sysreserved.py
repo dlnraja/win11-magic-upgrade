@@ -20,7 +20,6 @@ from pathlib import Path
 from .diskpart_safe import (
     assign_letter_to_volume,
     ensure_select_disk,
-    ensure_select_volume,
     find_esp_candidates,
     find_system_reserved_candidates,
     find_volume_by_letter,
@@ -524,24 +523,14 @@ def create_larger_system_reserved_mbr(
     if vol is None:
         log(f"Cannot resolve volume for {letter}: to mark active", "WARN")
         return root
-    ok_sel_v, _ = ensure_select_volume(vol.index)
-    if not ok_sel_v:
-        log(f"Cannot select volume {vol.index} for active", "WARN")
-        return root
-    ok_act, act_out = run_diskpart(
-        f"select volume {int(vol.index)}\n"
-        f"detail volume\n"
-        f"active\n"
-        f"exit\n"
-    )
-    if ok_act and not re.search(
-        r"No volume selected|Aucun volume|error|failed|échec|echec|erreur",
-        act_out or "",
-        re.I,
-    ):
-        log(f"Marked volume {vol.index} ({letter}:) active after successful bcdboot", "OK")
+    from .diskpart_safe import run_diskpart, select_lines
+
+    ok_act, _act_out = run_diskpart("\n".join(select_lines(volume=int(vol.index)) + ["active", "exit"]))
+    method = "diskpart" if ok_act else None
+    if method:
+        log(f"Marked volume {vol.index} ({letter}:) active via {method}", "OK")
     else:
-        log(f"Could not mark active (non-fatal): {(act_out or '')[-160:]}", "WARN")
+        log(f"Could not mark volume {vol.index} active", "WARN")
     return root
 
 
