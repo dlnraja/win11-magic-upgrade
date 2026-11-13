@@ -208,7 +208,7 @@ def backup_bcd() -> Path | None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = out_dir / f"bcd-export-{stamp}"
     code, out = _run(["bcdedit", "/export", str(dest)], timeout=60)
-    if code == 0 and dest.exists():
+    if code == 0 and dest.is_file() and dest.stat().st_size > 0:
         log(f"BCD backup exported: {dest}", "OK")
         # Pointer for rollback
         try:
@@ -216,6 +216,15 @@ def backup_bcd() -> Path | None:
         except Exception:
             pass
         return dest
+    reg_dest = out_dir / f"bcd-hklm-{stamp}"
+    code2, out2 = _run(["reg", "save", r"HKLM\BCD00000000", str(reg_dest), "/y"], timeout=60)
+    if code2 == 0 and reg_dest.is_file() and reg_dest.stat().st_size > 0:
+        log(r"BCD hive saved with reg save HKLM\BCD00000000", "OK")
+        try:
+            (out_dir / "LAST.txt").write_text(str(reg_dest), encoding="utf-8")
+        except Exception:
+            pass
+        return reg_dest
     log(f"BCD export failed ({code}): {out[:200]}", "WARN")
     return None
 
@@ -275,6 +284,9 @@ def snapshot_esp_critical_files() -> Path | None:
 
         src_root = Path(access_root(mounted) or mounted)
         for rel in _CRITICAL_REL_PATHS:
+            if rel.name.lower() == "bcd" or rel.name.lower().startswith("bcd.log"):
+                log(f"snapshot skip {rel}: live BCD hive is exported with bcdedit, not copied", "INFO")
+                continue
             src = src_root / rel
             if not src.is_file():
                 continue
