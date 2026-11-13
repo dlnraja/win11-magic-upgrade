@@ -127,11 +127,164 @@ def select_lines(*, disk: int | None = None, partition: int | None = None, volum
     raise ValueError("diskpart select needs a disk and partition number, or a volume number")
 
 
+ARGUMENTS_RE = re.compile(
+    r"arguments specified for this command are not valid|"
+    r"arguments sp[eé]cifi[eé]s.+ne sont pas valides|"
+    r"ne sont pas valides",
+    re.I,
+)
+_GUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_LINE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("rem", re.compile(r"rem(\s.*)?$", re.I)),
+    ("select disk", re.compile(r"select disk \d+$", re.I)),
+    ("select partition", re.compile(r"select partition \d+$", re.I)),
+    ("select volume", re.compile(r"select volume \d+$", re.I)),
+    ("assign letter", re.compile(r"assign letter=[A-Z]$", re.I)),
+    ("remove letter", re.compile(r"remove letter=[A-Z]$", re.I)),
+    ("active", re.compile(r"active$", re.I)),
+    ("set id", re.compile(rf"set id=(?:{_GUID_RE} override|[0-9a-fA-F]{{2}})$", re.I)),
+    ("gpt attributes", re.compile(r"gpt attributes=0x[0-9a-fA-F]{1,16}$", re.I)),
+    ("list disk", re.compile(r"list disk$", re.I)),
+    ("list partition", re.compile(r"list partition$", re.I)),
+    ("list volume", re.compile(r"list volume$", re.I)),
+    ("detail disk", re.compile(r"detail disk$", re.I)),
+    ("detail partition", re.compile(r"detail partition$", re.I)),
+    ("detail volume", re.compile(r"detail volume$", re.I)),
+    ("create partition efi", re.compile(r"create partition efi size=\d+$", re.I)),
+    ("create partition primary", re.compile(r"create partition primary(?: size=\d+)?$", re.I)),
+    ("format", re.compile(r"format (?:quick )?fs=(?:fat32|ntfs|fat)(?: quick)?(?: label=\S+)?$", re.I)),
+    ("shrink", re.compile(r"shrink desired=\d+(?: minimum=\d+)?$", re.I)),
+    ("extend", re.compile(r"extend(?: size=\d+)?$", re.I)),
+    ("rescan", re.compile(r"rescan$", re.I)),
+    ("clean", re.compile(r"clean$", re.I)),
+    ("convert gpt", re.compile(r"convert gpt$", re.I)),
+    ("convert mbr", re.compile(r"convert mbr$", re.I)),
+    ("offline disk", re.compile(r"offline disk$", re.I)),
+    ("online disk", re.compile(r"online disk$", re.I)),
+    ("exit", re.compile(r"exit$", re.I)),
+)
+
+
+def arguments_rejected(out: str) -> bool:
+    return bool(ARGUMENTS_RE.search(out or ""))
+
+
+def failing_command(out: str) -> str:
+    """The DISKPART> line that the argument error refers to."""
+    last = ""
+    for line in (out or "").splitlines():
+        match = re.search(r"DISKPART>\s*(.+)$", line, re.I)
+        if match:
+            last = match.group(1).strip()
+        elif arguments_rejected(line) and last:
+            return last
+    return ""
+
+
+def command_name(line: str) -> str:
+    text = line.strip()
+    for name, pattern in _LINE_RULES:
+        if pattern.fullmatch(text):
+            return name
+    return ""
+
+
+def script_lines(script: str) -> list[str]:
+    lines = []
+    for raw in (script or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        text = raw.strip()
+        if text and text.lower() != "exit":
+            lines.append(text)
+    return lines
+
+
+def lint_diskpart_script(script: str, *, style: str = "UNKNOWN") -> list[str]:
+    """Reject syntax diskpart answers with 'arguments are not valid'."""
+    style_u = (style or "UNKNOWN").strip().upper()
+    if style_u in ("LEGACY", "BIOS"):
+        style_u = "MBR"
+    errors: list[str] = []
+    focus = ""
+    for line in script_lines(script):
+        if re.search(r"\bnoerr\b", line, re.I):
+            errors.append(f"noerr hides the failing command: {line}")
+            continue
+        if re.search(r"letter=[A-Z]:", line, re.I):
+            errors.append(f"drive letter must not include a colon: {line}")
+            continue
+        name = command_name(line)
+        if not name:
+            errors.append(f"unknown diskpart command: {line}")
+            continue
+        if name == "select disk":
+            focus = "disk"
+        elif name == "select partition":
+            focus = "partition"
+        elif name == "select volume":
+            focus = "volume"
+        elif name.startswith("create partition"):
+            if name == "create partition efi" and style_u == "MBR":
+                errors.append("create partition efi is only valid on GPT")
+            if focus != "disk":
+                errors.append(f"{name} requires a selected disk")
+            focus = "created"
+        elif name in ("assign letter", "remove letter"):
+            if focus not in ("volume", "created"):
+                errors.append(f"{name} requires a selected volume, not a partition")
+        elif name == "active":
+            if style_u != "MBR":
+                errors.append("active is only valid on an MBR disk")
+            if focus != "partition":
+                errors.append("active requires a selected partition")
+        elif name == "set id":
+            if style_u == "GPT":
+                if not re.fullmatch(rf"set id={_GUID_RE} override", line, re.I):
+                    errors.append("GPT set id must be: set id=<guid> override")
+            elif style_u == "MBR":
+                if not re.fullmatch(r"set id=[0-9a-fA-F]{2}", line):
+                    errors.append("MBR set id must be a byte such as set id=07")
+            else:
+                errors.append("set id requires a known GPT or MBR style")
+            if focus != "partition":
+                errors.append("set id requires a selected partition")
+        elif name == "gpt attributes":
+            if style_u != "GPT":
+                errors.append("gpt attributes is only valid on GPT")
+            if focus != "partition":
+                errors.append("gpt attributes requires a selected partition")
+        elif name in ("shrink", "extend", "format") and focus not in ("volume", "partition", "created", "disk"):
+            errors.append(f"{name} requires a selected disk, partition, or volume")
+    return errors
+
+
+def step_scripts(script: str) -> list[tuple[str, str]]:
+    """One new command per diskpart process. Selects are repeated so focus still exists."""
+    selects: list[str] = []
+    steps: list[tuple[str, str]] = []
+    for line in script_lines(script):
+        name = command_name(line)
+        if name in ("select disk", "select partition", "select volume"):
+            selects = [item for item in selects if command_name(item) != name]
+            selects.append(line)
+            body = selects
+        elif name in ("list disk", "rescan"):
+            body = [line]
+        else:
+            body = selects + [line]
+        steps.append((line, "\n".join(body + ["exit"])))
+    return steps
+
+
+def _create_transaction(script: str) -> bool:
+    names = {command_name(line) for line in script_lines(script)}
+    return bool(names & {"create partition efi", "create partition primary", "clean", "convert gpt", "convert mbr"})
+
+
 def diskpart_failed(out: str) -> bool:
-    """Only the 'nothing selected' result. Other French words are not a failure by themselves."""
+    """Nothing selected, or diskpart rejected the command arguments."""
     if not out:
         return False
-    return bool(NO_VOLUME_RE.search(out) or NO_DISK_RE.search(out))
+    return bool(NO_VOLUME_RE.search(out) or NO_DISK_RE.search(out) or arguments_rejected(out))
 
 
 def _write_script_file(data: bytes) -> Path:
@@ -153,11 +306,17 @@ def run_diskpart(
     runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
     encoding: str | None = None,
     wait_vds: Callable[[], None] | None = None,
+    style: str = "UNKNOWN",
 ) -> tuple[bool, str]:
     """
-    Write an OEM CRLF script and run ``diskpart /s <file>``.
-    Exit code 0 is success. One retry prepends ``rescan`` after the Virtual Disk service is up.
+    Lint the script, then run one command per ``diskpart /s`` file.
+    An argument error is not retried: the next storage method is used instead.
     """
+    problems = lint_diskpart_script(script, style=style)
+    if problems:
+        text = "\n".join(problems)
+        log(f"diskpart script refused: {text}", "ERROR")
+        return False, text
     if wait_vds is not None:
         wait_vds()
     else:
@@ -181,21 +340,32 @@ def run_diskpart(
             raw = decode_diskpart_output(raw, encoding=encoding)
         return int(code), raw or ""
 
-    code, out = once(script)
-    if code == 124:
-        log("diskpart TIMEOUT", "ERROR")
-        return False, out
-    if code == 0 and not diskpart_failed(out):
-        return True, out
-    log("diskpart failed; retrying once after rescan", "WARN")
-    code2, out2 = once("rescan\n" + script)
-    if code2 == 124:
-        log("diskpart TIMEOUT", "ERROR")
-        return False, out2
-    if diskpart_failed(out2):
-        log("diskpart: no disk or volume selected after rescan", "WARN")
-        return False, out2
-    return code2 == 0, out2
+    steps = [(script_lines(script)[-1] if script_lines(script) else script, script)]
+    if not _create_transaction(script):
+        steps = step_scripts(script)
+    last_out = ""
+    for command, step in steps:
+        code, out = once(step)
+        last_out = out
+        if code == 124:
+            log(f"diskpart TIMEOUT on: {command}", "ERROR")
+            return False, out
+        if arguments_rejected(out):
+            bad = failing_command(out) or command
+            log(f"diskpart arguments rejected: {bad}", "ERROR")
+            return False, out
+        if code == 0 and not diskpart_failed(out):
+            continue
+        if _create_transaction(script):
+            return False, out
+        log(f"diskpart command failed: {command}; retrying once after rescan", "WARN")
+        code2, out2 = once("rescan\n" + step)
+        last_out = out2
+        if arguments_rejected(out2) or code2 == 124 or code2 != 0 or diskpart_failed(out2):
+            bad = failing_command(out2) or command
+            log(f"diskpart command failed: {bad}", "ERROR")
+            return False, out2
+    return True, last_out
 
 
 def _wait_for_virtual_disk() -> None:
@@ -237,6 +407,18 @@ def powershell_args(script: str) -> list[str]:
     ]
 
 
+def _disk_style(style: str) -> str:
+    name = (style or "UNKNOWN").strip().upper()
+    if name in ("LEGACY", "BIOS"):
+        return "MBR"
+    return name
+
+
+def _bare_letter(letter: str | None) -> str:
+    token = (letter or "").strip().upper().rstrip("\\").rstrip(":")
+    return token[:1]
+
+
 def commands_for(
     op: str,
     *,
@@ -248,17 +430,22 @@ def commands_for(
     folder: str | None = None,
     gpt_type: str | None = None,
     active: bool | None = None,
+    style: str = "UNKNOWN",
+    attributes: str | None = None,
 ) -> dict[str, str]:
-    """Command text for each fallback. Tests check the order and the selectors."""
-    lines = select_lines(disk=disk, partition=partition, volume=volume)
-    selected = "\n".join(lines)
-    letter_s = (letter or "").upper()[:1]
+    """Command text for each fallback. Diskpart text is empty when the style forbids it."""
+    style_u = _disk_style(style)
+    letter_s = _bare_letter(letter)
     guid = (volume_guid or "").strip()
     mount = folder or ""
     ps = ""
     cim = ""
     mountvol = ""
     folder_cmd = ""
+    diskpart = ""
+    partition_focus = ""
+    if disk is not None and partition is not None:
+        partition_focus = f"select disk {int(disk)}\nselect partition {int(partition)}\n"
     if op == "assign":
         ps = (
             f"Add-PartitionAccessPath -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
@@ -276,7 +463,8 @@ def commands_for(
             if mount
             else ""
         )
-        diskpart = selected + f"\nassign letter={letter_s}\nexit"
+        if volume is not None and letter_s:
+            diskpart = f"select volume {int(volume)}\nassign letter={letter_s}\nexit"
     elif op == "remove":
         ps = (
             f"Remove-PartitionAccessPath -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
@@ -294,7 +482,8 @@ def commands_for(
             if mount
             else ""
         )
-        diskpart = selected + (f"\nremove letter={letter_s}\nexit" if letter_s else "\nremove\nexit")
+        if volume is not None and letter_s:
+            diskpart = f"select volume {int(volume)}\nremove letter={letter_s}\nexit"
     elif op == "active":
         flag = "$true" if active is not False else "$false"
         ps = (
@@ -306,25 +495,37 @@ def commands_for(
             f"-Filter \"DiskNumber={int(disk or 0)} AND PartitionNumber={int(partition or 0)}\"; "
             "Invoke-CimMethod -InputObject $p -MethodName SetAttributes -Arguments @{IsActive=$true}"
         )
-        diskpart = selected + "\nactive\nexit"
+        if style_u == "MBR" and partition_focus:
+            diskpart = partition_focus + "active\nexit"
     elif op == "set-id":
-        ident = gpt_type or ""
+        ident = (gpt_type or "").strip().strip("{}")
         ps = (
             f"Set-Partition -DiskNumber {int(disk or 0)} -PartitionNumber {int(partition or 0)} "
-            f"-GptType '{{{ident.strip('{}')}}}' -ErrorAction Stop"
+            f"-GptType '{{{ident}}}' -ErrorAction Stop"
         )
         cim = (
             "$p = Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition "
             f"-Filter \"DiskNumber={int(disk or 0)} AND PartitionNumber={int(partition or 0)}\"; "
-            f"Set-CimInstance -InputObject $p -Property @{{GptType='{{{ident.strip('{}')}}}'}}"
+            f"Set-CimInstance -InputObject $p -Property @{{GptType='{{{ident}}}'}}"
         )
-        diskpart = selected + f"\nset id={ident}\nexit"
+        if partition_focus and style_u == "GPT" and re.fullmatch(_GUID_RE, ident):
+            diskpart = partition_focus + f"set id={ident} override\nexit"
+        elif partition_focus and style_u == "MBR" and re.fullmatch(r"[0-9a-fA-F]{2}", ident):
+            diskpart = partition_focus + f"set id={ident}\nexit"
+    elif op == "gpt-attributes":
+        raw = (attributes or "").strip().lower()
+        if raw and not raw.startswith("0x"):
+            raw = "0x" + raw
+        if partition_focus and style_u == "GPT" and re.fullmatch(r"0x[0-9a-f]{1,16}", raw):
+            diskpart = partition_focus + f"gpt attributes={raw}\nexit"
     else:
         diskpart = "list disk\nlist volume\nexit" if disk is None else f"select disk {int(disk)}\nlist partition\nlist volume\nexit"
         ps = "Get-Partition | Select-Object DiskNumber,PartitionNumber,DriveLetter,GptType,IsActive | Format-Table | Out-String"
         cim = "Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition | Out-String"
         mountvol = "mountvol"
         folder_cmd = ""
+    if diskpart and lint_diskpart_script(diskpart, style=style_u):
+        diskpart = ""
     return {
         "diskpart": diskpart,
         "powershell": ps,
@@ -613,8 +814,10 @@ def assign_partition_letter(
     )
 
     def via_diskpart() -> bool:
-        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
-        return ok and check()
+        if not cmds["diskpart"].strip():
+            return False
+        ok, out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
+        return ok and not arguments_rejected(out) and check()
 
     def via_ps() -> bool:
         if disk is None or partition is None:
@@ -693,8 +896,10 @@ def remove_partition_letter(
     )
 
     def via_diskpart() -> bool:
-        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
-        return ok and check()
+        if not cmds["diskpart"].strip():
+            return False
+        ok, out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
+        return ok and not arguments_rejected(out) and check()
 
     def via_ps() -> bool:
         if disk is None or partition is None or not loc_letter:
@@ -750,17 +955,25 @@ def mark_partition_active(
     disk: int,
     partition: int,
     *,
+    style: str = "MBR",
     verify: Callable[[], bool] | None = None,
     exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
     runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
 ) -> str | None:
-    """Set the active flag by disk and partition number. mountvol cannot do this."""
-    cmds = commands_for("active", disk=disk, partition=partition, active=True)
+    """Set the active flag by disk and partition number. Diskpart active is MBR only."""
+    cmds = commands_for("active", disk=disk, partition=partition, active=True, style=style)
     check = verify or (lambda: True)
 
     def via_diskpart() -> bool:
-        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
-        return ok and check()
+        if not cmds["diskpart"].strip():
+            return False
+        ok, out = run_diskpart(
+            cmds["diskpart"],
+            runner=runner,
+            style=style,
+            wait_vds=(lambda: None) if runner else None,
+        )
+        return ok and not arguments_rejected(out) and check()
 
     def via_ps() -> bool:
         return _exec_ok(powershell_args(cmds["powershell"]), timeout=60, exec_command=exec_command) and check()
@@ -785,16 +998,24 @@ def set_partition_id(
     partition: int,
     gpt_type: str,
     *,
+    style: str = "UNKNOWN",
     verify: Callable[[], bool] | None = None,
     exec_command: Callable[[list[str], int], tuple[int, str]] | None = None,
     runner: Callable[[list[str], bytes, int], tuple[int, bytes | str]] | None = None,
 ) -> str | None:
-    cmds = commands_for("set-id", disk=disk, partition=partition, gpt_type=gpt_type)
+    cmds = commands_for("set-id", disk=disk, partition=partition, gpt_type=gpt_type, style=style)
     check = verify or (lambda: True)
 
     def via_diskpart() -> bool:
-        ok, _out = run_diskpart(cmds["diskpart"], runner=runner, wait_vds=(lambda: None) if runner else None)
-        return ok and check()
+        if not cmds["diskpart"].strip():
+            return False
+        ok, out = run_diskpart(
+            cmds["diskpart"],
+            runner=runner,
+            style=style,
+            wait_vds=(lambda: None) if runner else None,
+        )
+        return ok and not arguments_rejected(out) and check()
 
     def via_ps() -> bool:
         return _exec_ok(powershell_args(cmds["powershell"]), timeout=60, exec_command=exec_command) and check()

@@ -523,14 +523,11 @@ def create_larger_system_reserved_mbr(
     if vol is None:
         log(f"Cannot resolve volume for {letter}: to mark active", "WARN")
         return root
-    from .diskpart_safe import run_diskpart, select_lines
-
-    ok_act, _act_out = run_diskpart("\n".join(select_lines(volume=int(vol.index)) + ["active", "exit"]))
-    method = "diskpart" if ok_act else None
-    if method:
-        log(f"Marked volume {vol.index} ({letter}:) active via {method}", "OK")
-    else:
-        log(f"Could not mark volume {vol.index} active", "WARN")
+    log(
+        f"Volume {vol.index} ({letter}:) was not marked active. "
+        "diskpart active needs the MBR disk and partition numbers, not a volume number.",
+        "WARN",
+    )
     return root
 
 
