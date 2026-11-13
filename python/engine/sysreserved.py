@@ -429,6 +429,11 @@ def create_larger_esp(
             # Do NOT report success — caller must not mark expand ok
             return None
 
+    from .post_op_verify import gate_after_boot_work
+
+    if not gate_after_boot_work(scopes=("uefi",), root=root):
+        log("post-op verification returned NO-GO after EFI create", "ERROR")
+        return None
     log(f"New ESP ready at {root} with boot files", "OK")
     return root
 
@@ -519,15 +524,20 @@ def create_larger_system_reserved_mbr(
         return None
 
     # Mark active only after bcdboot OK — select by volume index (never letter-after-dismount)
+    from .post_op_verify import gate_after_boot_work
+
     vol = find_volume_by_letter(letter)
     if vol is None:
         log(f"Cannot resolve volume for {letter}: to mark active", "WARN")
-        return root
-    log(
-        f"Volume {vol.index} ({letter}:) was not marked active. "
-        "diskpart active needs the MBR disk and partition numbers, not a volume number.",
-        "WARN",
-    )
+    else:
+        log(
+            f"Volume {vol.index} ({letter}:) was not marked active. "
+            "diskpart active needs the MBR disk and partition numbers, not a volume number.",
+            "WARN",
+        )
+    if not gate_after_boot_work(scopes=("mbr",), root=root):
+        log("post-op verification returned NO-GO after MBR system create", "ERROR")
+        return None
     return root
 
 

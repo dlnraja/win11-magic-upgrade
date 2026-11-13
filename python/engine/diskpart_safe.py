@@ -1052,7 +1052,7 @@ def mark_partition_active(
     def via_cim() -> bool:
         return _exec_ok(powershell_args(cmds["cim"]), timeout=60, exec_command=exec_command) and check()
 
-    return run_methods(
+    method = run_methods(
         f"active disk {disk} partition {partition}",
         [
             ("diskpart", via_diskpart),
@@ -1071,6 +1071,14 @@ def mark_partition_active(
             ),
         ],
     )
+    if method is None:
+        return None
+    from .post_op_verify import gate_after_boot_work
+
+    if not gate_after_boot_work(scopes=("mbr",)):
+        log("post-op verification returned NO-GO after marking active", "ERROR")
+        return None
+    return method
 
 
 def set_partition_id(
@@ -1105,7 +1113,7 @@ def set_partition_id(
     def via_cim() -> bool:
         return _exec_ok(powershell_args(cmds["cim"]), timeout=60, exec_command=exec_command) and check()
 
-    return run_methods(
+    method = run_methods(
         f"set id disk {disk} partition {partition}",
         [
             ("diskpart", via_diskpart),
@@ -1124,6 +1132,15 @@ def set_partition_id(
             ),
         ],
     )
+    if method is None:
+        return None
+    from .post_op_verify import gate_after_boot_work
+
+    scope = ("mbr",) if _disk_style(style) == "MBR" else ("uefi",)
+    if not gate_after_boot_work(scopes=scope):
+        log("post-op verification returned NO-GO after set id", "ERROR")
+        return None
+    return method
 
 
 def shrink_volume_letter(letter: str, desired_mb: int, minimum_mb: int) -> bool:

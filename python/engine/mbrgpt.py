@@ -430,6 +430,15 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
     if ok and not passed:
         log(reason, "ERROR")
         return False
+    from .post_op_verify import gate_after_boot_work
+
+    scopes = ["mbr"] if not prefer_uefi else ["uefi"]
+    acted = set(getattr(step, "actions", ()) or ())
+    if acted & {"bootsect_nt60", "bootsect_volume_only", "mark_active"} and "mbr" not in scopes:
+        scopes.append("mbr")
+    if not gate_after_boot_work(scopes=tuple(scopes), root=target if isinstance(target, str) else None):
+        log("post-op verification returned NO-GO", "ERROR")
+        return False
     return ok
 
 
