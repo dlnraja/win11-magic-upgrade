@@ -21,8 +21,6 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
-
 from .logutil import LOG_DIR, SETUPACT, SETUPERR, STATE_DIR, log
 
 _PROCESS_START = time.time()
@@ -443,8 +441,14 @@ def _allow_new_issue(state: Path, now: float) -> bool:
 
 
 def _prefilled_url(title: str, body: str) -> str:
-    query = urlencode({"title": title[:180], "body": body[:1500], "labels": "auto-diag"})
-    return f"https://github.com/dlnraja/win11-magic-upgrade/issues/new?{query}"
+    from .issue_url import prefilled_issue_url
+
+    return prefilled_issue_url(
+        "dlnraja/win11-magic-upgrade",
+        title,
+        body,
+        labels="auto-diag",
+    )
 
 
 def _write_paste(state: Path, signature: str, title: str, body: str) -> Path:
@@ -568,11 +572,31 @@ def finish_run(
             actor.comment(existing, body)
             filed.append({"signature": finding.signature, "action": "comment", "url": existing})
             continue
-        url = _prefilled_url(title, _with_history(_report_body(finding, facts, mode)[1], summary))
+        from .issue_url import short_issue_body, try_gh_issue
+
+        full_body = _with_history(_report_body(finding, facts, mode)[1], summary)
+        paste = _write_paste(state, finding.signature, title, full_body)
+        report_path = str(history_note.get("bundle") or paste)
+        if client is None:
+            created_now = try_gh_issue(title, full_body)
+            if created_now:
+                filed.append(
+                    {"signature": finding.signature, "action": "create", "url": created_now, "file": str(paste)}
+                )
+                log(f"auto-diag filed with gh: {created_now}", "INFO")
+                continue
+        url = _prefilled_url(
+            title,
+            short_issue_body(
+                fingerprint=finding.signature,
+                version=facts["app_version"],
+                error=finding.redacted,
+                context=f"{facts['step']} {mode} {finding.catalog_id or finding.kind}",
+                report_path=redact_diag(report_path),
+            ),
+        )
         if not issue_hint:
             issue_hint = url
-            body = _with_history(_report_body(finding, facts, mode)[1], compact_summary(fresh, bundle=bundle_note, issue=url))
-        paste = _write_paste(state, finding.signature, title, body)
         if not actor.has_credentials():
             filed.append({"signature": finding.signature, "action": "paste", "url": url, "file": str(paste)})
             log(f"auto-diag saved for paste: {paste}", "INFO")

@@ -22,7 +22,6 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .logutil import STATE_DIR, SETUPACT, SETUPERR, log
@@ -347,15 +346,21 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
         except Exception as e:
             log(f"GitHub API issue create failed: {sanitize_text(str(e))}", "WARN")
 
-    # Browser fallback (no token) — truncated body
-    q = urlencode(
-        {
-            "title": title[:200],
-            "body": body[:5500],
-            "labels": ",".join(LABELS),
-        }
+    from .issue_url import prefilled_issue_url, short_issue_body
+
+    first = ""
+    for line in (body or "").splitlines():
+        if line.strip():
+            first = line.strip()
+            break
+    short = short_issue_body(
+        fingerprint=(payload.get("fingerprint") if isinstance(payload, dict) else "") or "",
+        version=str((payload or {}).get("app_version") or "") if isinstance(payload, dict) else "",
+        error=first,
+        context=title,
+        report_path="",
     )
-    url = f"https://github.com/{repo}/issues/new?{q}"
+    url = prefilled_issue_url(repo, title, short, labels=",".join(LABELS))
     try:
         if os.environ.get("MAGIC_AV_OPEN_BROWSER", "1").strip() not in ("0", "false", "no"):
             import webbrowser

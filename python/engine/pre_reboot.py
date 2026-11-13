@@ -1086,22 +1086,32 @@ def verdict_message(verdict: str, zip_path: str) -> str:
 
 def repair_issue_url(report: dict[str, Any], *, repo: str = _ISSUE_REPO) -> str:
     """Browser issue form. No token is placed in the URL or the exe."""
-    from urllib.parse import urlencode
+    from .issue_url import prefilled_issue_url, short_issue_body
 
     verdict = str(report.get("verdict") or "NO-GO")
     zip_path = redact_issue_text(str(report.get("bundle") or ""))
-    body = "Full diagnostic zip:\n" + zip_path + "\n\n"
-    body += redact_issue_text(str(report.get("summary_text") or ""))
-    query = urlencode(
-        {
-            "title": f"One-Click repair before reboot: {verdict}"[:140],
-            "body": body[:5000],
-        }
+    summary = redact_issue_text(str(report.get("summary_text") or ""))
+    error = summary.splitlines()[0] if summary else verdict
+    body = short_issue_body(
+        fingerprint=str(report.get("fingerprint") or verdict),
+        version=str(report.get("app_version") or ""),
+        error=error,
+        context=verdict,
+        report_path=zip_path,
     )
-    return f"https://github.com/{repo}/issues/new?{query}"
+    return prefilled_issue_url(repo, f"One-Click repair before reboot: {verdict}", body)
 
 
 def open_repair_issue(report: dict[str, Any]) -> str:
+    from .issue_url import try_gh_issue
+
+    created = try_gh_issue(
+        f"One-Click repair before reboot: {report.get('verdict') or 'NO-GO'}",
+        redact_issue_text(str(report.get("summary_text") or "")),
+        label="auto-diag",
+    )
+    if created:
+        return created
     url = repair_issue_url(report)
     if os.environ.get("MAGIC_NO_BROWSER", "").strip().lower() in ("1", "true", "yes"):
         return url

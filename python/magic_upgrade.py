@@ -10,6 +10,10 @@ import json
 import locale
 import os
 import sys
+
+import stdio_safe
+
+stdio_safe.ensure_stdio()
 import threading
 import time
 import tkinter as tk
@@ -1232,6 +1236,8 @@ def _console_key_pressed(wait) -> bool:
                 msvcrt.getwch()
                 return True
         else:
+            if not stdio_safe.stream_isatty(sys.stdin):
+                return False
             ready, _, _ = select.select([sys.stdin], [], [], 0)
             if ready:
                 sys.stdin.read(1)
@@ -1566,6 +1572,7 @@ def _no_args_update() -> None:
 
 
 def main() -> None:
+    stdio_safe.ensure_stdio()
     if not sys.argv[1:]:
         from engine.pre_reboot import no_args_entrypoint  # type: ignore
 
@@ -1628,7 +1635,7 @@ def _main_after_no_args() -> None:
     except Exception as guard_error:
         print(f"Startup boot guard failed: {guard_error}")
 
-    if not argv and sys.stdin.isatty() and sys.stdout.isatty():
+    if not argv and stdio_safe.stream_isatty(sys.stdin) and stdio_safe.stream_isatty(sys.stdout):
         from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
 
         if not console_countdown(startup_countdown_seconds(), wait=time.sleep, key_pressed=_console_key_pressed):
