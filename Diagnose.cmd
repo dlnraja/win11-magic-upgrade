@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 cd /d "%~dp0"
 if exist "%~dp0Win11MagicUpgrade.exe" (
   "%~dp0Win11MagicUpgrade.exe" --cli --diagnose
