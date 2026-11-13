@@ -99,6 +99,7 @@ def main() -> int:
         print("No free version tag in the next 20 patch numbers")
         return 1
     print(f"Tagging v{version}")
+    _code, base_sha = git("rev-parse", "HEAD")
     write_version(version)
     git("config", "user.name", "github-actions[bot]")
     git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
@@ -109,8 +110,12 @@ def main() -> int:
     if code == 0:
         print("Pushed the version commit to main")
     else:
-        print("Main rejected the version commit. Publishing the tag on its own.")
-    git("push", remote, f"v{version}")
+        # The rejected commit is not on the server. A shallow clone also cannot
+        # upload it as a tag. Point the tag at the merge commit already on main.
+        print("Main rejected the version commit. Tagging the commit already on main.")
+        git("tag", "-d", f"v{version}")
+        git("tag", f"v{version}", base_sha)
+    git("push", remote, f"refs/tags/v{version}")
     print(f"Pushed v{version}")
     # A tag pushed with GITHUB_TOKEN does not start another workflow.
     # Ask release.yml to run on the tag so the exe, zip, and SHA256SUMS are published.
