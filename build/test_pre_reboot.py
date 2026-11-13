@@ -24,6 +24,8 @@ from engine.boot_safe import (  # noqa: E402
 )
 from engine.pre_reboot import (  # noqa: E402
     analyze_history,
+    analyze_runs,
+    collect_diag_inventory,
     attach_export_times,
     inventory_bcd_backups,
     parse_store_enum,
@@ -208,6 +210,55 @@ def test_repair_uses_183805_backup_and_does_not_delete(tmp: Path) -> None:
     assert parsed["delete_partitions"] is False
 
 
+def test_diag_collects_every_run_and_error_code(tmp: Path) -> None:
+    logs = tmp / "logs"
+    logs.mkdir()
+    (logs / "upgrade-20261113-173000.log").write_text(
+        "SESSION 20261113-173000\nesp_unmountable\nINTELLIGENT BOOT REPAIR\n"
+        "bcdboot rewrite from Windows\nBFSVC Error: BcdOpenStore failed exit 32\n",
+        encoding="utf-8",
+    )
+    (logs / "upgrade-20261113-180000.log").write_text(
+        "SESSION 20261113-180000\nError: 1005\nThe volume does not contain a recognized file system.\n",
+        encoding="utf-8",
+    )
+    (tmp / "Panther").mkdir()
+    (tmp / "Panther" / "setuperr.log").write_text("Error MOUNTVOL\n", encoding="utf-8")
+    manifest = tmp / "partition-backups" / "20261113T173617Z"
+    manifest.mkdir(parents=True)
+    (manifest / "manifest.json").write_text('{"files": 147}\n', encoding="utf-8")
+    (tmp / "updates").mkdir()
+    (tmp / "updates" / "history.json").write_text('{"from": "1.56.0"}\n', encoding="utf-8")
+    (tmp / "crashes").mkdir()
+    (tmp / "crashes" / "app.dmp").write_bytes(b"DMP")
+    (tmp / "bcd-backups").mkdir()
+    (tmp / "bcd-backups" / "bcd-export-20261113T183805Z").write_bytes(b"bcd")
+    inventory, text = collect_diag_inventory(tmp)
+    roles = {item["role"] for item in inventory["files"]}
+    assert "session_log" in roles
+    assert "panther" in roles
+    assert "esp_backup" in roles
+    assert "self_update" in roles
+    assert "crash_dump" in roles
+    assert "bcd_export" in roles
+    analysis = analyze_runs(text, inventory)
+    assert analysis["repeated_runs"] is True
+    assert analysis["run_count"] >= 2
+    assert analysis["cascade"] is True
+    assert analysis["bcdboot_32"] is True
+    assert analysis["dism_1005"] is True
+    assert "32" in analysis["error_codes"]
+    assert "1005" in analysis["error_codes"]
+    url = repair_issue_url(
+        {
+            "verdict": "NO-GO",
+            "summary_text": "cascade and exit 32",
+            "bundle": str(tmp / "repair.zip"),
+        }
+    )
+    assert "Full+diagnostic+zip" in url or "Full%20diagnostic%20zip" in url or "Full diagnostic zip" in url
+
+
 def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
     import os
 
@@ -241,7 +292,7 @@ def test_oneclick_stops_unless_go_and_issue_url_is_redacted() -> None:
     assert "GO" in verdict_message("GO", "")
     source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
     assert "auto_action = \"oneclick\"" in source
-    assert "repair_before_reboot()" in source
+    assert "repair_before_reboot(uefi=default_uefi())" in source
     assert "upgrade_allowed" in source
     # startup self-update still runs before the GUI
     assert source.index("startup_update(argv)") < source.index("if not argv and auto_action is None")
@@ -255,6 +306,8 @@ def main() -> None:
     test_postflight_ignores_mountvol_when_storage_works()
     test_one_click_does_not_expand_without_opt_in()
     test_oneclick_stops_unless_go_and_issue_url_is_redacted()
+    with tempfile.TemporaryDirectory() as name:
+        test_diag_collects_every_run_and_error_code(Path(name))
     with tempfile.TemporaryDirectory() as name:
         test_repair_uses_183805_backup_and_does_not_delete(Path(name))
     print("test_pre_reboot ok")

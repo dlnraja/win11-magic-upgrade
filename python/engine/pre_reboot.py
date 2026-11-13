@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .logutil import STATE_DIR
-from .sanitize import sanitize_text
+from .sanitize import sanitize_obj, sanitize_text
 
 _STAMP = re.compile(r"(20\d{6}T\d{6}Z)")
 _LOG_TS = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
@@ -434,10 +434,156 @@ def format_summary(report: dict[str, Any]) -> str:
         lines.append("NO-GO for reboot. Do not restart until the lines above are resolved.")
         for blocker in plan.get("go_blockers") or []:
             lines.append(f"  blocker: {blocker}")
+    analysis = ((report.get("diag") or {}).get("analysis") or {})
+    if analysis:
+        lines.append("")
+        lines.append("Previous runs:")
+        lines.append(f"  run count: {analysis.get('run_count', 0)}")
+        lines.append(f"  repeated runs: {bool(analysis.get('repeated_runs'))}")
+        lines.append(f"  cascade (false unmountable then repair/shrink): {bool(analysis.get('cascade'))}")
+        lines.append(f"  error codes: {', '.join(analysis.get('error_codes') or []) or 'none'}")
+        lines.append(f"  bcdboot exit 32 / BcdOpenStore: {bool(analysis.get('bcdboot_32'))}")
+        lines.append(f"  DISM 1005: {bool(analysis.get('dism_1005'))}")
+        for step in (analysis.get("failed_steps") or [])[:8]:
+            lines.append(f"  failed: {step}")
     return "\n".join(lines) + "\n"
 
 
+_DIAG_DIRS = (
+    ("logs", "session_log"),
+    ("Panther", "panther"),
+    ("bcd-backups", "bcd_export"),
+    ("partition-backups", "esp_backup"),
+    ("boot-snapshots", "snapshot"),
+    ("updates", "self_update"),
+    ("autodiag", "autodiag"),
+    ("repair-before-reboot", "prior_repair"),
+    ("crashes", "crash_dump"),
+)
+_DIAG_TEXT = {".log", ".txt", ".json", ".xml"}
+_DIAG_DUMP = {".dmp", ".mdmp", ".wer"}
+_MAX_DIAG_FILES = 120
+_MAX_DIAG_TEXT = 200_000
+
+
+def _windows_setup_logs() -> list[Path]:
+    roots = []
+    windir = os.environ.get("SystemRoot", "")
+    if windir:
+        roots.append(Path(windir) / "Panther")
+    roots.append(Path(r"C:\$WINDOWS.~BT\Sources\Panther"))
+    found = []
+    for folder in roots:
+        for name in ("setupact.log", "setuperr.log"):
+            path = folder / name
+            if path.is_file():
+                found.append(path)
+    return found
+
+
+def collect_diag_inventory(root: Path, extra: list[Path] | None = None) -> tuple[dict[str, Any], str]:
+    """Every prior run log, backup manifest, crash dump, and self-update note."""
+    files: list[dict[str, Any]] = []
+    chunks: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: Path, role: str) -> None:
+        if len(files) >= _MAX_DIAG_FILES:
+            return
+        try:
+            if not path.is_file():
+                return
+            key = str(path.resolve()).lower()
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        files.append({"role": role, "path": str(path), "name": path.name, "bytes": size})
+        if path.suffix.lower() in _DIAG_DUMP:
+            return
+        if path.suffix.lower() not in _DIAG_TEXT and path.name.lower() not in {"bcd-export", "manifest"}:
+            if "bcd-export" not in path.name.lower() and path.suffix.lower() != "":
+                return
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_DIAG_TEXT]
+        except OSError:
+            return
+        chunks.append(f"===== {path} =====\n{text}")
+
+    for folder_name, role in _DIAG_DIRS:
+        folder = root / folder_name
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob("*")):
+            if path.is_file():
+                add(path, role)
+    for name in (
+        "state.json",
+        "srp-fix.json",
+        "boot-preflight.json",
+        "boot-postflight.json",
+        "boot-deep-verify.json",
+        "boot-emergency.json",
+        "MigrationReport.txt",
+    ):
+        add(root / name, "state")
+    for path in extra or []:
+        add(path, "windows_panther")
+    for path in _windows_setup_logs():
+        add(path, "windows_panther")
+    inventory = {"files": files, "file_count": len(files)}
+    return inventory, "\n".join(chunks)
+
+
+def analyze_runs(text: str, inventory: dict[str, Any]) -> dict[str, Any]:
+    """Repeated runs, failed steps, the false-unmountable cascade, and error codes."""
+    blob = text or ""
+    session_files = [item for item in inventory.get("files") or [] if item.get("role") == "session_log"]
+    session_marks = re.findall(r"SESSION \d{8}-\d{6}|upgrade-\d{8}-\d{6}", blob)
+    run_count = max(len(session_files), len(set(session_marks)))
+    failed: list[str] = []
+    for line in blob.splitlines():
+        if re.search(r"\b(ERROR|FATAL|FAIL)\b|BcdOpenStore|esp_unmountable", line, re.I):
+            failed.append(line.strip()[:240])
+            if len(failed) >= 30:
+                break
+    codes = sorted(set(re.findall(r"(?i)(?:exit|error|erreur)\s*[:= ]+\s*(\d{2,5})", blob)))
+    bcdboot_32 = bool(re.search(r"BcdOpenStore|bcdboot[^\n]{0,80}\b32\b|exit\s+32", blob, re.I))
+    dism_1005 = "1005" in blob
+    if bcdboot_32 and "32" not in codes:
+        codes.append("32")
+    if dism_1005 and "1005" not in codes:
+        codes.append("1005")
+        codes = sorted(set(codes))
+    cascade = bool(
+        re.search(r"esp_unmountable", blob, re.I)
+        and re.search(r"INTELLIGENT BOOT REPAIR|Creating new \d+ MB EFI|bcdboot rewrite", blob, re.I)
+    )
+    by_role: dict[str, int] = {}
+    for item in inventory.get("files") or []:
+        role = str(item.get("role") or "other")
+        by_role[role] = by_role.get(role, 0) + 1
+    return {
+        "run_count": run_count,
+        "repeated_runs": run_count >= 2,
+        "failed_step_count": len(failed),
+        "failed_steps": failed[:12],
+        "error_codes": codes,
+        "cascade": cascade,
+        "bcdboot_32": bcdboot_32,
+        "dism_1005": dism_1005,
+        "files_by_role": by_role,
+    }
+
+
 def _read_logs(root: Path) -> str:
+    _inventory, text = collect_diag_inventory(root)
+    return text
     chunks: list[str] = []
     for folder in (root / "logs", root / "Panther", root):
         if not folder.is_dir():
@@ -494,21 +640,27 @@ def _write_bundle(root: Path, report: dict[str, Any], log_text: str) -> Path:
     out_dir = root / "repair-before-reboot" / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
     summary = sanitize_text(format_summary(report))
+    diag = sanitize_obj(report.get("diag") or {})
+    bundle = out_dir / "repair-before-reboot-diagnostic.zip"
+    summary = summary + "\nFull diagnostic zip:\n" + sanitize_text(str(bundle)) + "\n"
     (out_dir / "SUMMARY.txt").write_text(summary, encoding="utf-8")
-    payload = {
-        "verdict": report.get("verdict"),
-        "history": {key: value for key, value in (report.get("history") or {}).items() if key != "heal_at"},
-        "chosen_backup": (report.get("plan") or {}).get("chosen_backup"),
-        "actions": (report.get("plan") or {}).get("actions"),
-        "applied": report.get("applied"),
-        "delete_partitions": False,
-    }
-    (out_dir / "summary.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (out_dir / "diag.json").write_text(json.dumps(diag, indent=2), encoding="utf-8")
+    (out_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "verdict": report.get("verdict"),
+                "delete_partitions": False,
+                "analysis": (report.get("diag") or {}).get("analysis") or {},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     redacted_log = sanitize_text(log_text[-100_000:])
     (out_dir / "logs-redacted.txt").write_text(redacted_log, encoding="utf-8")
-    bundle = out_dir / "repair-before-reboot-diagnostic.zip"
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(out_dir / "SUMMARY.txt", "SUMMARY.txt")
+        archive.write(out_dir / "diag.json", "diag.json")
         archive.write(out_dir / "summary.json", "summary.json")
         archive.write(out_dir / "logs-redacted.txt", "logs-redacted.txt")
     report["bundle"] = str(bundle)
@@ -530,7 +682,8 @@ def repair_before_reboot(
     """Inventory, validate, restore the pre-run BCD, and print GO or NO-GO."""
     state = root or STATE_DIR
     run = runner or _default_runner
-    log_text = _read_logs(state)
+    inventory, log_text = collect_diag_inventory(state)
+    diag_analysis = analyze_runs(log_text, inventory)
     backups = inventory_bcd_backups(state)
     attach_export_times(backups, log_text)
     # Bound the live bcdedit work. Newest exports are first.
@@ -623,6 +776,7 @@ def repair_before_reboot(
         "applied": applied,
         "verify": {key: value for key, value in verify.items() if key != "objects"},
         "delete_partitions": False,
+        "diag": {"files": inventory.get("files") or [], "analysis": diag_analysis},
     }
     _write_bundle(state, report, log_text)
     return report
@@ -630,6 +784,19 @@ def repair_before_reboot(
 
 _SERIAL_FIELD = re.compile(r"(?i)(serial(?:\s*number)?\s*[:=]\s*)([A-Za-z0-9._\-]+)")
 _ISSUE_REPO = "dlnraja/win11-magic-upgrade"
+
+
+def default_uefi() -> bool:
+    """BIOS/legacy repairs accept winload.exe. Unknown firmware stays on the UEFI checks."""
+    try:
+        from .esp_access import detect_firmware_mode
+
+        mode, _capable = detect_firmware_mode()
+        if str(mode).upper() in ("BIOS", "LEGACY", "MBR"):
+            return False
+    except Exception:
+        return True
+    return True
 
 
 def upgrade_allowed(verdict: str) -> bool:
@@ -656,9 +823,9 @@ def repair_issue_url(report: dict[str, Any], *, repo: str = _ISSUE_REPO) -> str:
     from urllib.parse import urlencode
 
     verdict = str(report.get("verdict") or "NO-GO")
-    body = redact_issue_text(str(report.get("summary_text") or ""))
-    body += "\n\nDrag this diagnostic zip onto the issue:\n"
-    body += redact_issue_text(str(report.get("bundle") or "")) + "\n"
+    zip_path = redact_issue_text(str(report.get("bundle") or ""))
+    body = "Full diagnostic zip:\n" + zip_path + "\n\n"
+    body += redact_issue_text(str(report.get("summary_text") or ""))
     query = urlencode(
         {
             "title": f"One-Click repair before reboot: {verdict}"[:140],

@@ -977,13 +977,14 @@ class App(tk.Tk):
                     code = None
                     if action == "oneclick":
                         from engine.pre_reboot import (  # type: ignore
+                            default_uefi,
                             open_repair_issue,
                             repair_before_reboot,
                             upgrade_allowed,
                             verdict_message,
                         )
 
-                        repair = repair_before_reboot()
+                        repair = repair_before_reboot(uefi=default_uefi())
                         verdict = str(repair.get("verdict") or "NO-GO")
                         summary = str(repair.get("summary_text") or verdict)
                         bundle = str(repair.get("bundle") or "")
@@ -1658,9 +1659,9 @@ def main() -> None:
                     heal = verify_and_heal_boot(force=True)
                     raise SystemExit(0 if heal.get("ok") or heal.get("bootable") else 2)
                 if "--repair-before-reboot" in argv_l:
-                    from engine.pre_reboot import repair_before_reboot  # type: ignore
+                    from engine.pre_reboot import default_uefi, repair_before_reboot  # type: ignore
 
-                    report = repair_before_reboot()
+                    report = repair_before_reboot(uefi=default_uefi())
                     print(report.get("summary_text") or report.get("verdict"))
                     raise SystemExit(0 if report.get("verdict") == "GO" else 2)
                 if "--boot-fix" in argv_l:
@@ -1725,13 +1726,14 @@ def main() -> None:
                         pass
                 if "--oneclick" in argv_l or "-oneclick" in argv_l:
                     from engine.pre_reboot import (  # type: ignore
+                        default_uefi,
                         open_repair_issue,
                         repair_before_reboot,
                         upgrade_allowed,
                         verdict_message,
                     )
 
-                    repair = repair_before_reboot()
+                    repair = repair_before_reboot(uefi=default_uefi())
                     print(repair.get("summary_text") or repair.get("verdict"))
                     print(verdict_message(str(repair.get("verdict") or ""), str(repair.get("bundle") or "")))
                     print(open_repair_issue(repair))
