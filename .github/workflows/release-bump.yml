@@ -1,8 +1,9 @@
 name: Release bump
 
-# After a code merge to main, create the next semver tag.
-# The tag push is what starts release.yml. This workflow does not run on
-# pull requests, and it refuses every ref that is not refs/heads/main.
+# After a code merge to main, create the next semver tag on that commit.
+# Never push a commit back to main: this checkout is shallow, and GitHub
+# rejects that push ("shallow update not allowed"). release.yml stamps
+# VERSION from the tag while it builds.
 on:
   push:
     branches: [main]
@@ -32,7 +33,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - name: Bump VERSION and push the tag
+      - name: Push the release tag only
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

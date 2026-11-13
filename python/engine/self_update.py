@@ -94,18 +94,34 @@ def compare_semver(left: str, right: str) -> int:
     return 0
 
 
+def version_compared_with_release(app_version: str, version_file: str | None = None) -> str:
+    """Identity of this build is the release tag stamped into APP_VERSION.
+
+    release.yml writes that stamp from ``refs/tags/vX.Y.Z`` before packaging.
+    A VERSION file left behind on a dev tree must not hide it. The update
+    check compares this value with the latest GitHub release tag.
+    """
+    stamped = (app_version or "").strip().lstrip("vV")
+    if parse_semver(stamped) != (0, 0, 0):
+        return stamped
+    text = (version_file or "").strip().lstrip("vV")
+    if text:
+        return text
+    return "0.0.0"
+
+
 def current_version() -> str:
     override = (os.environ.get("MAGIC_APP_VERSION") or "").strip()
     if override:
         return override.lstrip("vV")
+    file_text = ""
     here = Path(__file__).resolve()
     for parent in here.parents:
         candidate = parent / "VERSION"
         if candidate.is_file():
-            text = candidate.read_text(encoding="utf-8").strip()
-            if text:
-                return text.lstrip("vV")
-    return APP_VERSION
+            file_text = candidate.read_text(encoding="utf-8").strip()
+            break
+    return version_compared_with_release(APP_VERSION, file_text)
 
 
 def updates_root() -> Path:
