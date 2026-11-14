@@ -13,7 +13,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 - **Problem:** Microsoft's BCDBoot reference says that with `/s`, "this entry is not created". BCDBoot then relies on the firmware fallback `\EFI\Boot\bootx64.efi`. Our builders (`post_op_verify.py:435-441`, `drive_map.py:478`) always pass `/s <letter>`, because "bcdboot always gets a verified letter". After an ESP rebuild, or on a PC whose NVRAM was reset (BIOS update or CMOS clear), the PC may have no "Windows Boot Manager" entry and fall to "no bootable device".
 - **Detect:** after bcdboot, run `bcdedit /enum firmware`. Check that a `{bootmgr}` entry exists and that `{fwbootmgr} displayorder` contains it. Also check that `\EFI\Boot\bootx64.efi` exists on the ESP.
 - **Fix:** when the target ESP is the live system ESP, run a second `bcdboot <win> /f UEFI` without `/s`, which writes NVRAM. Add `/p` on dual-boot PCs so GRUB keeps its place. Otherwise fall back to `bcdedit /set {fwbootmgr} displayorder {bootmgr} /addfirst`. Always make sure `\EFI\Boot\bootx64.efi` exists, by copying `bootmgfw.efi` only if the file is missing or is Microsoft-signed. Make the post-op verify fail if no firmware entry exists.
-- **Coverage:** Partial. `boot_guard.py:190` does `/addfirst` only after a GRUB restore. There is no NVRAM-entry verification.
+- **Coverage:** Covered. After a successful `bcdboot /s`, repair runs `bcdboot` again without `/s` (`/f UEFI` or `/f ALL`, `/p` when Linux is present) and checks `bcdedit /enum firmware` for `{bootmgr}` in `displayorder`. Missing `\EFI\Boot\bootx64.efi` is copied from `bootmgfw.efi`.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11 ; https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcd-system-store-settings-for-uefi?view=windows-11
 
 ### P0-2. BitLocker suspended for only 1 reboot, and the app continues "even if still on" **[SAFETY]**
@@ -422,8 +422,8 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 | Status | Items |
 |---|---|
 | Missing | P0-6, P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-1, P0-3, P0-4, P0-5, P0-7, P0-8, P0-9, P0-10, P0-11, P0-12, P0-13, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
-| Covered | P0-2 |
+| Partial | P0-3, P0-4, P0-5, P0-7, P0-8, P0-9, P0-10, P0-11, P0-12, P0-13, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-1, P0-2 |
 | Covered (verify only) | P2-45, keys of P1-20, the fix part of P0-8 |
 
 ## Notes on method
