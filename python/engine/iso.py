@@ -535,6 +535,17 @@ def get_iso(
         indeterminate=True,
     )
 
+    from .local_iso import choose_local_iso
+
+    chosen = choose_local_iso(win=win, arch=arch, language=locale, min_build=min_build)
+    if chosen is not None:
+        report_progress(
+            phase=f"ISO {label}",
+            percent=100.0,
+            detail=f"Local media — {Path(chosen).name}",
+        )
+        return chosen
+
     # 1) Auto-detect + verify on PC
     local = find_local_iso(win, arch=arch, out_dir=out_dir, min_build=min_build)
     if local is not None:

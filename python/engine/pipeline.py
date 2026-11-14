@@ -636,7 +636,9 @@ def _execute_step(
         else:
             log(f"Using local ISO for {step.id}: {iso}", "OK")
         try:
-            root = mount_iso(iso)
+            from .local_iso import attach_media
+
+            root = attach_media(Path(iso))
         except OSError as e:
             code = int(getattr(e, "winerror", None) or getattr(e, "errno", 0) or 0)
             if code == 183:
@@ -1187,7 +1189,6 @@ def _maybe_win11_least(report, target, *, dry_run: bool, quiet: bool) -> int | N
         log("Least-invasive path: official setup.exe /auto upgrade", "STEP")
         try:
             from .iso import get_iso
-            from .virtdisk import mount_iso
 
             iso = get_iso(
                 "11",
@@ -1195,7 +1196,9 @@ def _maybe_win11_least(report, target, *, dry_run: bool, quiet: bool) -> int | N
                 arch="x64",
                 min_build=int(getattr(target, "major", 0) or 0),
             )
-            setup_root = mount_iso(iso)
+            from .local_iso import attach_media
+
+            setup_root = attach_media(Path(iso))
             return _run_setup(
                 setup_root,
                 False,
