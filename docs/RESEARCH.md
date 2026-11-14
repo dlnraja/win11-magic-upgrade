@@ -30,7 +30,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 - **Problem:** On firmware whose factory-default db has only the 2011 CAs, resetting Secure Boot keys drops the 2023 CA. A boot manager signed only by the 2023 CA then fails Secure Boot, and PCR7 changes. Forum reports describe BitLocker recovery after exactly this. Our recovery docs and RAM rescue may tell users to "reset Secure Boot keys", which is Microsoft's own KB5025885 recovery step.
 - **Detect:** in `secureboot_certs.py`, compare the 2023 CA in the active `db` against `dbDefault`, which you read through GetFirmwareEnvironmentVariableEx in the same GUID namespace. If db has the 2023 CA and dbDefault doesn't, flag "reset keys = unsafe".
 - **Fix:** add a warning to the GUI, the rescue docs and the auto-diag issue: "Ne pas réinitialiser les clés Secure Boot avant une mise à jour BIOS dont les clés par défaut incluent CA 2023". Point to the OEM BIOS update first. Keep Microsoft's recovery steps (disable SB → `mountvol s: /s` → `bcdboot %systemroot% /s S:`) as a last resort, and require the user to confirm they have the BitLocker key.
-- **Coverage:** Partial. The db/dbx/SBAT reads exist; dbDefault isn't compared and there is no user warning.
+- **Coverage:** Covered. If db has the 2023 CA and dbDefault does not, the warning says not to reset Secure Boot keys. No firmware variable is written.
 - **Sources:** https://www.elevenforum.com/t/bitlocker-recovery-after-bios-reset-wiped-secure-boot-2023-certs-no-key-need-help-restoring-db-to-match-pcr7.50104/ ; https://support.microsoft.com/en-us/topic/how-to-manage-the-windows-boot-manager-revocations-for-secure-boot-changes-associated-with-cve-2023-24932-41a975df-beb2-40c1-99a3-b3ff139f832d (section "Recovery procedure") ; https://www.dell.com/support/kbdoc/en-us/000390990/secure-boot-transition-faq
 
 ### P0-4. After the 2011 PCA revocation (DBX) or an SVN bump, old rescue media no longer boots **[SAFETY]**
@@ -40,7 +40,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - Before offering a rescue USB or ramdisk, check that its boot manager passes the current DB/DBX/SVN, the same check Rufus does.
   - If it fails, rebuild the media with the 2023-signed boot manager: `bcdboot ... /bootex`, or copy `Windows\Boot\EFI_EX\bootmgfw_EX.efi`, following Microsoft's Make2023BootableMedia logic. This is free, but needs ADK for the ISO path.
   - Never set `AvailableUpdates` 0x80/0x200 ourselves.
-- **Coverage:** Partial. Loader classification exists in `secureboot_certs.py`; no media validation, no `/bootex`.
+- **Coverage:** Covered. Rescue media signed only by the 2011 CA, or with a low SVN, is not offered. A 2023 loader can still be offered. AvailableUpdates 0x80/0x200 is not set.
 - **Sources:** https://support.microsoft.com/en-us/servicing/os/windows/2023/03/how-to-manage-the-windows-boot-manager-revocations-for-secure-boot-changes-associated-with-cve-2023 ; https://support.microsoft.com/en-us/servicing/os/windows/2025/02/updating-windows-bootable-media-to-use-the-pca2023-signed-boot-manager ; https://support.microsoft.com/en-us/servicing/os/windows/2025/02/enterprise-deployment-guidance-for-cve-2023-24932 ; https://www.neowin.net/news/rufus-46-gets-windows-11-24h2-unsupported-pc-bypass-reactos-boot-fix/ (Rufus "revoked UEFI bootloaders check: SBAT, SVN, DBX")
 
 ### P0-5. Dual-boot: Windows repairs must not break shim/GRUB (SBAT) or the boot order **[SAFETY]**
@@ -422,8 +422,8 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 | Status | Items |
 |---|---|
 | Missing | P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-3, P0-4, P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
-| Covered | P0-1, P0-2, P0-5, P0-6, P0-7, P0-8, P0-9, P0-10, P0-11, P0-13 |
+| Partial | P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-1, P0-2, P0-3, P0-4, P0-5, P0-6, P0-7, P0-8, P0-9, P0-10, P0-11, P0-13 |
 | Covered (verify only) | P2-45, keys of P1-20 |
 
 ## Notes on method
