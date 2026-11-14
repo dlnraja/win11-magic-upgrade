@@ -66,7 +66,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - The GOP presence heuristic: a GPU released before ~2012, or no "UEFI" in the VBIOS string where readable.
   - The integrated GPU's presence, as a fallback output.
 - **Fix:** before advising "disable CSM" after MBR2GPT, show a GO/NO-GO: "GPU sans GOP probable : branchez l'écran sur la sortie de la carte mère, ou gardez CSM." Document the CMOS-clear recovery. Don't automate the conversion when the GPU is at risk unless the user overrides.
-- **Coverage:** Missing. `mbrgpt.py:568` tells the user to disable CSM with no GPU check.
+- **Coverage:** Covered. The post-conversion warning does not tell the user to disable CSM when GOP is unknown or missing, unless `MAGIC_CSM_OVERRIDE=1`.
 - **Sources:** https://www.amd.com/en/resources/support-articles/faqs/GPU-N4XCSM.html ; https://learn.microsoft.com/en-ca/answers/questions/5585141/can-i-turn-on-secure-boot-without-go-to-bios-becau ; https://learn.microsoft.com/en-us/windows-hardware/drivers/bringup/mbr2gpt-tool-test-guidance
 
 ### P0-7. MBR2GPT layout pre-checks and return-code mapping **[SAFETY]**
@@ -85,7 +85,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - On cross-disk boot, offer `bcdboot C:\Windows /s <new active part on disk 0> /f BIOS` first. This is opt-in.
   - On 4Kn disks, expect a 260 MB ESP instead of 100 MB.
   - After code 100, run our BCD regenerate plus verify.
-- **Coverage:** Partial. `mbrgpt.py` uses `/allowFullOS` and disables WinRE to free a slot; no explicit return-code table or cross-disk detection found.
+- **Coverage:** Covered. Layout problems (more than 3 primaries, logical partitions, no active partition, cross-disk boot, free space, 4K sectors) and return codes 0–10 and 100 are mapped. A cross-disk `bcdboot` remains opt-in and is not run from this check.
 - **Sources:** https://learn.microsoft.com/en-us/windows/deployment/mbr-to-gpt ; https://ss64.com/nt/mbr2gpt.html ; https://learn.microsoft.com/en-us/answers/questions/5974868/how-to-fix-mbr2gpt-validate-failure-cannot-find-os ; https://learn.microsoft.com/en-us/answers/questions/5579359/mbr2gpt-disk-layout-validation-failed-for-disk-2
 
 ### P0-8. ESP free space ≤ 10 MB makes current cumulative updates fail with 0x800F0922 (May 2026 KB5089549)
@@ -421,9 +421,9 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ## Quick coverage summary
 | Status | Items |
 |---|---|
-| Missing | P0-6, P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-3, P0-4, P0-7, P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
-| Covered | P0-1, P0-2, P0-5, P0-8, P0-9, P0-10, P0-11, P0-13 |
+| Missing | P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
+| Partial | P0-3, P0-4, P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-1, P0-2, P0-5, P0-6, P0-7, P0-8, P0-9, P0-10, P0-11, P0-13 |
 | Covered (verify only) | P2-45, keys of P1-20 |
 
 ## Notes on method
