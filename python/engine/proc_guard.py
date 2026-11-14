@@ -271,6 +271,11 @@ def run_bounded(
     problem = tool_arg_problem([str(part) for part in cmd], input_text)
     if problem:
         return ExtResult(code=1, output="", ok=False, reason=problem)
+    from .bcd_safety import denies_bcd_delete
+
+    denied = denies_bcd_delete([str(part) for part in cmd])
+    if denied:
+        return ExtResult(code=1, output="", ok=False, reason=denied)
     limit = timeout_for(cmd, timeout)
     launcher = popen or subprocess.Popen
     try:

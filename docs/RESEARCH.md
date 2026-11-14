@@ -138,7 +138,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - or `DISM /Image:C:\ /Cleanup-Image /RevertPendingActions`.
 - **Detect:** in the pending-reboot state, check for a stale `safeboot` value on the loader, `pending.xml` in WinSxS, and repeated boot failures (a `BootFailureDetected` SetupDiag rule, or the boot-status data).
 - **Fix:** put these into the bounded-repair strategy list as low-risk first steps. Keep a deny-list so no code path can `bcdedit /delete {current}` or `{default}`.
-- **Coverage:** Partial (`RevertPendingActions` is referenced once; no deny-list).
+- **Coverage:** Covered. `bcdedit /delete {current}` and `bcdedit /delete {default}` are refused before the process starts. The suggested first steps are clearing safeboot, WinRE uninstall updates, and DISM RevertPendingActions. None of those run automatically.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/3882729/windows-11-not-functioning-after-update-stuck-in-r ; https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/dism-operating-system-package-servicing-command-line-options
 
 ### P0-13. A dynamic disk blocks the in-place upgrade (0x80070001 / "can't tell if your PC has enough space")
@@ -422,8 +422,8 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 | Status | Items |
 |---|---|
 | Missing | P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
-| Covered | P0-1, P0-2, P0-3, P0-4, P0-5, P0-6, P0-7, P0-8, P0-9, P0-10, P0-11, P0-13 |
+| Partial | P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-1, P0-2, P0-3, P0-4, P0-5, P0-6, P0-7, P0-8, P0-9, P0-10, P0-11, P0-12, P0-13 |
 | Covered (verify only) | P2-45, keys of P1-20 |
 
 ## Notes on method
