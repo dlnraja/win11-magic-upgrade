@@ -1046,20 +1046,34 @@ def _prefetch_chain_isos(
                 continue
             iso = local81
         elif win == "10":
-            iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch, min_build=min_build)
+            try:
+                iso = Path(win10_iso) if win10_iso else get_iso("10", report.locale, arch=arch, min_build=min_build)
+            except Exception as exc:
+                from .offline import OfflineSkip
+
+                if isinstance(exc, OfflineSkip):
+                    continue
+                raise
         else:
             from .version_planner import latest_win11_build_from_state
 
-            iso = (
-                Path(win11_iso)
-                if win11_iso
-                else get_iso(
-                    "11",
-                    report.locale,
-                    arch="x64",
-                    min_build=latest_win11_build_from_state(),
+            try:
+                iso = (
+                    Path(win11_iso)
+                    if win11_iso
+                    else get_iso(
+                        "11",
+                        report.locale,
+                        arch="x64",
+                        min_build=latest_win11_build_from_state(),
+                    )
                 )
-            )
+            except Exception as exc:
+                from .offline import OfflineSkip
+
+                if isinstance(exc, OfflineSkip):
+                    continue
+                raise
         cached[key] = str(iso)
         log(f"ISO ready: {iso}", "OK")
         if win == "11":
@@ -1255,11 +1269,11 @@ def run_pipeline(
         set_step(percent=15, detail="Hardware / disk / boot mode…", indeterminate=True)
         log(">>> PHASE 1/7 — Auto-diagnose", "STEP")
         try:
-            from .self_update import check_for_update
+            from .self_update import startup_update_async
 
-            check_for_update()
+            startup_update_async()
         except Exception as e:
-            log(f"Update check: {e}", "INFO")
+            log(f"Update check skipped: {e}", "WARN")
         r = collect_report()
         from .win11_release import floor_target
 
@@ -1536,6 +1550,8 @@ def run_pipeline(
                     else:
                         w11 = iso_cache[key]
 
+            from .offline import OfflineSkip
+
             try:
                 result = _execute_step(
                     step,
@@ -1546,6 +1562,9 @@ def run_pipeline(
                     win10_iso=w10,
                     win11_iso=w11,
                 )
+            except OfflineSkip:
+                i += 1
+                continue
             except AutonomousRebootRequired as ar:
                 write_migration_report(
                     extra={

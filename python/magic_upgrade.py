@@ -10,6 +10,10 @@ import json
 import locale
 import os
 import sys
+
+import stdio_safe
+
+stdio_safe.ensure_stdio()
 import threading
 import time
 import tkinter as tk
@@ -1007,19 +1011,12 @@ class App(tk.Tk):
                         sink(summary + "\n")
                         sink(verdict_message(verdict, bundle) + "\n")
                         notice = verdict_message(verdict, bundle)
-
-                        def _show_verdict(text: str = notice, ok: bool = upgrade_allowed(verdict)) -> None:
-                            if ok:
-                                messagebox.showinfo(title, text)
-                            else:
-                                messagebox.showerror(title, text)
-
-                        self.after(0, _show_verdict)
+                        sink(notice + "\n")
                         try:
                             issue = open_repair_issue(repair)
-                            sink(f"GitHub issue form: {issue}\n")
+                            sink(f"GitHub: {issue}\n")
                         except Exception as issue_error:
-                            sink(f"GitHub issue form: {issue_error}\n")
+                            sink(f"GitHub issue skipped: {issue_error}\n")
                         if guard_blocks_action("oneclick", verdict):
                             code = 2
                     if code is None:
@@ -1232,6 +1229,8 @@ def _console_key_pressed(wait) -> bool:
                 msvcrt.getwch()
                 return True
         else:
+            if not stdio_safe.stream_isatty(sys.stdin):
+                return False
             ready, _, _ = select.select([sys.stdin], [], [], 0)
             if ready:
                 sys.stdin.read(1)
@@ -1341,23 +1340,25 @@ def _parse_auto_action(argv: list[str]) -> str | None:
 
 
 def _message_box(title: str, message: str, *, error: bool = True) -> None:
-    """Native Windows dialog. In CI, print and return so the job cannot wait on OK."""
+    """Non-blocking notice. A modal is used only when MAGIC_BLOCKING_DIALOG=1."""
+    text = f"{title}: {message}"
     try:
-        from engine.errors import unattended_session  # type: ignore
+        from engine.logutil import log  # type: ignore
 
-        if unattended_session():
-            print(f"{title}: {message}", file=sys.stderr)
-            return
+        log(text[:1500], "WARN" if error else "INFO")
     except Exception:
         pass
+    try:
+        print(text, file=sys.stderr)
+    except Exception:
+        pass
+    if os.environ.get("MAGIC_BLOCKING_DIALOG", "").strip().lower() not in ("1", "true", "yes"):
+        return
     try:
         flags = 0x00000010 if error else 0x00000040  # MB_ICONERROR / MB_ICONINFORMATION
         ctypes.windll.user32.MessageBoxW(None, str(message)[:1500], str(title)[:120], flags)
     except Exception:
-        try:
-            print(message, file=sys.stderr)
-        except Exception:
-            pass
+        pass
 
 
 def _failure_detail(exc: BaseException | None = None, code: int | None = None) -> tuple[str, str]:
@@ -1413,21 +1414,34 @@ def absorb_fatal(exc: BaseException, *, strings: dict | None = None) -> int:
         t = {}
 
     links: dict = {}
-    try:
-        from engine.gh_report import report_unhandled_exception  # type: ignore
-        from engine.errors import remember_failure  # type: ignore
 
-        if isinstance(exc, UpgradeBlockedError):
-            remember_failure(str(exc), kind=exc.kind, links=exc.links)
-            links = dict(exc.links or {})
-        elif "Issue:" not in str(exc):
-            links = report_unhandled_exception(
-                type(exc),
-                exc,
-                exc.__traceback__,
-                kind="app-fatal-exception",
-            ) or {}
-            remember_failure(str(exc), kind="app-fatal-exception", links=links)
+    def _report() -> None:
+        try:
+            from engine.gh_report import report_unhandled_exception  # type: ignore
+            from engine.errors import remember_failure  # type: ignore
+
+            if isinstance(exc, UpgradeBlockedError):
+                remember_failure(str(exc), kind=exc.kind, links=exc.links)
+            elif "Issue:" not in str(exc):
+                report_unhandled_exception(
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                    kind="app-fatal-exception",
+                )
+                remember_failure(str(exc), kind="app-fatal-exception", links={})
+        except Exception as report_error:
+            try:
+                from engine.logutil import log  # type: ignore
+
+                log(f"fatal report failed: {report_error}", "WARN")
+            except Exception:
+                pass
+
+    try:
+        from engine.issue_url import run_in_background  # type: ignore
+
+        run_in_background(_report, name="fatal-report")
     except Exception:
         pass
 
@@ -1558,14 +1572,15 @@ def _no_args_guard() -> None:
 
 def _no_args_update() -> None:
     try:
-        from engine.self_update import startup_update  # type: ignore
+        from engine.self_update import startup_update_async  # type: ignore
 
-        startup_update([])
+        startup_update_async([])
     except Exception:
         pass
 
 
 def main() -> None:
+    stdio_safe.ensure_stdio()
     if not sys.argv[1:]:
         from engine.pre_reboot import no_args_entrypoint  # type: ignore
 
@@ -1603,9 +1618,9 @@ def _main_after_no_args() -> None:
     auto_action = _parse_auto_action(argv)
     strings = load_strings(root)
     try:
-        from engine.self_update import startup_update  # type: ignore
+        from engine.self_update import startup_update_async  # type: ignore
 
-        startup_update(argv)
+        startup_update_async(argv)
     except Exception:
         pass
 
@@ -1628,7 +1643,7 @@ def _main_after_no_args() -> None:
     except Exception as guard_error:
         print(f"Startup boot guard failed: {guard_error}")
 
-    if not argv and sys.stdin.isatty() and sys.stdout.isatty():
+    if not argv and stdio_safe.stream_isatty(sys.stdin) and stdio_safe.stream_isatty(sys.stdout):
         from engine.win11_inplace_policy import startup_countdown_seconds  # type: ignore
 
         if not console_countdown(startup_countdown_seconds(), wait=time.sleep, key_pressed=_console_key_pressed):
@@ -1861,8 +1876,8 @@ if __name__ == "__main__":
     finally:
         if not any(a.lower() in ("-h", "--help", "/?") for a in sys.argv[1:]):
             try:
-                from engine.run_diag import finish_run  # type: ignore
+                from engine.run_diag import finish_run_async  # type: ignore
 
-                finish_run(mode="process")
+                finish_run_async(mode="process")
             except Exception:
                 pass

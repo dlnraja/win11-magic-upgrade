@@ -63,14 +63,14 @@ def _ctx():
     return ssl.create_default_context()
 
 
-def _http_json(url: str, headers: dict | None = None, timeout: int = 45) -> dict:
+def _http_json(url: str, headers: dict | None = None, timeout: int = 5) -> dict:
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, context=_ctx(), timeout=timeout) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     return json.loads(raw) if raw.strip() else {}
 
 
-def _http_text(url: str, headers: dict | None = None, timeout: int = 45) -> str:
+def _http_text(url: str, headers: dict | None = None, timeout: int = 5) -> str:
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, context=_ctx(), timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
@@ -510,7 +510,7 @@ def find_local_iso(
             log(f"Auto-detected + verified ISO: {p}", "OK")
             return p
 
-    log(f"No verified Windows {win} ISO among local candidates — will download", "WARN")
+    log(f"No verified Windows {win} ISO among local candidates — will download", "INFO")
     return None
 
 
@@ -554,7 +554,20 @@ def get_iso(
         detail="No verified local ISO — resolving official Microsoft CDN URL…",
         indeterminate=True,
     )
-    url = resolve_iso_url(win=win, lang_hint=locale, arch=arch)
+    from .offline import OfflineSkip, explain_network, is_network_error, probe_host
+
+    try:
+        probe_host("www.microsoft.com")
+        url = resolve_iso_url(win=win, lang_hint=locale, arch=arch)
+    except Exception as exc:
+        if not isinstance(exc, OfflineSkip) and not is_network_error(exc):
+            raise
+        message = (
+            f"ISO download skipped: {explain_network(exc)}. "
+            "A local ISO still works. Retry the download when the network is up."
+        )
+        log(message, "WARN")
+        raise OfflineSkip(message) from exc
     m = re.search(r"/([^/?]+\.iso)", url, re.I)
     fname = m.group(1) if m else f"Windows{win}_{arch}_{int(time.time())}.iso"
     if win == "11":

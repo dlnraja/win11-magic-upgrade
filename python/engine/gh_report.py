@@ -22,7 +22,6 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .logutil import STATE_DIR, SETUPACT, SETUPERR, log
@@ -61,7 +60,7 @@ def _repo() -> str:
 
 
 def _gh_available() -> bool:
-    code, out = _run(["gh", "auth", "status"], timeout=30)
+    code, out = _run(["gh", "auth", "status"], timeout=5)
     return code == 0 or "Logged in" in out
 
 
@@ -286,7 +285,7 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
             "--limit",
             "3",
         ],
-        timeout=60,
+        timeout=5,
     )
     if code == 0 and search.strip().startswith("["):
         try:
@@ -314,7 +313,7 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
         ]
         for lab in LABELS:
             cmd.extend(["--label", lab])
-        code, out = _run(cmd, timeout=90)
+        code, out = _run(cmd, timeout=5)
         if code == 0 and "http" in out:
             url = out.strip().splitlines()[-1].strip()
             log(f"GitHub autodiag issue created: {url}", "OK")
@@ -337,7 +336,7 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
             },
         )
         try:
-            with urlopen(req, timeout=60) as resp:
+            with urlopen(req, timeout=5) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 parsed = json.loads(raw)
                 url = parsed.get("html_url")
@@ -347,15 +346,24 @@ def create_github_issue(payload: dict[str, Any]) -> str | None:
         except Exception as e:
             log(f"GitHub API issue create failed: {sanitize_text(str(e))}", "WARN")
 
-    # Browser fallback (no token) — truncated body
-    q = urlencode(
-        {
-            "title": title[:200],
-            "body": body[:5500],
-            "labels": ",".join(LABELS),
-        }
+    from .issue_url import prefilled_issue_url, short_issue_body
+    from .offline import queue_redacted_report
+
+    queue_redacted_report(title=title, body=body, reason="GitHub did not accept the report")
+
+    first = ""
+    for line in (body or "").splitlines():
+        if line.strip():
+            first = line.strip()
+            break
+    short = short_issue_body(
+        fingerprint=(payload.get("fingerprint") if isinstance(payload, dict) else "") or "",
+        version=str((payload or {}).get("app_version") or "") if isinstance(payload, dict) else "",
+        error=first,
+        context=title,
+        report_path="",
     )
-    url = f"https://github.com/{repo}/issues/new?{q}"
+    url = prefilled_issue_url(repo, title, short, labels=",".join(LABELS))
     try:
         if os.environ.get("MAGIC_AV_OPEN_BROWSER", "1").strip() not in ("0", "false", "no"):
             import webbrowser
