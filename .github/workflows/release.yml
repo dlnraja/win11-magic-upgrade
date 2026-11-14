@@ -39,6 +39,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Stamp VERSION from the release tag
+        shell: bash
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: python build/stamp_release_version.py
+
       - name: Reject unsafe ref forms
         shell: bash
         env:

@@ -13,6 +13,7 @@ from engine.self_update import (  # noqa: E402
     check_for_update,
     compare_semver,
     decide_update,
+    version_compared_with_release,
     next_version,
     parse_sha256sums,
     pin_opencore,
@@ -86,6 +87,14 @@ def test_sha256sums_and_signature() -> None:
     assert signature_acceptable("HashMismatch")[0] is False
 
 
+def test_update_compares_the_stamped_tag() -> None:
+    assert version_compared_with_release("1.56.1", "1.56.0") == "1.56.1"
+    assert version_compared_with_release("v1.56.1", "9.9.9") == "1.56.1"
+    assert version_compared_with_release("", "1.56.0") == "1.56.0"
+    assert decide_update(current="1.56.1", latest="1.56.1").status == "same"
+    assert decide_update(current="1.56.1", latest="1.56.2").status == "newer"
+
+
 def test_release_tag_only_on_main_code() -> None:
     assert should_tag_release("refs/heads/main", "fix: boot map", ["python/engine/mbrgpt.py"]) is True
     assert should_tag_release("refs/pull/12/merge", "fix: boot map", ["python/engine/mbrgpt.py"]) is False
@@ -119,6 +128,7 @@ if __name__ == "__main__":
     test_bad_hash_is_rejected()
     test_stage_apply_and_rollback()
     test_sha256sums_and_signature()
+    test_update_compares_the_stamped_tag()
     test_release_tag_only_on_main_code()
     test_boot_critical_defers_update()
     test_pins_match_shipped_floor()
