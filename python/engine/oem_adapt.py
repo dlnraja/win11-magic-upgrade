@@ -640,7 +640,7 @@ def prepare_encryption_for_mutate(profile: OemProfile | None = None) -> dict[str
 
     Policy (do not break BitLocker-present PCs):
       - locked            -> hard block
-      - on / device enc   -> manage-bde -protectors -disable, retry once, CONTINUE even if still on
+      - on / device enc   -> manage-bde -protectors -disable -rebootcount N, then refuse boot writes if still On
       - off / unknown     -> no-op / soft suspend attempt if device_encryption hint
     Never treat "Protection On" as locked.
     """
@@ -679,15 +679,19 @@ def prepare_encryption_for_mutate(profile: OemProfile | None = None) -> dict[str
         log("manage-bde missing — continuing (BitLocker On will not hard-block)", "WARN")
         return out
 
-    log("Suspending BitLocker protectors (On != Locked; safe, non-destructive)...", "STEP")
-    c1, o1 = _run([str(manage), "-protectors", "-disable", drive], timeout=90)
+    from .bitlocker_guard import protector_ids, reboot_count_for_plan, suspend_argv
+
+    count = reboot_count_for_plan()
+    out["reboot_count"] = count
+    log(f"Suspending BitLocker protectors for {count} reboots (On != Locked)...", "STEP")
+    c1, o1 = _run(suspend_argv(str(manage), drive, count), timeout=90)
     out["actions"].append(f"protectors_disable:{c1}")
     # Already disabled / no protectors often returns non-zero — re-check status
     status = _bitlocker_status(drive)
     out["actions"].append(f"status_after_suspend:{status}")
     if status == "on":
         # Retry once
-        c2, _ = _run([str(manage), "-protectors", "-disable", drive], timeout=90)
+        c2, _ = _run(suspend_argv(str(manage), drive, count), timeout=90)
         out["actions"].append(f"protectors_disable_retry:{c2}")
         status = _bitlocker_status(drive)
         out["actions"].append(f"status_after_retry:{status}")
@@ -699,22 +703,39 @@ def prepare_encryption_for_mutate(profile: OemProfile | None = None) -> dict[str
         log("Volume became LOCKED during suspend attempt — stop", "ERROR")
         return out
 
-    if status == "on":
-        # Do NOT block — warn only. Shrink/bcdboot often still works; user can unlock later.
-        out["actions"].append("suspend_incomplete_continue")
+    _pcode, protectors = _run([str(manage), "-protectors", "-get", drive], timeout=60)
+    out["key_ids"] = protector_ids(protectors)
+    if out["key_ids"]:
         log(
-            "BitLocker still Protection On after suspend — continuing anyway (not locked). "
-            "If diskpart fails, run: manage-bde -protectors -disable C:",
+            "BitLocker recovery key ID "
+            + ", ".join(out["key_ids"])
+            + ". Note it (Microsoft account, file, or print) before boot changes.",
             "WARN",
         )
-        out["ok"] = True
-        out["blocked"] = False
+    if status == "on":
+        out["actions"].append("suspend_incomplete_refuse_boot_writes")
+        out["ok"] = False
+        out["blocked"] = True
+        out["boot_writes_allowed"] = False
+        log(
+            "BitLocker is still Protection On. Boot, BCD, ESP and DBX writes are refused.",
+            "ERROR",
+        )
+        profile.bitlocker = status
+        return out
     else:
         out["suspended"] = True
         out["actions"].append("protectors_suspended_ok")
         log(f"BitLocker protectors suspended (status={status}) — safe to mutate", "OK")
 
-    # Refresh profile bitlocker field for callers
+    from .bitlocker_guard import boot_writes_allowed
+
+    allowed, reason = boot_writes_allowed(status, has_password_protector=bool(out.get("key_ids")))
+    out["boot_writes_allowed"] = allowed
+    out["reason"] = reason
+    if not allowed:
+        out["ok"] = False
+        log(reason, "ERROR")
     profile.bitlocker = status
     return out
 

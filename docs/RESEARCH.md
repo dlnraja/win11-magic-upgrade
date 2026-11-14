@@ -23,7 +23,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - Use `-rebootcount 3` (range 0-15) sized to the plan, then re-read the status.
   - Refuse every boot, BCD, ESP or DBX write while protection is still On. A NO-GO is better than a recovery-key lock-out.
   - Before the first boot write, show the user the recovery key ID and where the key is stored (MSA, file, print), with a "J'ai noté ma clé" confirmation.
-- **Coverage:** Partial (suspend exists, no reboot count, no hard gate, no key-backup check).
+- **Coverage:** Covered. Suspend uses `-rebootcount` (default 3, `MAGIC_BITLOCKER_REBOOTS`). Boot repair refuses to start while protection is On or the recovery-key acknowledgement is missing.
 - **Sources:** https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/manage-bde-protectors ; https://learn.microsoft.com/en-us/troubleshoot/windows-client/windows-security/suspend-bitlocker-protection-non-microsoft-updates ; https://support.microsoft.com/en-us/servicing/os/windows-server/2022/02/kb5012170-security-update-for-secure-boot-dbx
 
 ### P0-3. A BIOS "reset keys" or CMOS clear removes Windows UEFI CA 2023 from db, so the PC can't boot or asks for the BitLocker key **[SAFETY]**
@@ -422,7 +422,8 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 | Status | Items |
 |---|---|
 | Missing | P0-6, P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-1, P0-2, P0-3, P0-4, P0-5, P0-7, P0-8, P0-9, P0-10, P0-11, P0-12, P0-13, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Partial | P0-1, P0-3, P0-4, P0-5, P0-7, P0-8, P0-9, P0-10, P0-11, P0-12, P0-13, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-2 |
 | Covered (verify only) | P2-45, keys of P1-20, the fix part of P0-8 |
 
 ## Notes on method

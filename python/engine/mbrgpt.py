@@ -291,6 +291,15 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
     step = prepare_boot_step("bcdboot")
     if step is not None and step.abort:
         return False
+    try:
+        from .oem_adapt import prepare_encryption_for_mutate
+
+        gate = prepare_encryption_for_mutate()
+        if gate.get("blocked") or gate.get("boot_writes_allowed") is False:
+            log(gate.get("reason") or "BitLocker still protects this volume. Boot repair was not started.", "ERROR")
+            return False
+    except Exception as exc:
+        log(f"BitLocker gate skipped: {exc}", "WARN")
     if step is not None and step.skip_loader_overwrite:
         log(step.explanation or "ESP loader is newer; not overwriting", "WARN")
         return True
