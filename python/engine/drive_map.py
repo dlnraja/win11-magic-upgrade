@@ -1717,7 +1717,11 @@ def decide(
             explanation_bits.append(f"Windows is on disk {win_disk}, not disk 0")
         if any(vol.dynamic for vol in drive_map.volumes if win_disk is None or vol.disk == win_disk):
             actions.append("dynamic_disk")
-            warnings.append("Dynamic disk: no new ESP is created and diskpart will not assign a letter.")
+            from .storage_precheck import dynamic_disk_block
+
+            blocked = dynamic_disk_block(True)
+            warnings.append(blocked["message"])
+            actions.append("dynamic_disk_nogo")
 
     mount = None
     if write_target is not None and not abort:
