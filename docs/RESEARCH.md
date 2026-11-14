@@ -56,7 +56,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - Use `bcdboot /p` (preserve the order) instead of the default "move first".
   - Restore the original displayorder after repair, instead of `/addfirst` (`boot_guard.py:190` currently forces Windows first).
   - Write a GRUB recovery note (`mokutil --set-sbat-policy delete`, `GRUB_DISABLE_OS_PROBER=false`, `efibootmgr -o`) into the report.
-- **Coverage:** Partial. GRUB/shim EFI trees are snapshotted and restored; order and SBAT are not handled.
+- **Coverage:** Covered. A recorded Linux EFI tree keeps firmware order (`/p`, no `/addfirst`) and adds a GRUB/SBAT note. `MAGIC_SBAT_OPTOUT=1` is required before any SBAT opt-out.
 - **Sources:** https://www.bleepingcomputer.com/news/microsoft/microsoft-shares-temp-fix-for-linux-boot-issues-on-dual-boot-systems/ ; https://www.bleepingcomputer.com/news/microsoft/microsoft-fixes-linux-boot-issues-on-dual-boot-windows-systems/ ; https://www.rodsbooks.com/refind/bootcoup.html ; https://learn.microsoft.com/en-us/answers/questions/1335597/how-can-i-stop-windows-from-resetting-boot-order-a ; https://alioth-lists.debian.net/pipermail/pkg-grub-devel/2023-September/018595.html
 
 ### P0-6. MBR2GPT followed by "disable CSM" leaves a black screen on GPUs without UEFI GOP **[SAFETY]**
@@ -422,8 +422,8 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 | Status | Items |
 |---|---|
 | Missing | P0-6, P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-3, P0-4, P0-5, P0-7, P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
-| Covered | P0-1, P0-2, P0-8, P0-9, P0-10, P0-11, P0-13 |
+| Partial | P0-3, P0-4, P0-7, P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-1, P0-2, P0-5, P0-8, P0-9, P0-10, P0-11, P0-13 |
 | Covered (verify only) | P2-45, keys of P1-20 |
 
 ## Notes on method
