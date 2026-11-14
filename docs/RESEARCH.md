@@ -95,7 +95,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - a hard pre-flight number (free < 15 MB → clean, then re-measure, then only then propose an opt-in enlarge);
   - parse `CBS.log` in the auto-diag;
   - write the post-upgrade padding value back only if the user wants it.
-- **Coverage:** Covered for the fix; Partial for detection.
+- **Coverage:** Covered. Free space under 15 MB or 0x800F0922 in CBS.log cleans fonts and remeasures. Enlarging the ESP requires `MAGIC_ESP_ENLARGE=1`.
 - **Sources:** https://www.windowscentral.com/microsoft/windows-11/microsoft-confirms-may-2026-update-install-failure-with-error-0x800f0922-on-windows-11-and-provides-mitigation ; https://learn.microsoft.com/en-us/answers/questions/3943836/is-there-an-easy-way-to-fix-this-issue-and-is-this ; https://www.winhelponline.com/blog/resize-efi-system-partition/
 
 ### P0-9. WinRE partition too small (KB5034441 0x80070643, event 4502) **[SAFETY]**
@@ -105,7 +105,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - Microsoft won't fix this automatically. Its manual procedure is KB5028997 (shrink OS by 250 MB, delete and recreate the recovery partition with the GPT type/attributes, run `reagentc /enable`). The script version is KB5035679.
 - **Detect:** run `reagentc /info` and parse the `\\?\GLOBALROOT\device\harddiskN\partitionM` location. Measure free space on that partition by mounting it via a GUID path. Query the System log for event 4502. Note whether the recovery partition sits right after the OS partition, which the script requires.
 - **Fix:** report and NO-GO the "WinRE update" class. Offer an opt-in, verified implementation of KB5028997: back up `winre.wim` first, and if anything fails, re-run `reagentc /enable`. **Never automatic.**
-- **Coverage:** Partial (WinRE handling exists; no 4502 event or 250 MB free check).
+- **Coverage:** Covered. Free space under 250 MB or event 4502 is a NO-GO for the WinRE update. Resize runs only with `MAGIC_WINRE_RESIZE=1` and backs up `winre.wim` first.
 - **Sources:** https://support.microsoft.com/en-us/servicing/os/windows/2023/06/kb5028997-instructions-to-manually-resize-your-partition-to-install-the-winre-update ; https://support.microsoft.com/en-us/servicing/os/windows/2024/02/kb5035679-instructions-to-run-a-script-to-resize-the-recovery-partition-to-install-a-winre-update ; https://learn.microsoft.com/en-us/answers/questions/3743059/update-kb5034441-fails-to-install ; https://www.bleepingcomputer.com/news/microsoft/microsoft-wont-fix-windows-0x80070643-errors-manual-fix-required/
 
 ### P0-10. `reagentc /enable` fails with "Unable to update Boot Configuration Data"
@@ -119,7 +119,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   5. If the BCD is ambiguous, `bcdboot` to the active ESP, then retry once.
 
   Add a post-check that `reagentc /info` says "Enabled".
-- **Coverage:** Partial (reagentc used in boot_safe/boot_emergency; setreimage sequence not found).
+- **Coverage:** Covered. `reagentc` "Unable to update Boot Configuration Data" is detected. The disable, rename `ReAgent.xml`, setreimage, enable sequence runs only with `MAGIC_REAGENTC_REPAIR=1`.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/4163725/reagentc-exe-unable-to-update-boot-configuration-d ; https://superuser.com/questions/1799744/repair-the-windows-recovery-partition-fix-errors-preventing-winre-from-enabling
 
 ### P0-11. A storage controller in RAID/VMD (Intel RST) gives "no drives" or INACCESSIBLE_BOOT_DEVICE **[SAFETY]**
@@ -422,9 +422,9 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 | Status | Items |
 |---|---|
 | Missing | P0-6, P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-3, P0-4, P0-5, P0-7, P0-8, P0-9, P0-10, P0-11, P0-12, P0-13, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
-| Covered | P0-1, P0-2 |
-| Covered (verify only) | P2-45, keys of P1-20, the fix part of P0-8 |
+| Partial | P0-3, P0-4, P0-5, P0-7, P0-11, P0-12, P0-13, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-1, P0-2, P0-8, P0-9, P0-10 |
+| Covered (verify only) | P2-45, keys of P1-20 |
 
 ## Notes on method
 - The repo was read at `e18bebb`. Coverage greps used rule names, registry keys and command switches. "Partial" means the claim was checked against specific files and lines cited in each item.
