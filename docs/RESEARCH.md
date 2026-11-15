@@ -229,7 +229,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-22. Extend the rollback window (Windows.old) automatically after success
 - **Problem:** The default go-back window is 10 days. Users find problems later.
 - **Fix:** after a successful upgrade, offer `DISM /Online /Set-OSUninstallWindow /Value:30` (range 2–60). Check it with `/Get-OSUninstallWindow`. Warn before Disk Cleanup removes Windows.old.
-- **Coverage:** Missing.
+- **Coverage:** Covered. `DISM /Set-OSUninstallWindow` runs only with `MAGIC_KEEP_WINDOWS_OLD=1`. The value is clamped to 2–60 days.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/dism-uninstallos-command-line-options?view=windows-11 ; https://support.microsoft.com/en-us/windows/deployment/install-upgrade/go-back-to-the-previous-version-of-windows
 
 ### P1-23. Secure Boot CA 2023 readiness: surface status, errors and events, and point to firmware
@@ -389,7 +389,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P2-42. Post-upgrade cleanup guard: keep Windows.old until the user confirms
 - **Problem:** Storage Sense and Disk Cleanup can delete Windows.old early, which kills rollback. This pairs with P1-22.
 - **Fix:** after success, show a "Garder la restauration 30 jours" toggle. Record the expiry date in the state file, and remind the user at expiry.
-- **Coverage:** Missing.
+- **Coverage:** Covered. The same opt-in records the Windows.old expiry and warns before Disk Cleanup.
 - **Sources:** https://support.microsoft.com/en-us/windows/deployment/install-upgrade/go-back-to-the-previous-version-of-windows ; https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/dism-uninstallos-command-line-options?view=windows-11
 
 ### P2-43. Rufus `/auto upgrade` argv and FoD dismissable-block tests in CI
