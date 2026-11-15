@@ -427,6 +427,7 @@ class App(tk.Tk):
         if is_admin():
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
+        self.append("Boot check runs in this window. The app stays open while it works.\n")
         self._count_alive = False
         self._count_job = None
         if not self._auto_action:

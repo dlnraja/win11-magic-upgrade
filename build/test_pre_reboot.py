@@ -365,14 +365,14 @@ def test_startup_repair_matrix() -> None:
     assert called == []
 
 
-def test_no_args_entrypoint_calls_guard_first() -> None:
+def test_no_args_entrypoint_opens_the_app_first() -> None:
     order: list[str] = []
     no_args_entrypoint(
         guard=lambda: order.append("guard"),
         update=lambda: order.append("update"),
         continue_app=lambda: order.append("app"),
     )
-    assert order == ["guard", "update", "app"]
+    assert order == ["app"]
     source = (ROOT / "python" / "magic_upgrade.py").read_text(encoding="utf-8")
     main = source.split("def main()", 1)[1].split("def _main_after_no_args", 1)[0]
     assert "if not sys.argv[1:]" in main
@@ -428,7 +428,7 @@ def main() -> None:
     test_postflight_ignores_mountvol_when_storage_works()
     test_one_click_does_not_expand_without_opt_in()
     test_startup_repair_matrix()
-    test_no_args_entrypoint_calls_guard_first()
+    test_no_args_entrypoint_opens_the_app_first()
     test_oneclick_stops_unless_go_and_issue_url_is_redacted()
     with tempfile.TemporaryDirectory() as name:
         test_startup_guard_skips_only_when_asked_and_blocks_upgrade(Path(name))
