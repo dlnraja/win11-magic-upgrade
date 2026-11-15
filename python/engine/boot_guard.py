@@ -186,8 +186,12 @@ def restore_linux_efi_trees() -> dict[str, Any]:
         out["vendors"] = vendors
         if vendors:
             log(f"Restored Linux/GRUB EFI trees: {vendors} ({n} new files)", "OK")
-            # Prefer Windows Boot Manager first, keep Linux entries present on disk
-            _run(["bcdedit", "/set", "{fwbootmgr}", "displayorder", "{bootmgr}", "/addfirst"])
+            from .dual_boot_guard import grub_recovery_note, preserve_firmware_order
+
+            if preserve_firmware_order(vendors):
+                log(grub_recovery_note(), "WARN")
+            else:
+                _run(["bcdedit", "/set", "{fwbootmgr}", "displayorder", "{bootmgr}", "/addfirst"])
     finally:
         if mounted:
             try:

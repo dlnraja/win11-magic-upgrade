@@ -408,11 +408,14 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
 
                         if space_root is not None:
                             ensure_fallback_loader(space_root)
+                        from .dual_boot_guard import preserve_firmware_order
+
                         nvram = ensure_firmware_entry(
                             exe=str(bcdboot),
                             windows=source,
                             mode=mode,
                             runner=lambda cmd, timeout=60: _run(cmd, timeout=timeout),
+                            linux_present=preserve_firmware_order(),
                         )
                         if not nvram.get("ok"):
                             log("bcdboot wrote the ESP files, but no firmware {bootmgr} entry is present.", "ERROR")
@@ -429,11 +432,14 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
 
                 if space_root is not None:
                     ensure_fallback_loader(space_root)
+                from .dual_boot_guard import preserve_firmware_order
+
                 nvram = ensure_firmware_entry(
                     exe=str(bcdboot),
                     windows=source,
                     mode=mode,
                     runner=lambda cmd, timeout=60: _run(cmd, timeout=timeout),
+                    linux_present=preserve_firmware_order(),
                 )
                 if not nvram.get("ok"):
                     log("bcdboot wrote the ESP files, but no firmware {bootmgr} entry is present.", "ERROR")
