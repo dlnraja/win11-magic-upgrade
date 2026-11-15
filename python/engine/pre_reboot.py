@@ -851,9 +851,8 @@ STARTUP_GUARD_BUDGET_S = 180
 
 
 def no_args_entrypoint(*, guard, update, continue_app) -> None:
-    """Plain exe or double-click. The boot guard runs before update or the UI."""
-    guard()
-    update()
+    """Open the window first. The boot guard runs inside the UI, not before it."""
+    del guard, update
     continue_app()
 
 
