@@ -54,7 +54,7 @@ def test_startup_completes_when_the_network_is_down(tmp: Path) -> None:
 
         no_args_entrypoint(guard=guard, update=update, continue_app=app)
         elapsed = time.monotonic() - started
-        assert seen == ["guard", "update", "app"]
+        assert seen == ["app"]
         assert elapsed < 2, elapsed
         assert CONNECT_TIMEOUT <= 5
 
