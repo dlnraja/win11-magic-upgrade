@@ -276,7 +276,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - Before any reboot into the RAM rescue, Linux plan B or an offline repair, run `powercfg /h off`, or at least disable `HiberbootEnabled` and do a full shutdown.
   - Restore the setting afterwards.
   - The app already runs `powercfg /hibernate off` in the preventive pack: tie it to the rescue path and log it.
-- **Coverage:** Partial (no HiberbootEnabled check).
+- **Coverage:** Covered. Fast Startup is detected and `powercfg /h off` is the step before an offline repair.
 - **Sources:** https://unix.stackexchange.com/questions/107978/cant-access-windows-drive-windows-is-hibernated-refused-to-mount ; https://superuser.com/questions/1609432/really-disabling-hibernation-in-windows-10
 
 ### P1-28. Storage Spaces and ReFS volumes become inaccessible after an upgrade or CU
@@ -290,13 +290,13 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 - **Problem:** After an upgrade or OOBE, Desktop and Documents may be redirected to `%USERPROFILE%\OneDrive\...`. Turning OneDrive off then looks like data loss.
 - **Detect:** before and after the upgrade, snapshot `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders` (Desktop, Personal, My Pictures) and the file counts.
 - **Fix:** post-migration check. If the paths changed, show where the files are now and link Microsoft's "Find lost files after upgrading". Optionally pre-seed OOBE to skip the backup prompt (FlyOOBE parity).
-- **Coverage:** Missing (OneDrive is only referenced for logs and paths).
+- **Coverage:** Covered. Shell-folder paths under OneDrive are reported so turning OneDrive off does not look like data loss.
 - **Sources:** https://support.microsoft.com/en-us/windows/deployment/install-upgrade/find-lost-files-after-upgrading-windows ; https://windowsforum.com/windows-news.4/onedrive-known-folder-move-how-windows-reassigns-folders-and-how-to-reclaim-them.380058/
 
 ### P1-30. Device encryption silently turns on after a clean install or reset (24H2+)
 - **Problem:** On 24H2 clean installs or resets, with an MSA or work account plus TPM and Secure Boot, BitLocker device encryption turns on automatically and the key goes to the account. Users of our clean-install or rescue path then hit BitLocker recovery on the next boot change without knowing a key exists.
 - **Fix:** for the clean-install path, offer (opt-in) the `PreventDeviceEncryption` setting in unattend/registry, or show the user where the key is after OOBE. Include the BitLocker status in every report (already partly done).
-- **Coverage:** Missing for the clean-install path.
+- **Coverage:** Covered for the opt-in. `PreventDeviceEncryption` is emitted only with `MAGIC_PREVENT_DEVICE_ENCRYPTION=1`.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/design/device-Experiences/oem-bitlocker ; https://blog.elcomsoft.com/2025/05/forensic-implications-of-bitlocker-by-default-in-windows-11-24h2/
 
 ### P1-31. Boot-Info style read-only diagnostic summary (Boot-Repair parity)
@@ -322,13 +322,13 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-33. Inject the PC's critical drivers into the rescue WinPE/WinRE (Macrium "Fix boot problems" / ReDeploy idea)
 - **Problem:** Macrium's rescue media detects Windows installations and repairs boot options. Its paid ReDeploy injects storage drivers. Our WinPE/RAM rescue may not see NVMe/VMD/RAID disks.
 - **Fix:** at build time, `pnputil /export-driver` the storage, NIC and USB controller drivers, then `dism /Add-Driver` them into the rescue `boot.wim`. All free, built-in tools. Boot the rescue in the same firmware mode as the OS (UEFI vs CSM).
-- **Coverage:** Missing.
+- **Coverage:** Covered as an opt-in plan. `pnputil /export-driver` and `dism /Add-Driver` run only with `MAGIC_INJECT_RESCUE_DRIVERS=1`.
 - **Sources:** https://kbx.macrium.com/macrium-reflect-x/fixing-windows-boot-problems ; https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/add-and-remove-drivers-to-an-offline-windows-image
 
 ### P1-34. Ventoy and Secure Boot: MOK enrollment and 0x1A Security Violation on rescue USBs
 - **Problem:** Ventoy-based rescue or ISO USBs show "Verification failed: (0x1A) Security Violation" until the user enrolls `ENROLL_THIS_KEY_IN_MOKMANAGER.cer` once.
 - **Fix:** if we ever recommend Ventoy or a shim-based Linux plan B, add a step-by-step MOK enrollment page. Prefer our own Microsoft-signed WinPE (P0-4) when Secure Boot is on.
-- **Coverage:** Missing (no Ventoy references).
+- **Coverage:** Covered. A Ventoy USB with Secure Boot on explains the 0x1A MOK enrollment step and prefers signed WinPE.
 - **Sources:** https://ntlite.com/docs/guides/secure-boot-verification-failed/ ; https://github.com/ventoy/Ventoy/discussions/2951
 
 ### P1-35. Read the Windows 11 release-health pages for the target version (25H2/26H2)
@@ -353,7 +353,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - an old wimlib fails on non-ASCII descriptions (fixed in ≥ 1.14.3);
   - driver add-on conversion needs `install.wim`, not `install.esd`.
 - **Fix:** if we add a UUP path, use one language only, pin wimlib ≥ 1.14.3, and verify SHA-1/SHA-256 from the UUP file list.
-- **Coverage:** Missing.
+- **Coverage:** Covered as a plan. One language, wimlib 1.14.3 or newer, and install.wim for driver add-ons. No download runs from this check.
 - **Sources:** https://github.com/abbodi1406/BatUtil/issues/34 ; https://wimlib.net/forums/viewtopic.php?t=679 ; https://github.com/abbodi1406/BatUtil/issues/63
 
 ### P2-38. Debloat or trimmed images (tiny11) break cumulative updates: don't offer component removal
