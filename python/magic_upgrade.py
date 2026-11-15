@@ -448,7 +448,6 @@ class App(tk.Tk):
 
             tk.Entry(iso_row, textvariable=iso_var).pack(side="left", fill="x", expand=True)
             tk.Button(iso_row, text="Use ISO", command=_take_iso, bg="#1e293b", fg="#e2e8f0", relief="flat").pack(side="right", padx=(6, 0))
-            iso_var.trace_add("write", lambda *_a: None)
         except Exception:
             pass
         self._count_alive = False
