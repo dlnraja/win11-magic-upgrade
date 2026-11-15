@@ -174,7 +174,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - WimMount → re-register `wimmount.sys`.
   - Gated → safeguard hold (see P1-16).
   - Feed the table into auto-diag issue labels.
-- **Coverage:** Missing (grep found none of these rule names).
+- **Coverage:** Covered. `setupdiag_rules.py` maps the documented rule names to an action, a message, and an auto-diag label.
 - **Sources:** https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag
 
 ### P1-15. Run `setup.exe /compat scanonly` before the real run, and decode its exit codes
@@ -334,7 +334,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-35. Read the Windows 11 release-health pages for the target version (25H2/26H2)
 - **Problem:** Known issues and holds change monthly (for example the 25H2 page now lists issues tied to specific KBs; 26H2 is rolling out).
 - **Fix:** have the veille routine fetch the release-health page for the target version weekly and diff it into `data/known_issues.json` (with source URLs). The app reads it offline and shows matching issues in pre-flight.
-- **Coverage:** Missing as data (26H2 appears in the version planner).
+- **Coverage:** Covered. The app reads release-health data offline.
 - **Sources:** https://learn.microsoft.com/en-us/windows/release-health/status-windows-11-25h2 ; https://learn.microsoft.com/en-us/windows/release-health/known-issues/browse/
 
 ### P1-36. Check `wimmount.sys` registration before the upgrade (`PreReleaseWimMountDriverFound`)
@@ -401,7 +401,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P2-44. GRUB-side guidance pack in reports (os-prober, efibootmgr, refind `--usedefault`)
 - **Problem:** After Windows touches the ESP, Linux users need the order restored (`efibootmgr -o`). Windows may vanish from GRUB because of `GRUB_DISABLE_OS_PROBER`. rEFInd suggests the `--usedefault` fallback, or `bcdedit /set {bootmgr} path \EFI\refind\refind_x64.efi`.
 - **Fix:** when Linux EFI trees are detected, append a short, sourced "Linux side" section to the user report and the GitHub issue. Don't run `bcdedit /set {bootmgr} path` ourselves; it is user-opt-in only.
-- **Coverage:** Missing.
+- **Coverage:** Partial. A Linux-side note is added when EFI trees are restored. `bcdedit /set {bootmgr} path` stays opt-in and is not run.
 - **Sources:** https://www.rodsbooks.com/refind/bootcoup.html ; https://unix.stackexchange.com/questions/758353/resolving-dual-boot-issue-windows-not-showing-in-grub-menu ; https://www.kali.org/docs/troubleshooting/dual-boot/
 
 ### P2-45. System Reserved (MBR) enlarge path: document the "recreate from Setup" fallback **[SAFETY]**
