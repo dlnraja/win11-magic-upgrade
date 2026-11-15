@@ -3,10 +3,16 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
+if "engine" not in sys.modules:
+    pkg = types.ModuleType("engine")
+    pkg.__path__ = [str(ROOT / "python" / "engine")]  # type: ignore[attr-defined]
+    pkg.__package__ = "engine"
+    sys.modules["engine"] = pkg
 
 from engine.post_op_verify import empty_regen_ledger, save_regen_ledger  # noqa: E402
 from engine.rescue_env import bcd_rescue_commands, plan_rescue_environment  # noqa: E402
@@ -33,6 +39,8 @@ def test_signed_winre_is_armed_once_per_budget() -> None:
     assert "IgnoreAllFailures" not in " ".join(flat)
     script = Path(first["script"]).read_text(encoding="ascii")
     assert "bcdboot.exe" in script
+    assert "/f UEFI" in script and "/f BIOS" in script
+    assert "bootrec" not in script.lower()
     assert "post-op-verify-and-rollback" in script
     assert first["linux"]["enabled"] is False
     second = plan_rescue_environment(esp_root=esp, regen_ledger=regen)

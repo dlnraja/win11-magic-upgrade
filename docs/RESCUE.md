@@ -20,9 +20,18 @@ The script on the ESP records the same repair order as the running app: classify
 
 `MAGIC_WINRE_INJECT` is off by default, so `winpeshl.ini` is not copied into `Winre.wim`. Turning it on marks the plan as no longer preserving the signed image. Leave it off when Secure Boot is on.
 
-## Optional Linux ramdisk
+## Optional Linux plan B
 
-`MAGIC_LINUX_RESCUE=1` only writes a plan for a GPL or MIT ramdisk chain-loaded by the existing OpenDuet or GRUB path. Nothing is downloaded and no disk is written. The plan is refused while Secure Boot is on.
+`MAGIC_LINUX_RESCUE=1` only writes a plan. Nothing is downloaded and no disk is written. The plan is refused while Secure Boot is on, because a Linux ramdisk is not the signed Windows boot path.
+
+When it is allowed:
+
+1. Keep the existing OpenDuet or GRUB entry. Do not replace Windows Boot Manager.
+2. Chain-load a GPL-2.0-or-later or MIT ramdisk from that entry.
+3. Do not use a paid rescue image.
+4. If Secure Boot must stay on, use the signed WinRE path instead and enroll no extra key.
+
+The WinRE script itself tries `bcdboot C:\Windows /f UEFI` first and `bcdboot C:\Windows /f BIOS` only when that copy fails. It does not call `bootrec /fixboot`. Copying the script into `Winre.wim` still requires `MAGIC_WINRE_INJECT=1`.
 
 ## Sources
 
