@@ -552,6 +552,14 @@ def verify_iso_before_setup(
     )
 
     log(f"Strict ISO verify: {iso_path.name} (Win{win} {arch} min_build≥{min_build})", "STEP")
+    if Path(iso_path).is_dir():
+        root = Path(iso_path)
+        has_image = (root / "sources" / "install.wim").is_file() or (root / "sources" / "install.esd").is_file()
+        if (root / "setup.exe").is_file() and has_image:
+            log(f"Using extracted Windows media (offline): {root}", "OK")
+            return True
+        log("Extracted media rejected: setup.exe or install.wim/esd is missing", "ERROR")
+        return False
     info = inspect_iso(iso_path, compute_hash=False, remount=True)
     if not getattr(info, "verified", False):
         log(

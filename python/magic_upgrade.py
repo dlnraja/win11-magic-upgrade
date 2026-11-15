@@ -505,6 +505,42 @@ class App(tk.Tk):
             )
             cb.pack(anchor="w", pady=1)
 
+        from engine.local_iso import remember_iso_path, saved_iso_path  # type: ignore
+
+        iso_row = tk.Frame(wrap, bg="#111827")
+        iso_row.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Label(
+            iso_row,
+            text="Local ISO",
+            font=("Segoe UI", 9),
+            fg="#e2e8f0",
+            bg="#111827",
+        ).pack(side="left")
+        self._iso_var = tk.StringVar(value=saved_iso_path())
+        tk.Entry(iso_row, textvariable=self._iso_var).pack(side="left", fill="x", expand=True, padx=6)
+
+        def _browse_iso() -> None:
+            from tkinter import filedialog
+
+            chosen = filedialog.askopenfilename(
+                title="Windows ISO",
+                filetypes=[("ISO image", "*.iso"), ("All files", "*.*")],
+            )
+            if chosen:
+                self._iso_var.set(chosen)
+                remember_iso_path(chosen)
+
+        tk.Button(
+            iso_row,
+            text="Browse",
+            command=_browse_iso,
+            bg="#1e293b",
+            fg="#e2e8f0",
+            activebackground="#334155",
+            relief="flat",
+            padx=8,
+        ).pack(side="right")
+
         tip = tk.Label(
             wrap,
             text=self.t.get(
@@ -531,6 +567,12 @@ class App(tk.Tk):
 
     def _apply_gui_options(self) -> None:
         vals = self._option_values()
+        try:
+            from engine.local_iso import remember_iso_path  # type: ignore
+
+            remember_iso_path(self._iso_var.get().strip())
+        except Exception:
+            pass
         try:
             self._gui_panel["save"](vals)
             self._gui_panel["apply"](vals)
@@ -1462,6 +1504,7 @@ Win11 Magic Upgrade - CLI
   Win11MagicUpgrade.exe --cli --repair-before-reboot
   Win11MagicUpgrade.exe --cli --diagnose
   Win11MagicUpgrade.exe --cli --oneclick
+  Win11MagicUpgrade.exe --cli --iso D:\\ISO\\Win11.iso --oneclick
   Win11MagicUpgrade.exe --cli --dry-run
   Win11MagicUpgrade.exe --cli --resume | --boot-resume
   Win11MagicUpgrade.exe --cli --bypass | --mbr | --srp | --hybrid
@@ -1522,6 +1565,7 @@ Env (selected):
   MAGIC_DU_CAB_DIR=            Offline Dynamic Update .cab folder (staged before Setup)
   MAGIC_DU_OFFLINE=1           Force /dynamicupdate disable when cabs staged
   MAGIC_ISO_DIRS=              Extra ISO search dirs (; separated)
+  MAGIC_ISO=                   Local ISO or extracted setup folder (--iso)
   MAGIC_SRP_CONTINUE=1         DANGER: continue after ESP/SRP fail
   MAGIC_BLOCK_VISTA=1          Hard-block Vista One-Click
   MAGIC_OPENDUET_PREPARE=1     Stage OpenDuet files during One-Click (no disk write)
@@ -1592,11 +1636,17 @@ def main() -> None:
 def _main_after_no_args() -> None:
     root = app_root()
     _ensure_sys_path(root)
-    argv = sys.argv[1:]
+    from engine.local_iso import apply_cli_iso, start_background_scan  # type: ignore
+
+    argv = apply_cli_iso(list(sys.argv[1:]))
     argv_l = [a.lower() for a in argv]
     if any(a in argv_l for a in ("-h", "--help", "/?")):
         _emit_cli_help()
         raise SystemExit(0)
+    try:
+        start_background_scan()
+    except Exception:
+        pass
     try:
         from engine.uia_guard import mark_app_start  # type: ignore
 
