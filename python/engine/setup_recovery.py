@@ -399,6 +399,14 @@ def scan_panther_codes(*, max_bytes: int = 2_000_000) -> RecoveryPlan:
         plan.secondary_disk_hint = True
     for fd in plan.setupdiag_findings[:8]:
         plan.actions.append(f"SetupDiag: {fd}")
+    try:
+        from .setupdiag_rules import actions_for_findings
+
+        for row in actions_for_findings(plan.setupdiag_findings):
+            plan.actions.append(f"SetupDiag {row['rule']}: {row['message']}")
+            plan.notes.append(f"label:{row['label']}")
+    except Exception:
+        pass
     return plan
 
 
