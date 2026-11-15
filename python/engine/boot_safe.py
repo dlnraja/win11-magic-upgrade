@@ -599,7 +599,13 @@ def try_bootrec_repair() -> list[str]:
         else:
             return actions
 
+    from .boot_decisions import bootrec_fixboot_allowed
+
     log("bootrec available — attempting non-destructive repair...", "STEP")
+    firmware = _firmware()
+    if not bootrec_fixboot_allowed(firmware):
+        log("bootrec /fixboot is not used on UEFI. bcdboot writes the EFI boot files.", "WARN")
+        return ["bootrec-skipped-uefi"]
     for flag in ("/fixboot", "/rebuildbcd"):
         # /fixmbr only on MBR disks — skip by default to avoid GPT harm
         code, out = _run([str(bootrec), flag], timeout=180)

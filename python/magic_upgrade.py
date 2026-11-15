@@ -1643,6 +1643,11 @@ def _main_after_no_args() -> None:
     if any(a in argv_l for a in ("-h", "--help", "/?")):
         _emit_cli_help()
         raise SystemExit(0)
+    if "--boot-info" in argv_l:
+        from engine.boot_decisions import collect_boot_info  # type: ignore
+
+        print(collect_boot_info())
+        raise SystemExit(0)
     try:
         start_background_scan()
     except Exception:

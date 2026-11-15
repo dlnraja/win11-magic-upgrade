@@ -238,19 +238,19 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - a plain GO/NO-GO card in the GUI;
   - a free "trigger" action (`AvailableUpdates` 0x40 then 0x100, plus the `\Microsoft\Windows\PI\Secure-Boot-Update` task), gated on BitLocker being suspended (P0-2) and only for DB plus boot manager, never 0x80/0x200;
   - a verify step (db contains "Windows UEFI CA 2023"; bootmgfw signer).
-- **Coverage:** Partial (reads exist; no guided trigger or verify).
+- **Coverage:** Covered. A GO/NO-GO card is produced from UEFICA2023Status and UEFICA2023Error. Writing db stays out of this check.
 - **Sources:** https://techcommunity.microsoft.com/blog/windows-itpro-blog/secure-boot-playbook-for-certificates-expiring-in-2026/4469235 ; https://support.microsoft.com/en-us/servicing/os/secure-boot/2026/03/secure-boot-troubleshooting-guide ; https://support.microsoft.com/en-us/servicing/os/secure-boot/2025/06/windows-secure-boot-certificate-expiration-and-ca-updates ; https://github.com/ajf8729/BlackLotus
 
 ### P1-24. DBX updates fail with 0x800F0922 when the firmware or loader is incompatible
 - **Problem:** KB5012170 (Secure Boot DBX) fails with 0x800f0922 on incompatible firmware and can trigger BitLocker recovery after 1–2 restarts. Microsoft's guidance is `manage-bde -protectors -disable %systemdrive% -rebootcount 2` and a firmware update.
 - **Fix:** in the error catalog, distinguish "0x800F0922 + DBX/SecureBoot in CBS" (firmware: update the BIOS) from "0x800F0922 + ESP space" (P0-8). Don't apply ESP fixes for a firmware-class error.
-- **Coverage:** Partial (0x800F0922 is mapped generically).
+- **Coverage:** Covered. 0x800F0922 plus DBX or KB5012170 is a firmware error. The same code plus ESP or EFI is the space error. They are not treated as the same fix.
 - **Sources:** https://support.microsoft.com/en-us/servicing/os/windows-server/2022/02/kb5012170-security-update-for-secure-boot-dbx ; https://www.bleepingcomputer.com/news/microsoft/windows-kb5012170-update-causing-bitlocker-recovery-screens-boot-issues/
 
 ### P1-25. `bootrec /fixboot` "Access is denied" on UEFI: never rely on bootrec there
 - **Problem:** `bootrec /fixboot` is an MBR/PBR tool. On UEFI it commonly returns "Access is denied". The working fix is `bcdboot <win> /s <ESP> /f UEFI` with verified letters.
 - **Fix:** make sure the rescue scripts (`boot_emergency.py`, rescue_env) don't call bootrec when the firmware is UEFI. Add the rule to the error catalog: "Access is denied" from bootrec means switch to bcdboot.
-- **Coverage:** Partial (bootrec appears in 4 modules; verify the UEFI gating).
+- **Coverage:** Covered. `bootrec /fixboot` is skipped when the firmware is UEFI. bcdboot is the UEFI path.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/3308763/(w10)-bootrec-fixboot-access-is-denied-even-after?forum=windows-all&referrer=answers ; https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting
 
 ### P1-26. bcdboot "Failure when attempting to copy boot files": a decision tree
@@ -266,7 +266,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   3. the target has free space ≥ 10 MB.
 
   Use `/v` and parse the verbose output into the catalog. Retry with `/f ALL` only on removable or BIOS targets.
-- **Coverage:** Partial (123/112 handled).
+- **Coverage:** Covered. bcdboot is refused without BCD-Template, the right filesystem, or 10 MB free. `/f ALL` is not the first retry on UEFI.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11 ; https://learn.microsoft.com/en-us/answers/questions/5926793/bcdboot-fails-with-failure-when-attempting-to-copy
 
 ### P1-27. Fast Startup or hibernation leaves NTFS "hibernated" and breaks dual-boot or offline repair
@@ -283,7 +283,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 - **Problem:** Recent reports describe inaccessible Storage Spaces after a 25H2 CU (KB5067036) and ReFS volumes inaccessible after a 10 to 11 upgrade. Upgraded pools also can't be read by older Windows.
 - **Detect:** `Get-StoragePool` / `Get-VirtualDisk` health through the CIM shim, ReFS volumes (FileSystem == ReFS), and Dev Drive.
 - **Fix:** pre-flight WARN plus a backup prompt. Never run a pool "upgrade" automatically. Record pool and ReFS versions in the report so the auto-diag can spot regressions.
-- **Coverage:** Partial (a Storage Spaces soft warning exists in `enrich.py`).
+- **Coverage:** Covered. An unhealthy pool or a ReFS volume is a backup warning. The pool is not upgraded.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/5603446/kb5067036-and-w11-25h2-inaccessible-storage-spaces ; https://techcommunity.microsoft.com/t5/windows-11/refs-volume-inaccessible-after-update-from-windows-10-22h2-to/m-p/4224060 ; https://support.microsoft.com/en-us/windows/experience/storage-filemanagement/storage-spaces-in-windows
 
 ### P1-29. OneDrive Known Folder Move: "my files disappeared" after the upgrade
@@ -310,13 +310,13 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - the BitLocker status.
 
   Redact it, then attach it to the auto-diag issue.
-- **Coverage:** Partial (support_zip / inventory_export collect pieces).
+- **Coverage:** Covered. `--boot-info` text is assembled from already collected read-only sections.
 - **Sources:** https://sourceforge.net/p/boot-repair/home/Home/
 
 ### P1-32. UEFI boot-entry manager plus ESP backup and restore (EasyUEFI parity, free)
 - **Problem:** EasyUEFI's free edition (home use) lists, creates, reorders, disables and backs up NVRAM boot entries, and backs up, restores or rebuilds the ESP. We back up the ESP but don't expose NVRAM entries.
 - **Fix:** an NVRAM view in the GUI from `bcdedit /enum firmware` (read-only by default). Add "restore saved order" and "remove a stale entry pointing to a non-existent partition GUID" (opt-in). Save the full firmware order with every boot snapshot so rollback restores it too.
-- **Coverage:** Partial.
+- **Coverage:** Covered for the read-only view. Stale firmware entries are listed. Removing one requires `MAGIC_REMOVE_STALE_BOOT=1`.
 - **Sources:** https://www.easyuefi.com/easyuefi/ ; https://www.easyuefi.com/easyuefi/faq/Backup-EFI-System-Partition.html ; https://www.easyuefi.com/easyuefi/faq/Rebuild-EFI-System-Partition.html
 
 ### P1-33. Inject the PC's critical drivers into the rescue WinPE/WinRE (Macrium "Fix boot problems" / ReDeploy idea)
