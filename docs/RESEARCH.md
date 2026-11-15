@@ -180,21 +180,21 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-15. Run `setup.exe /compat scanonly` before the real run, and decode its exit codes
 - **Problem:** `compat_scan.py` deliberately doesn't run the real scan. Microsoft's own pre-check, `setup.exe /auto upgrade /quiet /compat scanonly /copylogs <dir>`, returns 0xC1900210 (no issues) or 0xC1900208 (actionable compat issues). Other codes, such as 0xC1900200/0xC1900202 (hardware) and 0xC190020E (disk space), are documented.
 - **Fix:** once the ISO is mounted (already done for the upgrade), run scanonly with a timeout. Parse `CompatData_*.xml` and the exit code. Use `/copylogs` to gather Panther logs into the report automatically. Use `/noreboot` on the real run so we can verify the boot state before the first reboot (fits "reboot only on GO").
-- **Coverage:** Partial.
+- **Coverage:** Covered. `setup.exe /compat scanonly /copylogs /noreboot` is built and its exit codes are decoded. It runs only with `MAGIC_COMPAT_SCANONLY=1`.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-command-line-options?view=windows-11 ; https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-error-codes ; https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/use-windows-setup-compatibility-scan-logs-to-identify-blocking-issues
 
 ### P1-16. Detect safeguard holds and explain them before bypassing
 - **Problem:** "The update is on its way" means a safeguard hold. Microsoft's example: the Intel Smart Sound Technology driver 10.29/10.30.0.5152 on 11th gen. Bypassing holds (`DisableWUfBSafeguards`) can lead to the very BSOD the hold prevents.
 - **Detect:** read the Appraiser `GatedBlockId` / `RedReason` values from `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\TargetVersionUpgradeExperienceIndicators\*`. Cross-check installed driver versions against a small, sourced table of known holds (for example IntcAudioBus 10.29/10.30.0.5152).
 - **Fix:** show the hold and the fix (update the driver from the OEM or Windows Update) first. Only then offer the bypass. Today the preventive pack sets `DisableWUfBSafeguards=1` unconditionally; make it opt-in and log the reason.
-- **Coverage:** Partial (the bypass exists; no hold explanation).
+- **Coverage:** Covered. A known hold is explained first. `DisableWUfBSafeguards` is applied only with `MAGIC_DISABLE_SAFEGUARDS=1`.
 - **Sources:** https://learn.microsoft.com/en-us/windows/deployment/update/safeguard-holds ; https://learn.microsoft.com/en-us/windows/release-health/known-issues/known-issue-2746 ; https://github.com/AveYo/MediaCreationTool.bat/blob/main/bypass11/Skip_TPM_Check_on_Dynamic_Update.cmd
 
 ### P1-17. Language and edition mismatch greys out "Keep personal files and apps"
 - **Problem:** If the ISO's base language (for example en-US vs en-GB, or fr-FR) or edition doesn't match the installed OS, Setup offers only "Nothing", which looks like a clean install. This is the SetupDiag rule `HardblockMismatchedLanguage`.
 - **Detect:** read `HKLM\SYSTEM\CurrentControlSet\Control\Nls\Language\InstallLanguage` (already read in `enrich.py`), the EditionID, and the architecture. Compare them with `iso_inspect` (the language of install.wim/esd).
 - **Fix:** hard-block the upgrade when the language or edition doesn't match and the user chose keep-apps. Pick the matching ISO language automatically (Fido/MCT language list). For editions, use `ei.cfg` (already present).
-- **Coverage:** Partial.
+- **Coverage:** Covered. Keep-apps is refused when the ISO language or edition does not match the installed OS.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/4042358/unable-to-keep-personal-files-and-apps-when-attemp ; https://www.elevenforum.com/t/windows-setup-keep-personal-files-and-folders-and-this-first-option-are-greyed-out.45855/ ; https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag
 
 ### P1-18. Corrupt or "Account Unknown" profiles: 0x8007001F-0x20006 and MIGRATE_DATA failures
@@ -210,7 +210,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - an offline "Memory integrity incompatible drivers" list, by reading `CodeIntegrity` events 3087/3033 or the HVCI incompatible list;
   - opt-in GPU driver rollback to the Microsoft Basic Display Adapter;
   - a staged clean boot (`msconfig`-equivalent registry) that the bounded-attempt framework undoes automatically.
-- **Coverage:** Partial (subcode table exists in RESEARCH_FORUMS.md / setup_recovery).
+- **Coverage:** Covered. 0x20017, 0x30018, and 0x40017 map to SafeOS, first boot, and second boot. Basic display rollback stays opt-in.
 - **Sources:** https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-resolution-procedures ; https://learn.microsoft.com/en-us/answers/questions/3954877/0xc1900101-0x40017-error-during-windows-11-upgrade ; https://learn.microsoft.com/en-us/answers/questions/3914053/24h2-upgrade-error-0xc1900101-0x40017-the-install
 
 ### P1-20. Rufus-style `setup.exe` wrapper behavior: `/auto upgrade` must stay silent with bypasses
@@ -340,7 +340,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-36. Check `wimmount.sys` registration before the upgrade (`PreReleaseWimMountDriverFound`)
 - **Problem:** SetupDiag has a rule for an unrecognised `wimmount.sys` registration that blocks Setup.
 - **Fix:** we register WIMMount in the preventive pack. Add a check of the driver path, version and signature, and map the rule to "re-register the inbox wimmount".
-- **Coverage:** Partial.
+- **Coverage:** Covered. A path that is not the inbox `wimmount.sys` maps to re-registering that driver.
 - **Sources:** https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag
 
 ---
