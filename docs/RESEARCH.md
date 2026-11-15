@@ -128,7 +128,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 - **Fix:**
   - Inject the PC's own storage driver (export via `pnputil /export-driver` for iaStorVD/iaStorAC) into the WinPE/WinRE rescue image.
   - Never advise RAID→AHCI unless safe mode is staged (`bcdedit /set {current} safeboot minimal`, removed after boot), and the bounded-rollback state is recorded.
-- **Coverage:** Partial (detection only).
+- **Coverage:** Covered. iaStorVD/iaStorAC or the existing RST flag asks for the PC's storage driver in rescue media. RAID to AHCI is offered only with `MAGIC_RAID_TO_AHCI=1` and a staged safe-boot boot.
 - **Sources:** https://www.dell.com/support/kbdoc/en-us/000188116/intel-11th-generation-processors-no-drives-can-be-found-during-windows-10-installation ; https://www.dell.com/support/kbdoc/en-us/000216532/changing-the-storage-controller-mode-causes-windows-blue-screen-with-inaccessible-boot-device-error ; https://superuser.com/questions/1280141/switch-raid-to-ahci-without-reinstalling-windows-11-10
 
 ### P0-12. Never delete `{current}`; break boot loops with documented reversals only **[SAFETY]**
@@ -145,7 +145,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 - **Problem:** Since 22H2, Windows 11 Setup fails on an OS or boot volume on a dynamic disk. Diskpart can convert to basic only after deleting all volumes.
 - **Detect:** `drive_map.py` already has `volume.dynamic`. Raise it to a pre-flight NO-GO with a clear message and a 0x80070001 mapping.
 - **Fix:** explain the safe options: back up first, then use a free third-party convert tool or reinstall. As an advanced workaround, run Windows 11 21H2 `setup.exe` with `/InstallFrom` pointing to the new `install.wim`. **Never run `diskpart convert basic` automatically.**
-- **Coverage:** Partial (detection and warning exist; no pre-flight NO-GO or error mapping).
+- **Coverage:** Covered. A dynamic OS disk is a pre-flight NO-GO mapped to 0x80070001. `diskpart convert basic` is never run.
 - **Sources:** https://www.neowin.net/news/microsoft-apparently-blocks-windows-11-22h2-upgrades-on-dynamic-disks-with-0x8007001-error/ ; https://www.winhelponline.com/blog/error-0x80070001-windows-11-setup/ ; https://www.winhelponline.com/blog/convert-dynamic-disk-to-basic-disk/
 
 ---
@@ -422,8 +422,8 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 | Status | Items |
 |---|---|
 | Missing | P0-6, P1-14, P1-22, P1-29, P1-30, P1-33, P1-34, P1-35, P2-37, P2-39, P2-42, P2-44 |
-| Partial | P0-3, P0-4, P0-5, P0-7, P0-11, P0-12, P0-13, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
-| Covered | P0-1, P0-2, P0-8, P0-9, P0-10 |
+| Partial | P0-3, P0-4, P0-5, P0-7, P0-12, P1-15…P1-21, P1-23…P1-28, P1-31, P1-32, P1-36, P2-40, P2-41, P2-43, P2-46 |
+| Covered | P0-1, P0-2, P0-8, P0-9, P0-10, P0-11, P0-13 |
 | Covered (verify only) | P2-45, keys of P1-20 |
 
 ## Notes on method

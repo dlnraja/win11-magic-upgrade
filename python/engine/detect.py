@@ -410,7 +410,10 @@ def print_report(r: Report) -> None:
     if getattr(r, "is_ltsc", False):
         log("LTSC/LTSB edition — prefer matching volume ISO; retail may block", "WARN")
     if getattr(r, "has_rst_raid", False):
-        log("Intel RST / RAID storage controller detected — update RST before Setup", "WARN")
+        from .storage_precheck import raid_plan
+
+        raid = raid_plan(has_rst=True)
+        log(raid["message"], "WARN")
     log(f"Edition: {r.edition_id} | Locale: {r.locale} | RAM: {r.ram_gb} GB | Free: {r.free_gb} GB")
     log(f"Disk #{r.disk_number if r.disk_number is not None and r.disk_number >= 0 else '?'}: {r.partition_style} | UEFI={r.is_uefi} SecureBoot={r.secure_boot}")
     log(f"CPU: {r.cpu_name} | SSE4.2/POPCNT={r.sse42} | TPM={r.tpm_present}")
