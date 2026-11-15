@@ -413,7 +413,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P2-46. Unsupported-PC update reality: monthly CUs yes, feature updates via ISO, and POPCNT hard stop
 - **Problem:** Community threads confirm that bypass-installed PCs get monthly CUs but not feature updates via Windows Update, unless MoSetup or IFEO tricks are used. CPUs without POPCNT/SSE4.2 can't run 24H2+ at all.
 - **Fix:** already a hard stop (Win10 22H2 keep-apps). Add a GUI explainer: "Les mises à jour mensuelles continueront ; la prochaine version annuelle passera par l'app (One-Click)". Schedule a yearly check through auto-update.
-- **Coverage:** Covered (hard stop); Missing (explainer).
+- **Coverage:** Covered. The hard stop remains. The disclaimer tells the user that monthly updates may continue and the next yearly version is not guaranteed.
 - **Sources:** https://www.reddit.com/r/Windows11/comments/1in9u0s/how_would_you_install_major_updates_later_on_like/ ; https://github.com/builtbybel/FlyOOBE/issues/482 ; https://github.com/pbatard/rufus/issues/2568
 
 ---

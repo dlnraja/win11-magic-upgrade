@@ -428,6 +428,29 @@ class App(tk.Tk):
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
         self.append("Boot check runs in this window. The app stays open while it works.\n")
+        try:
+            from engine.flyoobe import checklist, disclaimer  # type: ignore
+
+            self.append(disclaimer() + "\n")
+            for row in checklist({}):
+                self.append(f"Check {row['name']}: {row['detail']}\n")
+            iso_row = tk.Frame(self, bg="#0f172a")
+            iso_row.pack(fill="x", padx=20, pady=(0, 4))
+            iso_var = tk.StringVar()
+
+            def _take_iso(*_args: object) -> None:
+                from engine.flyoobe import accept_dropped_iso  # type: ignore
+
+                chosen = accept_dropped_iso(iso_var.get())
+                if chosen:
+                    self.append(f"Local ISO: {chosen}\n")
+                else:
+                    self.append("Drop or paste a path that ends in .iso and exists on this PC.\n")
+
+            tk.Entry(iso_row, textvariable=iso_var).pack(side="left", fill="x", expand=True)
+            tk.Button(iso_row, text="Use ISO", command=_take_iso, bg="#1e293b", fg="#e2e8f0", relief="flat").pack(side="right", padx=(6, 0))
+        except Exception:
+            pass
         self._count_alive = False
         self._count_job = None
         if not self._auto_action:
