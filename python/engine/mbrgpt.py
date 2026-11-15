@@ -606,10 +606,8 @@ def convert_mbr_to_gpt(disk_number: int) -> tuple[bool, int, str]:
         log(f"mbr2gpt convert: {line}")
     if code in (0, 100):
         repair_boot_manager(prefer_uefi=True)
-        log(
-            "Conversion OK. IMPORTANT: enter firmware setup and set boot mode to UEFI "
-            "(disable CSM/Legacy) before reboot if the PC still uses Legacy BIOS.",
-            "WARN",
-        )
+        from .mbr2gpt_checks import csm_advice
+
+        log(csm_advice(), "WARN")
         return True, code, CODES.get(code, "OK")
     return False, code, CODES.get(code, f"code {code}")
