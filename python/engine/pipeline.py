@@ -721,6 +721,24 @@ def run_diagnose(sink: Callable[[str], None] | None = None) -> dict:
     except Exception as e:
         log(f"Latest Win11 detection failed — using saved/floor target: {e}", "WARN")
     print_report(r)
+    try:
+        from .space_guards import esp_plan, winre_plan
+
+        cbs = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Logs" / "CBS" / "CBS.log"
+        cbs_text = ""
+        if cbs.is_file():
+            cbs_text = cbs.read_text(encoding="utf-8", errors="replace")[-30000:]
+        space = esp_plan(free_mb=None, cbs_text=cbs_text)
+        if space["tight"]:
+            log(
+                "ESP space or 0x800F0922: clean EFI fonts, remeasure, and enlarge only with MAGIC_ESP_ENLARGE=1.",
+                "WARN",
+            )
+        winre = winre_plan(free_mb=None)
+        if winre["actions"]:
+            log("WinRE: " + ", ".join(winre["actions"]), "WARN")
+    except Exception as exc:
+        log(f"ESP/WinRE space check skipped: {exc}", "WARN")
     plan = build_plan(r)
     print_plan(plan)
     chain = build_version_chain(r)
