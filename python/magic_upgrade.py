@@ -427,6 +427,14 @@ class App(tk.Tk):
         if is_admin():
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
+        try:
+            from engine.flyoobe import checklist, disclaimer  # type: ignore
+
+            self.append(disclaimer() + "\n")
+            for row in checklist({}):
+                self.append(f"Check {row['name']}: {row['detail']}\n")
+        except Exception:
+            pass
         self._count_alive = False
         self._count_job = None
         if not self._auto_action:
