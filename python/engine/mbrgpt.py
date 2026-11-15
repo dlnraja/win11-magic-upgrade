@@ -404,15 +404,43 @@ def _repair_boot_locked(prefer_uefi: bool, sys_root: str, bcdboot: Path) -> bool
                     code, out = _run(cmd, timeout=180)
                     log(f"bcdboot {' '.join(cmd[1:])} -> {code}")
                     if bcdboot_succeeded(code, out or ""):
+                        from .firmware_nvram import ensure_fallback_loader, ensure_firmware_entry
+
+                        if space_root is not None:
+                            ensure_fallback_loader(space_root)
+                        nvram = ensure_firmware_entry(
+                            exe=str(bcdboot),
+                            windows=source,
+                            mode=mode,
+                            runner=lambda cmd, timeout=60: _run(cmd, timeout=timeout),
+                        )
+                        if not nvram.get("ok"):
+                            log("bcdboot wrote the ESP files, but no firmware {bootmgr} entry is present.", "ERROR")
+                            ok = False
+                            break
                         ok = True
-                        log(f"Boot Manager repaired ({mode}) after freeing ESP space", "OK")
+                        log(f"Boot Manager repaired ({mode}) after freeing ESP space; firmware {nvram.get('action')}", "OK")
                         break
                     if bcdboot_disk_full(code, out or ""):
                         log("BCD still error 112 after the minimal locale retry. The partition was not resized.", "ERROR")
                 break
             if bcdboot_succeeded(code, out or ""):
+                from .firmware_nvram import ensure_fallback_loader, ensure_firmware_entry
+
+                if space_root is not None:
+                    ensure_fallback_loader(space_root)
+                nvram = ensure_firmware_entry(
+                    exe=str(bcdboot),
+                    windows=source,
+                    mode=mode,
+                    runner=lambda cmd, timeout=60: _run(cmd, timeout=timeout),
+                )
+                if not nvram.get("ok"):
+                    log("bcdboot wrote the ESP files, but no firmware {bootmgr} entry is present.", "ERROR")
+                    ok = False
+                    break
                 ok = True
-                log(f"Boot Manager repaired ({mode})", "OK")
+                log(f"Boot Manager repaired ({mode}); firmware entry {nvram.get('action')}", "OK")
                 break
             log(f"bcdboot {mode} failed (exit {code})", "ERROR")
     finally:
