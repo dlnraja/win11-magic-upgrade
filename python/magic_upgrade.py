@@ -427,6 +427,7 @@ class App(tk.Tk):
         if is_admin():
             self.append("Running as Administrator.\n")
         self.append(self.t.get("ready", "Ready.") + "\n")
+        self.append("Boot check runs in this window. The app stays open while it works.\n")
         try:
             from engine.flyoobe import checklist, disclaimer  # type: ignore
 
@@ -1665,6 +1666,11 @@ def _main_after_no_args() -> None:
     argv_l = [a.lower() for a in argv]
     if any(a in argv_l for a in ("-h", "--help", "/?")):
         _emit_cli_help()
+        raise SystemExit(0)
+    if "--boot-info" in argv_l:
+        from engine.boot_decisions import collect_boot_info  # type: ignore
+
+        print(collect_boot_info())
         raise SystemExit(0)
     try:
         start_background_scan()

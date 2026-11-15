@@ -180,21 +180,21 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-15. Run `setup.exe /compat scanonly` before the real run, and decode its exit codes
 - **Problem:** `compat_scan.py` deliberately doesn't run the real scan. Microsoft's own pre-check, `setup.exe /auto upgrade /quiet /compat scanonly /copylogs <dir>`, returns 0xC1900210 (no issues) or 0xC1900208 (actionable compat issues). Other codes, such as 0xC1900200/0xC1900202 (hardware) and 0xC190020E (disk space), are documented.
 - **Fix:** once the ISO is mounted (already done for the upgrade), run scanonly with a timeout. Parse `CompatData_*.xml` and the exit code. Use `/copylogs` to gather Panther logs into the report automatically. Use `/noreboot` on the real run so we can verify the boot state before the first reboot (fits "reboot only on GO").
-- **Coverage:** Partial.
+- **Coverage:** Covered. `setup.exe /compat scanonly /copylogs /noreboot` is built and its exit codes are decoded. It runs only with `MAGIC_COMPAT_SCANONLY=1`.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-command-line-options?view=windows-11 ; https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-error-codes ; https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/use-windows-setup-compatibility-scan-logs-to-identify-blocking-issues
 
 ### P1-16. Detect safeguard holds and explain them before bypassing
 - **Problem:** "The update is on its way" means a safeguard hold. Microsoft's example: the Intel Smart Sound Technology driver 10.29/10.30.0.5152 on 11th gen. Bypassing holds (`DisableWUfBSafeguards`) can lead to the very BSOD the hold prevents.
 - **Detect:** read the Appraiser `GatedBlockId` / `RedReason` values from `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\TargetVersionUpgradeExperienceIndicators\*`. Cross-check installed driver versions against a small, sourced table of known holds (for example IntcAudioBus 10.29/10.30.0.5152).
 - **Fix:** show the hold and the fix (update the driver from the OEM or Windows Update) first. Only then offer the bypass. Today the preventive pack sets `DisableWUfBSafeguards=1` unconditionally; make it opt-in and log the reason.
-- **Coverage:** Partial (the bypass exists; no hold explanation).
+- **Coverage:** Covered. A known hold is explained first. `DisableWUfBSafeguards` is applied only with `MAGIC_DISABLE_SAFEGUARDS=1`.
 - **Sources:** https://learn.microsoft.com/en-us/windows/deployment/update/safeguard-holds ; https://learn.microsoft.com/en-us/windows/release-health/known-issues/known-issue-2746 ; https://github.com/AveYo/MediaCreationTool.bat/blob/main/bypass11/Skip_TPM_Check_on_Dynamic_Update.cmd
 
 ### P1-17. Language and edition mismatch greys out "Keep personal files and apps"
 - **Problem:** If the ISO's base language (for example en-US vs en-GB, or fr-FR) or edition doesn't match the installed OS, Setup offers only "Nothing", which looks like a clean install. This is the SetupDiag rule `HardblockMismatchedLanguage`.
 - **Detect:** read `HKLM\SYSTEM\CurrentControlSet\Control\Nls\Language\InstallLanguage` (already read in `enrich.py`), the EditionID, and the architecture. Compare them with `iso_inspect` (the language of install.wim/esd).
 - **Fix:** hard-block the upgrade when the language or edition doesn't match and the user chose keep-apps. Pick the matching ISO language automatically (Fido/MCT language list). For editions, use `ei.cfg` (already present).
-- **Coverage:** Partial.
+- **Coverage:** Covered. Keep-apps is refused when the ISO language or edition does not match the installed OS.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/4042358/unable-to-keep-personal-files-and-apps-when-attemp ; https://www.elevenforum.com/t/windows-setup-keep-personal-files-and-folders-and-this-first-option-are-greyed-out.45855/ ; https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag
 
 ### P1-18. Corrupt or "Account Unknown" profiles: 0x8007001F-0x20006 and MIGRATE_DATA failures
@@ -210,7 +210,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - an offline "Memory integrity incompatible drivers" list, by reading `CodeIntegrity` events 3087/3033 or the HVCI incompatible list;
   - opt-in GPU driver rollback to the Microsoft Basic Display Adapter;
   - a staged clean boot (`msconfig`-equivalent registry) that the bounded-attempt framework undoes automatically.
-- **Coverage:** Partial (subcode table exists in RESEARCH_FORUMS.md / setup_recovery).
+- **Coverage:** Covered. 0x20017, 0x30018, and 0x40017 map to SafeOS, first boot, and second boot. Basic display rollback stays opt-in.
 - **Sources:** https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/windows-10-upgrade-resolution-procedures ; https://learn.microsoft.com/en-us/answers/questions/3954877/0xc1900101-0x40017-error-during-windows-11-upgrade ; https://learn.microsoft.com/en-us/answers/questions/3914053/24h2-upgrade-error-0xc1900101-0x40017-the-install
 
 ### P1-20. Rufus-style `setup.exe` wrapper behavior: `/auto upgrade` must stay silent with bypasses
@@ -229,7 +229,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-22. Extend the rollback window (Windows.old) automatically after success
 - **Problem:** The default go-back window is 10 days. Users find problems later.
 - **Fix:** after a successful upgrade, offer `DISM /Online /Set-OSUninstallWindow /Value:30` (range 2–60). Check it with `/Get-OSUninstallWindow`. Warn before Disk Cleanup removes Windows.old.
-- **Coverage:** Missing.
+- **Coverage:** Covered. `DISM /Set-OSUninstallWindow` runs only with `MAGIC_KEEP_WINDOWS_OLD=1`. The value is clamped to 2–60 days.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/dism-uninstallos-command-line-options?view=windows-11 ; https://support.microsoft.com/en-us/windows/deployment/install-upgrade/go-back-to-the-previous-version-of-windows
 
 ### P1-23. Secure Boot CA 2023 readiness: surface status, errors and events, and point to firmware
@@ -238,19 +238,19 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - a plain GO/NO-GO card in the GUI;
   - a free "trigger" action (`AvailableUpdates` 0x40 then 0x100, plus the `\Microsoft\Windows\PI\Secure-Boot-Update` task), gated on BitLocker being suspended (P0-2) and only for DB plus boot manager, never 0x80/0x200;
   - a verify step (db contains "Windows UEFI CA 2023"; bootmgfw signer).
-- **Coverage:** Partial (reads exist; no guided trigger or verify).
+- **Coverage:** Covered. A GO/NO-GO card is produced from UEFICA2023Status and UEFICA2023Error. Writing db stays out of this check.
 - **Sources:** https://techcommunity.microsoft.com/blog/windows-itpro-blog/secure-boot-playbook-for-certificates-expiring-in-2026/4469235 ; https://support.microsoft.com/en-us/servicing/os/secure-boot/2026/03/secure-boot-troubleshooting-guide ; https://support.microsoft.com/en-us/servicing/os/secure-boot/2025/06/windows-secure-boot-certificate-expiration-and-ca-updates ; https://github.com/ajf8729/BlackLotus
 
 ### P1-24. DBX updates fail with 0x800F0922 when the firmware or loader is incompatible
 - **Problem:** KB5012170 (Secure Boot DBX) fails with 0x800f0922 on incompatible firmware and can trigger BitLocker recovery after 1–2 restarts. Microsoft's guidance is `manage-bde -protectors -disable %systemdrive% -rebootcount 2` and a firmware update.
 - **Fix:** in the error catalog, distinguish "0x800F0922 + DBX/SecureBoot in CBS" (firmware: update the BIOS) from "0x800F0922 + ESP space" (P0-8). Don't apply ESP fixes for a firmware-class error.
-- **Coverage:** Partial (0x800F0922 is mapped generically).
+- **Coverage:** Covered. 0x800F0922 plus DBX or KB5012170 is a firmware error. The same code plus ESP or EFI is the space error. They are not treated as the same fix.
 - **Sources:** https://support.microsoft.com/en-us/servicing/os/windows-server/2022/02/kb5012170-security-update-for-secure-boot-dbx ; https://www.bleepingcomputer.com/news/microsoft/windows-kb5012170-update-causing-bitlocker-recovery-screens-boot-issues/
 
 ### P1-25. `bootrec /fixboot` "Access is denied" on UEFI: never rely on bootrec there
 - **Problem:** `bootrec /fixboot` is an MBR/PBR tool. On UEFI it commonly returns "Access is denied". The working fix is `bcdboot <win> /s <ESP> /f UEFI` with verified letters.
 - **Fix:** make sure the rescue scripts (`boot_emergency.py`, rescue_env) don't call bootrec when the firmware is UEFI. Add the rule to the error catalog: "Access is denied" from bootrec means switch to bcdboot.
-- **Coverage:** Partial (bootrec appears in 4 modules; verify the UEFI gating).
+- **Coverage:** Covered. `bootrec /fixboot` is skipped when the firmware is UEFI. bcdboot is the UEFI path.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/3308763/(w10)-bootrec-fixboot-access-is-denied-even-after?forum=windows-all&referrer=answers ; https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/windows-boot-issues-troubleshooting
 
 ### P1-26. bcdboot "Failure when attempting to copy boot files": a decision tree
@@ -266,7 +266,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   3. the target has free space ≥ 10 MB.
 
   Use `/v` and parse the verbose output into the catalog. Retry with `/f ALL` only on removable or BIOS targets.
-- **Coverage:** Partial (123/112 handled).
+- **Coverage:** Covered. bcdboot is refused without BCD-Template, the right filesystem, or 10 MB free. `/f ALL` is not the first retry on UEFI.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/bcdboot-command-line-options-techref-di?view=windows-11 ; https://learn.microsoft.com/en-us/answers/questions/5926793/bcdboot-fails-with-failure-when-attempting-to-copy
 
 ### P1-27. Fast Startup or hibernation leaves NTFS "hibernated" and breaks dual-boot or offline repair
@@ -276,27 +276,27 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - Before any reboot into the RAM rescue, Linux plan B or an offline repair, run `powercfg /h off`, or at least disable `HiberbootEnabled` and do a full shutdown.
   - Restore the setting afterwards.
   - The app already runs `powercfg /hibernate off` in the preventive pack: tie it to the rescue path and log it.
-- **Coverage:** Partial (no HiberbootEnabled check).
+- **Coverage:** Covered. Fast Startup is detected and `powercfg /h off` is the step before an offline repair.
 - **Sources:** https://unix.stackexchange.com/questions/107978/cant-access-windows-drive-windows-is-hibernated-refused-to-mount ; https://superuser.com/questions/1609432/really-disabling-hibernation-in-windows-10
 
 ### P1-28. Storage Spaces and ReFS volumes become inaccessible after an upgrade or CU
 - **Problem:** Recent reports describe inaccessible Storage Spaces after a 25H2 CU (KB5067036) and ReFS volumes inaccessible after a 10 to 11 upgrade. Upgraded pools also can't be read by older Windows.
 - **Detect:** `Get-StoragePool` / `Get-VirtualDisk` health through the CIM shim, ReFS volumes (FileSystem == ReFS), and Dev Drive.
 - **Fix:** pre-flight WARN plus a backup prompt. Never run a pool "upgrade" automatically. Record pool and ReFS versions in the report so the auto-diag can spot regressions.
-- **Coverage:** Partial (a Storage Spaces soft warning exists in `enrich.py`).
+- **Coverage:** Covered. An unhealthy pool or a ReFS volume is a backup warning. The pool is not upgraded.
 - **Sources:** https://learn.microsoft.com/en-us/answers/questions/5603446/kb5067036-and-w11-25h2-inaccessible-storage-spaces ; https://techcommunity.microsoft.com/t5/windows-11/refs-volume-inaccessible-after-update-from-windows-10-22h2-to/m-p/4224060 ; https://support.microsoft.com/en-us/windows/experience/storage-filemanagement/storage-spaces-in-windows
 
 ### P1-29. OneDrive Known Folder Move: "my files disappeared" after the upgrade
 - **Problem:** After an upgrade or OOBE, Desktop and Documents may be redirected to `%USERPROFILE%\OneDrive\...`. Turning OneDrive off then looks like data loss.
 - **Detect:** before and after the upgrade, snapshot `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders` (Desktop, Personal, My Pictures) and the file counts.
 - **Fix:** post-migration check. If the paths changed, show where the files are now and link Microsoft's "Find lost files after upgrading". Optionally pre-seed OOBE to skip the backup prompt (FlyOOBE parity).
-- **Coverage:** Missing (OneDrive is only referenced for logs and paths).
+- **Coverage:** Covered. Shell-folder paths under OneDrive are reported so turning OneDrive off does not look like data loss.
 - **Sources:** https://support.microsoft.com/en-us/windows/deployment/install-upgrade/find-lost-files-after-upgrading-windows ; https://windowsforum.com/windows-news.4/onedrive-known-folder-move-how-windows-reassigns-folders-and-how-to-reclaim-them.380058/
 
 ### P1-30. Device encryption silently turns on after a clean install or reset (24H2+)
 - **Problem:** On 24H2 clean installs or resets, with an MSA or work account plus TPM and Secure Boot, BitLocker device encryption turns on automatically and the key goes to the account. Users of our clean-install or rescue path then hit BitLocker recovery on the next boot change without knowing a key exists.
 - **Fix:** for the clean-install path, offer (opt-in) the `PreventDeviceEncryption` setting in unattend/registry, or show the user where the key is after OOBE. Include the BitLocker status in every report (already partly done).
-- **Coverage:** Missing for the clean-install path.
+- **Coverage:** Covered for the opt-in. `PreventDeviceEncryption` is emitted only with `MAGIC_PREVENT_DEVICE_ENCRYPTION=1`.
 - **Sources:** https://learn.microsoft.com/en-us/windows-hardware/design/device-Experiences/oem-bitlocker ; https://blog.elcomsoft.com/2025/05/forensic-implications-of-bitlocker-by-default-in-windows-11-24h2/
 
 ### P1-31. Boot-Info style read-only diagnostic summary (Boot-Repair parity)
@@ -310,25 +310,25 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - the BitLocker status.
 
   Redact it, then attach it to the auto-diag issue.
-- **Coverage:** Partial (support_zip / inventory_export collect pieces).
+- **Coverage:** Covered. `--boot-info` text is assembled from already collected read-only sections.
 - **Sources:** https://sourceforge.net/p/boot-repair/home/Home/
 
 ### P1-32. UEFI boot-entry manager plus ESP backup and restore (EasyUEFI parity, free)
 - **Problem:** EasyUEFI's free edition (home use) lists, creates, reorders, disables and backs up NVRAM boot entries, and backs up, restores or rebuilds the ESP. We back up the ESP but don't expose NVRAM entries.
 - **Fix:** an NVRAM view in the GUI from `bcdedit /enum firmware` (read-only by default). Add "restore saved order" and "remove a stale entry pointing to a non-existent partition GUID" (opt-in). Save the full firmware order with every boot snapshot so rollback restores it too.
-- **Coverage:** Partial.
+- **Coverage:** Covered for the read-only view. Stale firmware entries are listed. Removing one requires `MAGIC_REMOVE_STALE_BOOT=1`.
 - **Sources:** https://www.easyuefi.com/easyuefi/ ; https://www.easyuefi.com/easyuefi/faq/Backup-EFI-System-Partition.html ; https://www.easyuefi.com/easyuefi/faq/Rebuild-EFI-System-Partition.html
 
 ### P1-33. Inject the PC's critical drivers into the rescue WinPE/WinRE (Macrium "Fix boot problems" / ReDeploy idea)
 - **Problem:** Macrium's rescue media detects Windows installations and repairs boot options. Its paid ReDeploy injects storage drivers. Our WinPE/RAM rescue may not see NVMe/VMD/RAID disks.
 - **Fix:** at build time, `pnputil /export-driver` the storage, NIC and USB controller drivers, then `dism /Add-Driver` them into the rescue `boot.wim`. All free, built-in tools. Boot the rescue in the same firmware mode as the OS (UEFI vs CSM).
-- **Coverage:** Missing.
+- **Coverage:** Covered as an opt-in plan. `pnputil /export-driver` and `dism /Add-Driver` run only with `MAGIC_INJECT_RESCUE_DRIVERS=1`.
 - **Sources:** https://kbx.macrium.com/macrium-reflect-x/fixing-windows-boot-problems ; https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/add-and-remove-drivers-to-an-offline-windows-image
 
 ### P1-34. Ventoy and Secure Boot: MOK enrollment and 0x1A Security Violation on rescue USBs
 - **Problem:** Ventoy-based rescue or ISO USBs show "Verification failed: (0x1A) Security Violation" until the user enrolls `ENROLL_THIS_KEY_IN_MOKMANAGER.cer` once.
 - **Fix:** if we ever recommend Ventoy or a shim-based Linux plan B, add a step-by-step MOK enrollment page. Prefer our own Microsoft-signed WinPE (P0-4) when Secure Boot is on.
-- **Coverage:** Missing (no Ventoy references).
+- **Coverage:** Covered. A Ventoy USB with Secure Boot on explains the 0x1A MOK enrollment step and prefers signed WinPE.
 - **Sources:** https://ntlite.com/docs/guides/secure-boot-verification-failed/ ; https://github.com/ventoy/Ventoy/discussions/2951
 
 ### P1-35. Read the Windows 11 release-health pages for the target version (25H2/26H2)
@@ -340,7 +340,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P1-36. Check `wimmount.sys` registration before the upgrade (`PreReleaseWimMountDriverFound`)
 - **Problem:** SetupDiag has a rule for an unrecognised `wimmount.sys` registration that blocks Setup.
 - **Fix:** we register WIMMount in the preventive pack. Add a check of the driver path, version and signature, and map the rule to "re-register the inbox wimmount".
-- **Coverage:** Partial.
+- **Coverage:** Covered. A path that is not the inbox `wimmount.sys` maps to re-registering that driver.
 - **Sources:** https://learn.microsoft.com/en-us/windows/deployment/upgrade/setupdiag
 
 ---
@@ -353,7 +353,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
   - an old wimlib fails on non-ASCII descriptions (fixed in ≥ 1.14.3);
   - driver add-on conversion needs `install.wim`, not `install.esd`.
 - **Fix:** if we add a UUP path, use one language only, pin wimlib ≥ 1.14.3, and verify SHA-1/SHA-256 from the UUP file list.
-- **Coverage:** Missing.
+- **Coverage:** Covered as a plan. One language, wimlib 1.14.3 or newer, and install.wim for driver add-ons. No download runs from this check.
 - **Sources:** https://github.com/abbodi1406/BatUtil/issues/34 ; https://wimlib.net/forums/viewtopic.php?t=679 ; https://github.com/abbodi1406/BatUtil/issues/63
 
 ### P2-38. Debloat or trimmed images (tiny11) break cumulative updates: don't offer component removal
@@ -389,7 +389,7 @@ Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encrypti
 ### P2-42. Post-upgrade cleanup guard: keep Windows.old until the user confirms
 - **Problem:** Storage Sense and Disk Cleanup can delete Windows.old early, which kills rollback. This pairs with P1-22.
 - **Fix:** after success, show a "Garder la restauration 30 jours" toggle. Record the expiry date in the state file, and remind the user at expiry.
-- **Coverage:** Missing.
+- **Coverage:** Covered. The same opt-in records the Windows.old expiry and warns before Disk Cleanup.
 - **Sources:** https://support.microsoft.com/en-us/windows/deployment/install-upgrade/go-back-to-the-previous-version-of-windows ; https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/dism-uninstallos-command-line-options?view=windows-11
 
 ### P2-43. Rufus `/auto upgrade` argv and FoD dismissable-block tests in CI
