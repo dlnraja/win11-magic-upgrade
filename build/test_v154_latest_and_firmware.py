@@ -93,7 +93,7 @@ HEALTH = """
 for existing devices. This version is not offered as an in-place update from 24H2.</p>
 <table>
 <tr><th>Version</th><th>Servicing option</th><th>Build</th></tr>
-<tr><td>26H2</td><td>General Availability</td><td>26300.9711</td></tr>
+<tr><td>26H2</td><td>General Availability</td><td>26300.9974</td></tr>
 <tr><td>26H1</td><td>General Availability</td><td>28000.3231</td></tr>
 <tr><td>25H2</td><td>General Availability</td><td>26200.9711</td></tr>
 <tr><td>24H2</td><td>LTSC</td><td>26100.9711</td></tr>
@@ -134,7 +134,7 @@ def test_selects_26h2_not_higher_build_26h1():
     target = refresh_latest_win11(fetch_text=_fetch_factory(HEALTH), save=False, state={})
     assert target.version == "26H2"
     assert target.major == 26300
-    assert target.ubr == 9711
+    assert target.ubr == 9974
     assert "26H1" in target.excluded
     assert target.edition_ids[0] == 3813
     assert target.page_version == "26H2"

@@ -1,6 +1,19 @@
 # win11-magic-upgrade — external research: features, failure modes, bug guards
 
 Compiled 2026-11-13 against `main` @ `e18bebb` (after PR #22). Free methods only. Every item cites a public source.
+
+## Servicing watch, 2026-11-16
+
+November 10, 2026 Patch Tuesday, checked against the public release-health page and the KB articles. No paid feed.
+
+- In-place floor: Windows 11 26H2 **26300.9974**, 25H2 **26200.9974**, 24H2 **26100.9974**, [KB5132061](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132061-windows-11-24h2-25h2-26h2-security-update) (2026-11-10). Release health: [windows11-release-information](https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information).
+- 26H1 (new devices only, not the in-place target): **28000.3501**, [KB5132059](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132059-windows-11-26h1-security-update).
+- 23H2 is end of updates for every edition on the release-health summary (both edition columns). [KB5131087](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5131087-windows-11-23h2-security-update) (2026-11-10, build 22631.7711) says that security update is the last one for Enterprise and Education. The later build is **22631.7714** (2026-11-13, [KB5136483](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5136483-windows-11-22h2-23h2-update), non-security out-of-band, all editions). The planner sends a 23H2 PC to the 26H2 floor.
+- Both November KBs say there is no December 2026 non-security preview. Next regular servicing is January 2027. The floor stays 26300.9974 until a newer B or security OOB is published.
+- DBX URLs, verified on `microsoft/secureboot_objects` `main` the same day, and unchanged between [Rufus 4.16 BETA](https://github.com/pbatard/rufus/releases/tag/v4.16_BETA) and [4.16 BETA 2](https://github.com/pbatard/rufus/releases/tag/v4.16_BETA2): current file `PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2`, legacy fallback `PostSignedObjects/DBX/amd64/DBXUpdate.bin`. The lookup tries both and returns nothing when offline. Firmware `dbx` is not written.
+- CA 2023 media: Rufus commit `f8ab5bbb11` (`[md5sum] fix CA 2023 replacement files not being re-computed for MD5Sum`) adds the `*_EX.efi` files to the hash check after they replace the stock loaders. This tree does not hash a USB image. It does include those `*_EX.efi` files in the signer check.
+- AMI NTFS: [AmiNtfsBug](https://github.com/pbatard/AmiNtfsBug) affects UEFI firmware that reads NTFS. ESP-loaded files here stay on FAT32 (`bcdboot_ready`). BIOS System Reserved stays NTFS and is not loaded by that UEFI driver. No Rufus-style re-read workaround was added.
+
 "Coverage" is based on a grep/read of `README.md`, `docs/` and `python/engine/` in the local clone. **Covered** = code exists; **Partial** = something exists but the gap described is real; **Missing** = nothing found.
 
 Legend: **[SAFETY]** = touches disks, boot files, firmware variables or encryption. Destructive steps must stay opt-in, or run only after a verified backup plus a post-op check.

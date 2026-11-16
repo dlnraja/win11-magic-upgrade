@@ -40,6 +40,10 @@ def test_decisions() -> None:
     assert ok is False and "10 MB" in reason
     ok, _ = bcdboot_ready(has_template=True, filesystem="NTFS", esp_type=False, free_mb=20, firmware="BIOS")
     assert ok is True
+    refused, why = bcdboot_ready(
+        has_template=True, filesystem="NTFS", esp_type=True, free_mb=64, firmware="UEFI"
+    )
+    assert refused is False and "FAT32" in why
     assert "not upgraded" in storage_spaces_warning(unhealthy=True, refs=True)
     text = boot_info_text(disks="disk0", esp="esp", bcd="bcd", firmware="fw", reagentc="re", secure_boot="on", bitlocker="off")
     assert "read-only" in text

@@ -119,7 +119,7 @@ def test_pins_match_shipped_floor() -> None:
     assert version == "1.0.8"
     assert len(sha) == 64
     floor = pin_win11_floor()
-    assert floor == ("26H2", 26300, 9725)
+    assert floor == ("26H2", 26300, 9974)
 
 
 if __name__ == "__main__":
