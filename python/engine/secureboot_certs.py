@@ -8,7 +8,7 @@ DBX update raises the boot-manager SVN, an older loader will not pass Secure
 Boot either. Either mismatch leaves the PC unbootable if we write it as the
 active loader.
 
-This module reads only local, built-in state. No paid API and no PowerShell:
+The boot gate reads only local, built-in state. No paid API and no PowerShell:
 
   * Registry ``SecureBoot\\State\\UEFISecureBootEnabled``
   * Registry ``SecureBoot\\Servicing`` values published for the 2023 rollout
@@ -23,6 +23,12 @@ and ``MicWinProPCA2011_2011-10-19.der``). The SVN marker
 ``BOOTMGRSECURITYVERSIONNUMBER`` is the same token Rufus records for the
 Microsoft SVN revocation (https://github.com/pbatard/rufus/issues/2244).
 
+The published DBX files are not applied to firmware. ``fetch_official_dbx``
+can read one for an advisory check. The first URL is the KEK 2023 x64 list
+Rufus 4.16 BETA and 4.16 BETA 2 use. The older ``DBX/amd64/DBXUpdate.bin``
+path is the fallback Microsoft restored on 2026-09-09. Every failure,
+including offline, returns empty bytes.
+
 Legacy BIOS, CSM, and 32-bit paths are not gated: Secure Boot is off or does
 not check ``bootmgr``. The gate refuses a UEFI rewrite only when Secure Boot
 is on and the target loader is not acceptable. Snapshot restore still runs
@@ -33,6 +39,7 @@ from __future__ import annotations
 import os
 import re
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,6 +72,20 @@ _SVN_ASCII = re.compile(rb"BOOTMGRSECURITYVERSIONNUMBER\s*,\s*0x([0-9A-Fa-f]+)")
 _SVN_UTF16_PREFIX = "BOOTMGRSECURITYVERSIONNUMBER,0x".encode("utf-16le")
 
 _MEDIA_NAMES = ("bootmgfw.efi", "bootmgr.efi", "bootx64.efi")
+# CA 2023 copies shipped beside the stock names (bootmgfw_EX.efi and the same
+# pattern for bootmgr / bootx64). Rufus 4.16 copies these over the stock files
+# and must include the replacements in its media hash check. We do not rewrite
+# the media; the check has to see the replacement as well as the stock file.
+_CA2023_MEDIA_NAMES = ("bootmgfw_ex.efi", "bootmgr_ex.efi", "bootx64_ex.efi")
+
+# Verified 2026-11-16 on github.com/microsoft/secureboot_objects main.
+# Order is the lookup order. The boot path does not call this.
+OFFICIAL_DBX_URLS = (
+    "https://raw.githubusercontent.com/microsoft/secureboot_objects/main/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2",
+    "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2",
+    "https://raw.githubusercontent.com/microsoft/secureboot_objects/main/PostSignedObjects/DBX/amd64/DBXUpdate.bin",
+    "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/amd64/DBXUpdate.bin",
+)
 
 
 @dataclass(frozen=True)
@@ -471,37 +492,110 @@ def efi_write_block_reason(
     return decision.reason
 
 
-def find_media_loader(root: Path) -> Path | None:
-    """bootmgfw.efi or bootx64.efi on install media, if the ISO layout has one."""
-    rels = (
-        Path("efi") / "microsoft" / "boot" / "bootmgfw.efi",
-        Path("efi") / "microsoft" / "boot" / "bootmgr.efi",
-        Path("efi") / "boot" / "bootx64.efi",
-    )
-    for rel in rels:
-        candidate = root / rel
-        if candidate.is_file():
-            return candidate
-    efi = None
-    if root.is_dir():
+def _looks_like_dbx(body: bytes) -> bool:
+    """Reject empty bodies and HTML/JSON error pages. Do not parse the list."""
+    if not body or len(body) < 16:
+        return False
+    head = body.lstrip()[:1]
+    return head not in (b"{", b"[", b"<")
+
+
+def _fetch_dbx_bytes(url: str, timeout: int = 5) -> bytes:
+    import ssl
+    import urllib.request
+
+    headers = {"User-Agent": "Win11MagicUpgrade", "Accept": "application/octet-stream"}
+    if "api.github.com" in url:
+        headers["Accept"] = "application/vnd.github.raw"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=timeout) as resp:
+        return resp.read()
+
+
+def fetch_official_dbx(
+    fetch: Callable[[str], bytes] | None = None,
+    urls: tuple[str, ...] = OFFICIAL_DBX_URLS,
+) -> bytes:
+    """First published DBX body, or empty bytes when every URL fails.
+
+    Nothing is written to firmware dbx. Offline, HTTP errors, and error pages
+    are skipped. Callers that do not need the published list should not call
+    this; the boot gate reads the local firmware variable.
+    """
+    getter = fetch or _fetch_dbx_bytes
+    for url in urls:
         try:
-            for child in root.iterdir():
-                if child.is_dir() and child.name.lower() == "efi":
-                    efi = child
-                    break
-        except OSError:
-            return None
+            body = getter(url) or b""
+        except Exception:
+            continue
+        if _looks_like_dbx(body):
+            return bytes(body)
+    return b""
+
+
+def _ranked_efi(root: Path, names: tuple[str, ...]) -> list[Path]:
+    """EFI files under ``root`` whose names match, stock order first."""
+    if not root.is_dir():
+        return []
+    wanted = {name.lower() for name in names}
+    order = {name.lower(): index for index, name in enumerate(names)}
+    efi: Path | None = None
+    try:
+        for child in root.iterdir():
+            if child.is_dir() and child.name.lower() == "efi":
+                efi = child
+                break
+    except OSError:
+        return []
     if efi is None:
-        return None
+        return []
     found: list[Path] = []
     try:
-        for path in efi.rglob("*.efi"):
-            if path.name.lower() in _MEDIA_NAMES:
+        for path in efi.rglob("*"):
+            if path.is_file() and path.name.lower() in wanted:
                 found.append(path)
     except OSError:
-        return None
-    found.sort(key=lambda path: (0 if path.name.lower() == "bootmgfw.efi" else 1, len(path.parts)))
+        return found
+    found.sort(key=lambda path: (order.get(path.name.lower(), 99), len(path.parts)))
+    return found
+
+
+def find_media_loaders(root: Path) -> list[Path]:
+    """Stock boot loaders, then the Windows UEFI CA 2023 ``*_EX.efi`` copies.
+
+    The replacement files are part of the check even when the stock file is
+    also present. A media tree that only has the ``_EX`` copy is still found.
+    """
+    stock = _ranked_efi(root, _MEDIA_NAMES)
+    updated = _ranked_efi(root, _CA2023_MEDIA_NAMES)
+    ordered: list[Path] = []
+    for path in stock + updated:
+        if path not in ordered:
+            ordered.append(path)
+    return ordered
+
+
+def find_media_loader(root: Path) -> Path | None:
+    """bootmgfw.efi or bootx64.efi on install media, if the ISO layout has one.
+
+    A tree that only contains the CA 2023 ``*_EX.efi`` copy still returns that
+    file so the signer check can see it.
+    """
+    found = find_media_loaders(root)
     return found[0] if found else None
+
+
+def find_boot_stl(root: Path) -> Path | None:
+    """``boot.stl`` on install media, matched without depending on case."""
+    if not root.is_dir():
+        return None
+    try:
+        for path in root.rglob("*"):
+            if path.is_file() and path.name.lower() == "boot.stl":
+                return path
+    except OSError:
+        return None
+    return None
 
 
 def windows_tree_loader() -> Path | None:
@@ -514,28 +608,52 @@ def windows_tree_loader() -> Path | None:
 
 
 def setup_media_block_reason(root: Path, state: SecureBootCertState | None = None) -> str:
-    """Refuse Setup when Secure Boot would reject the media's boot manager."""
+    """Refuse Setup when Secure Boot would reject every loader on the media.
+
+    Stock ``bootmgfw.efi`` / ``bootx64.efi`` and the Windows UEFI CA 2023
+    ``*_EX.efi`` copies are all checked. One acceptable file is enough. A
+    missing ``boot.stl`` is logged (KB5132061, ``0xc0430001``) and does not
+    by itself block an in-place Setup that already has an acceptable loader.
+    """
     current = state if state is not None else probe_secure_boot_state()
     if current.secure_boot != "on":
         return ""
-    loader = find_media_loader(Path(root))
-    if loader is None:
+    loaders = find_media_loaders(Path(root))
+    if not loaders:
         return (
             "Secure Boot is on and this install media has no efi\\boot\\bootx64.efi "
             "or bootmgfw.efi whose signer can be checked. Refusing to start Setup, "
             "because the new boot manager might be signed only by Windows UEFI CA 2023."
         )
-    reason = efi_write_block_reason("UEFI", source=loader, require_source=True, state=current)
-    if not reason:
-        ident = identify_loader(loader.read_bytes())
+    blocked: list[str] = []
+    for loader in loaders:
+        reason = efi_write_block_reason("UEFI", source=loader, require_source=True, state=current)
+        if reason:
+            blocked.append(reason)
+            continue
+        try:
+            ident = identify_loader(loader.read_bytes())
+        except OSError:
+            ident = LoaderIdentity.missing()
+        extra = ""
+        if loader.name.lower().endswith("_ex.efi"):
+            extra = " The CA 2023 replacement file was included in the media check."
         log(
             f"Setup media loader {loader.name} is acceptable under Secure Boot "
-            f"({_signer_label(ident)}).",
+            f"({_signer_label(ident)}).{extra}",
             "OK",
         )
+        if find_boot_stl(Path(root)) is None:
+            log(
+                "Install media has no boot.stl. Secure Boot validation of media "
+                "that was updated in place can fail with 0xc0430001 (KB5132061). "
+                "In-place Setup is not blocked on that file alone.",
+                "WARN",
+            )
         return ""
+    chosen = next((item for item in blocked if "2023" in item), blocked[0])
     return (
-        f"{reason} Setup was not started. The existing snapshot is untouched and "
+        f"{chosen} Setup was not started. The existing snapshot is untouched and "
         "the current boot manager stays in place."
     )
 

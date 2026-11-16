@@ -597,7 +597,29 @@
       "rollback": "Do not clear dbx to force a revoked loader to boot.",
       "sources": [
         "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-secure-boot-key-creation-and-management-guidance?view=windows-11",
-        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/linux-distribution-guidance-handling-2023keys?view=windows-11"
+        "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/linux-distribution-guidance-handling-2023keys?view=windows-11",
+        "https://github.com/microsoft/secureboot_objects/tree/main/PostSignedObjects/SignedByKEK2023",
+        "https://github.com/microsoft/secureboot_objects/tree/main/PostSignedObjects/DBX/amd64"
+      ]
+    },
+    {
+      "id": "secure-boot-boot-stl",
+      "patterns": [
+        "0xc0430001",
+        "boot\\.stl"
+      ],
+      "cause": "secure-boot",
+      "detection": "Installation media is missing boot.stl, or the file does not match the Windows version and architecture. Secure Boot validation of that media can fail while the device is starting from it.",
+      "syntax": {
+        "windows-11": "Keep the boot.stl that matches the image next to the EFI boot files. Copy it from Windows\\Boot\\EFI when a dynamic update is applied to existing media. Do not delete it to force a boot."
+      },
+      "repair": [
+        "read-secure-boot-events"
+      ],
+      "rollback": "Do not remove boot.stl from media that already starts.",
+      "sources": [
+        "https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132061-windows-11-24h2-25h2-26h2-security-update",
+        "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information"
       ]
     },
     {

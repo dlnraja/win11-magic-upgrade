@@ -25,7 +25,17 @@ from .win11_release import FALLBACK_WIN11_BUILD, latest_win11_ubr_from_state
 
 # Known retail baselines. The live target comes from win11_release (release health).
 # 28000 is 26H1 (new devices only) and is intentionally not the default.
+# 22631 (23H2) reached end of updates for every edition in November 2026.
+# The last published build is 22631.7714 (2026-11-13 OOB). It is not a target.
 KNOWN_WIN11_BUILDS = (26300, 28000, 26200, 26100, 22631, 22621, 22000)
+EOS_WIN11_NOTES = {
+    22631: (
+        "Windows 11 23H2 is end of updates for every edition. "
+        "The last published build is 22631.7714 (2026-11-13 out-of-band). "
+        "This PC needs the in-place upgrade to the current 26H2 security baseline, "
+        "not another cumulative on 23H2."
+    ),
+}
 DEFAULT_LATEST_WIN11_BUILD = FALLBACK_WIN11_BUILD  # 26H2 floor when detection fails
 DEFAULT_LATEST_WIN10_BUILD = 19045  # 22H2 — only Win10 ISO on Microsoft CDN
 
@@ -99,6 +109,11 @@ def probe_win11_iso_build(iso_path: Path | None) -> int:
     except Exception as e:
         log(f"Win11 ISO probe skipped: {e}", "INFO")
     return latest_win11_build_from_state()
+
+
+def note_for_eos_build(build: int) -> str:
+    """Planner note for a Windows 11 build that no longer receives updates."""
+    return EOS_WIN11_NOTES.get(int(build or 0), "")
 
 
 def target_label_for(latest: int) -> str:
@@ -193,6 +208,9 @@ def evaluate_host(report: Report, *, latest_win11: int | None = None) -> Version
                 notes.append(
                     f"Win11 {host_ver} → latest retail (build {latest}) via in-place ISO upgrade"
                 )
+            eos = note_for_eos_build(report.build)
+            if eos and "win11_latest" in iso_steps:
+                notes.append(eos)
 
     target_label = target_label_for(latest)
     target_ubr = latest_win11_ubr_from_state()

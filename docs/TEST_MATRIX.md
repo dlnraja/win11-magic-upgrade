@@ -9,9 +9,11 @@
 | Win10 22H2 MBR on UEFI | mbr2gpt | GPT + UEFI note |
 | Win10 22H2 MBR, legacy-only BIOS | chain | keep MBR; optional OpenDuet prepare, no disk write |
 | Win10 22H2 no SSE4.2 | chain | stop at 22H2 (honest) |
-| Win11 22H2 / 25H2 | latest | in-place to detected feature update (26H2 security/OOB floor), then cumulative if UBR lags |
-| Already on 26H1 (28000) | latest | stay on that branch; track its B/OOB cumulative, not the D preview |
+| Win11 22H2 / 23H2 / 25H2 | latest | in-place to detected feature update (26H2 security floor 26300.9974). 23H2 is end of updates for every edition (last build 22631.7714), then cumulative if UBR lags |
+| Already on 26H1 (28000) | latest | stay on that branch; track its B/OOB cumulative (28000.3501), not the D preview |
 | Release health shows a D preview above the OOB build | latest | default target stays on the OOB/B row; `MAGIC_WIN11_PREVIEW=1` selects the D row |
+| Install media has a revoked 2011 loader and a Windows UEFI CA 2023 `*_EX.efi`, db has that CA | media | accept Setup; the replacement file is part of the check |
+| UEFI target is NTFS | bcdboot | refuse; ESP-loaded files stay on FAT32 (AMI NTFS driver is not on this path) |
 | Secure Boot on, db lacks Windows UEFI CA 2023, target bootmgr is 2023-only | boot files | refuse bcdboot/Setup/mbr2gpt; keep the current loader; snapshot stays |
 | Secure Boot off, legacy BIOS, or 32-bit | boot files | certificate gate does not change the existing path |
 | IA32 UEFI (Bay Trail class) | hybrid | CSMWrap, no mbr2gpt; Secure Boot must be off to activate |

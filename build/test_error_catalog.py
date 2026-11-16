@@ -28,6 +28,7 @@ def test_catalog_is_sourced_and_complete() -> None:
         assert entry["repair"]
         allowed = (
             "https://learn.microsoft.com/",
+            "https://support.microsoft.com/",
             "https://sourceforge.net/",
             "https://github.com/",
             "https://www.gnu.org/",
@@ -75,6 +76,7 @@ def test_classifier_uses_the_catalog() -> None:
         assert tool["source"].startswith(
             (
                 "https://learn.microsoft.com/",
+            "https://support.microsoft.com/",
                 "https://sourceforge.net/",
                 "https://github.com/",
                 "https://www.gnu.org/",

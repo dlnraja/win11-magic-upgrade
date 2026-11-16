@@ -38,7 +38,11 @@ Source: [0xc000000e](https://learn.microsoft.com/en-us/troubleshoot/windows-serv
 
 Windows 11 boot requires the Windows UEFI CA 2023 in `db`. `dbx` is checked before `db`. Event 1801 and `UEFICA2023` mark a device that still needs the 2023 certificates. Event 1808 is the completion signal described in Microsoft Q&A and the certificate-update article. SBAT and `dbx` failures, including event 1796, do not justify clearing `dbx`.
 
-Sources: [key guidance](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-secure-boot-key-creation-and-management-guidance?view=windows-11), [certificate update](https://learn.microsoft.com/en-us/troubleshoot/windows-client/windows-security/update-secure-boot-certificates), [2023 CA transition](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/linux-distribution-guidance-handling-2023keys?view=windows-11).
+The published revocation lists were checked on 2026-11-16. The current x64 file is [dbx_x64.efiauth2](https://github.com/microsoft/secureboot_objects/blob/main/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2) (KEK 2023). The older [DBXUpdate.bin](https://github.com/microsoft/secureboot_objects/blob/main/PostSignedObjects/DBX/amd64/DBXUpdate.bin) path still exists and is only a fallback. Rufus 4.16 BETA and 4.16 BETA 2 use the same KEK 2023 URLs. This project does not write either file into firmware `dbx`. A failed download, including offline, leaves the local firmware variable as the only `dbx` input.
+
+`0xc0430001` means Secure Boot rejected installation media whose `boot.stl` is missing or does not match the image. KB5132061 tells image maintainers to keep that file when they apply a dynamic update. In-place Setup is not blocked on a missing `boot.stl` alone when a boot loader already passed the signer check; the warning is still logged.
+
+Sources: [key guidance](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-secure-boot-key-creation-and-management-guidance?view=windows-11), [certificate update](https://learn.microsoft.com/en-us/troubleshoot/windows-client/windows-security/update-secure-boot-certificates), [2023 CA transition](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/linux-distribution-guidance-handling-2023keys?view=windows-11), [KB5132061](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132061-windows-11-24h2-25h2-26h2-security-update), [secureboot_objects](https://github.com/microsoft/secureboot_objects).
 
 ## Free and open tools
 

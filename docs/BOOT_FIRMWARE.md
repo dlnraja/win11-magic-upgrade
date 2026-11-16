@@ -10,7 +10,11 @@ Selection follows the version label, not the raw build number. `26H2` is newer t
 
 Microsoft documents **26H1** as a release for new devices, not an in-place feature update for existing PCs. The release-health text is parsed for that exclusion. A PC whose current build is already that branch (major `28000`) stays on it and only tracks that branch’s cumulative. It is not offered a “downgrade” ISO to 26H2.
 
-The floor shipped with this version is **26H2, build 26300, cumulative revision 9725** (the 2026-10-26 out-of-band security update, KB5134133). Edition id **3813** stays first (older ids `3816`, `3321`, `3324` remain fallbacks). The October 2026 monthly security release on that branch is 26300.9711 (KB5127648). A successful parse of a newer in-place security baseline replaces the floor and is cached in `state.json`. A failed or truncated page never lowers the target below the floor. A cached cumulative on the same version that is older than the floor does not hide the floor. A newer cached cumulative still wins.
+The floor shipped with this version is **26H2, build 26300, cumulative revision 9974** (the 2026-11-10 security update, KB5132061). The same KB is 26200.9974 on 25H2 and 26100.9974 on 24H2. Edition id **3813** stays first (older ids `3816`, `3321`, `3324` remain fallbacks). The previous floor was the 2026-10-26 out-of-band security update, 26300.9725 (KB5134133). A successful parse of a newer in-place security baseline replaces the floor and is cached in `state.json`. A failed or truncated page never lowers the target below the floor. A page that still names 26H2, but only an older cumulative than this floor, does not lower the target either. A cached cumulative on the same version that is older than the floor does not hide the floor. A newer cached cumulative still wins.
+
+23H2 (build 22631) is **end of updates for every edition**. Its last published build is 22631.7714 (2026-11-13, KB5136483, a non-security out-of-band update on top of the 2026-11-10 security update 22631.7711, KB5131087). A PC on 23H2 is planned for an in-place upgrade to this 26H2 floor, not for another 23H2 cumulative. 24H2 Home and Pro are already end of updates; Enterprise and Education on 24H2 continue through 2027-10-12. The consumer in-place target stays 26H2.
+
+KB5132061 and KB5132059 both say there is **no December 2026 non-security preview**. The next regular monthly servicing is January 2027. Until that page is published, the floor stays 26300.9974.
 
 ### Security baseline and optional D previews
 
@@ -19,9 +23,9 @@ Release health has two shapes of table:
 - The summary table's **Latest build** is the newest row Microsoft published, including the optional preview.
 - The history tables label each row. **B** is the monthly security release, **OOB** is an out-of-band security update, and **D** is the optional non-security preview from the fourth week of the month.
 
-The default target is the newest **B or OOB** row on the newest in-place version. D previews are parsed and stored as their own class so a higher preview revision cannot replace that baseline. As of the 2026-11-02 page, that choice is 26H2 **26300.9725**, while the summary's latest build 26300.9818 is the 2026-10 D preview (KB5127936) and is left unused.
+The default target is the newest **B or OOB** row on the newest in-place version. D previews are parsed and stored as their own class so a higher preview revision cannot replace that baseline. As of the 2026-11-16 release-health page, that choice is 26H2 **26300.9974**. The October D preview 26300.9818 (KB5127936) is lower than the November security revision, so it stays unused. The 2026-11-02 fixture is still parsed in tests to prove a higher D preview does not replace a lower OOB row.
 
-`MAGIC_WIN11_PREVIEW=1` opts in to D previews (26H2 then becomes 26300.9818). A PC already on the device-scoped 26H1 branch stays there and tracks that branch's B/OOB cumulative (28000.3237, KB5134134), including when the summary lists the D revision 28000.3365.
+`MAGIC_WIN11_PREVIEW=1` opts in to D previews. On the November page the B revision is already higher, so the opt-in stays 26300.9974. A PC already on the device-scoped 26H1 branch stays there and tracks that branch's B/OOB cumulative (28000.3501, KB5132059). The October D revision 28000.3365 is not selected.
 
 Same feature build with a lower update revision (UBR) asks the built-in `UsoClient.exe` to scan and download once. That is not a new ISO. UBR `0` means unknown and does not trigger the nudge. An ISO whose file name is behind the detected feature build is still installed, then the cumulative step runs after reboot.
 
@@ -53,13 +57,16 @@ These paths are unchanged:
 
 Turning Secure Boot on later, after a rewrite done while it was off, is a firmware setup change this tool does not make. The check applies to the Secure Boot state at the moment of the write.
 
-### Rufus 4.16 and what this tree does not copy
+### Rufus 4.16 BETA 2 and what this tree does not copy
 
-[Rufus 4.16 BETA](https://github.com/pbatard/rufus/releases/tag/v4.16_BETA) (2026-10-30) fixes three items that are adjacent to boot media:
+[Rufus 4.16 BETA 2](https://github.com/pbatard/rufus/releases/tag/v4.16_BETA2) (2026-11-11) repeats three items that are adjacent to boot media. Checked again on 2026-11-16 against [microsoft/secureboot_objects](https://github.com/microsoft/secureboot_objects) `main` and the Rufus tag `v4.16_BETA2`:
 
-- **CA 2023 files during runtime UEFI media validation.** Rufus replaces a few boot files when its CA 2023 option is selected and then hashes the result. This project does not build Rufus-style USB media and does not re-hash a patched NTFS ESP. The equivalent check is the signer/db/SVN gate above, before `bcdboot` or Setup.
-- **DBX URL move.** Microsoft now publishes the KEK-2023-signed revocation lists at `PostSignedObjects/SignedByKEK2023/dbx_*.efiauth2` in [secureboot_objects](https://github.com/microsoft/secureboot_objects). Rufus downloads them from `https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/`. This project does not download or apply a DBX. Applying one can revoke the boot manager that is currently installed. The local firmware `dbx` is read in place.
-- **AMI NTFS UEFI driver.** Rufus works around bad reads from the AMI NTFS driver so its own media validation stops false-failing ([AmiNtfsBug](https://github.com/pbatard/AmiNtfsBug)). This tree does not embed `uefi-ntfs` or that AMI driver. Nothing in the boot path needed that workaround.
+- **CA 2023 files during runtime UEFI media validation.** Rufus copies `bootmgfw_EX.efi` (and the matching `bootmgr` / `bootx64` replacements) over the stock names, then has to put those replacements into its MD5 media check. The 4.16 fix is that those updated files were previously ignored, so the check did not see the Windows UEFI CA 2023 copies. This project does not build Rufus-style USB media and does not re-hash a patched image. `setup_media_block_reason` does check both the stock loader and any `*_EX.efi` copy. One file the firmware db/dbx/SVN would accept is enough, including when the stock file is only the revoked 2011 PCA and the `_EX` file is signed by Windows UEFI CA 2023. KB5132061 also says installation media needs a matching `boot.stl` or Secure Boot can fail the start from that media with `0xc0430001`. A missing `boot.stl` is logged. It does not by itself block in-place Setup when a loader already passed the signer check.
+- **DBX URL move.** The file URLs did not change between Rufus 4.16 BETA (2026-10-30) and BETA 2. Both use the KEK 2023 objects. Verified present on 2026-11-16:
+  - `PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2` (also `dbx_ia32`, `dbx_arm`, `dbx_aarch64`, `dbx_SVN`)
+  - legacy fallback, restored by Microsoft on 2026-09-09: `PostSignedObjects/DBX/amd64/DBXUpdate.bin` (and `x86`, `arm`, `arm64`)
+  `fetch_official_dbx` tries the raw KEK 2023 URL, then the GitHub contents API, then the legacy `DBXUpdate.bin` URLs. A network error, an error page, or an empty body is skipped. If every URL fails, the result is empty bytes and the boot path continues. This project does not download a DBX during One-Click and does not write one to firmware. Applying one can revoke the boot manager that is currently installed. The local firmware `dbx` is what the gate reads.
+- **AMI NTFS UEFI driver.** Rufus works around bad reads from the AMI NTFS driver so its own UEFI media validation stops false-failing ([AmiNtfsBug](https://github.com/pbatard/AmiNtfsBug)). That driver is used when UEFI firmware reads an NTFS volume. This tree does not embed `uefi-ntfs` or that AMI driver. EFI loaders this app writes (`bootx64.efi`, `bootmgfw.efi`, the OpenDuet bridge) go on a FAT32 ESP. `bcdboot_ready` refuses a UEFI target that is not FAT32. The BIOS System Reserved partition stays NTFS because BIOS `bootmgr` is not loaded by the AMI UEFI NTFS driver. No extra AMI workaround is required for those paths.
 
 ## Firmware decision
 
@@ -116,4 +123,4 @@ Boot writes do not assume a drive letter, a disk number, or a partition index. `
 
 ## What still needs real hardware
 
-Unit tests cover release-health parsing (including the 2026-10 OOB and D rows), the firmware decision matrix, the Secure Boot certificate gate (db / dbx / SVN / signer), sector splice, and write refusals. They do not boot a PC. Still untested on hardware: a real disk write, firmware setup screens, a machine whose db is missing Windows UEFI CA 2023, Bay Trail `bootia32.efi`, CSM machines whose firmware does not advertise UEFI in the registry or BIOS version, and `ocvalidate.exe` on Windows (the Linux binary of the same release was the one executed here).
+Unit tests cover release-health parsing (the 2026-10 OOB and D rows, and the 2026-11 B rows including 23H2 end of updates), the firmware decision matrix, the Secure Boot certificate gate (db / dbx / SVN / signer, including a CA 2023 `*_EX.efi` loader), sector splice, and write refusals. They do not boot a PC. Still untested on hardware: a real disk write, firmware setup screens, a machine whose db is missing Windows UEFI CA 2023, Bay Trail `bootia32.efi`, CSM machines whose firmware does not advertise UEFI in the registry or BIOS version, and `ocvalidate.exe` on Windows (the Linux binary of the same release was the one executed here).

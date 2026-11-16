@@ -38,14 +38,17 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Win11MagicUpgrade"
 )
 
-# Last consumer security baseline verified against release health (2026-11-02).
-# 26H2 October B is 26300.9711 (KB5127648). The 2026-10-26 OOB is 26300.9725
-# (KB5134133) and is the floor. The same page's 26300.9818 row is the optional
-# 2026-10 D preview (KB5127936) and is not the floor.
+# Last consumer security baseline verified against release health (2026-11-16).
+# 26H2 November B is 26300.9974 (KB5132061, 2026-11-10) and is the floor.
+# The 2026-10-26 OOB is 26300.9725 (KB5134133). The 26300.9818 row is the
+# optional 2026-10 D preview (KB5127936) and is not the floor. There is no
+# December 2026 non-security preview; the next regular servicing is January 2027.
 # 26H1 / 28000 is intentionally not the floor: it is not an in-place target.
+# 23H2 (22631) is end of updates for every edition. Its last build is the
+# 2026-11-13 OOB 22631.7714, not an in-place target.
 FALLBACK_WIN11_VERSION = "26H2"
 FALLBACK_WIN11_BUILD = 26300
-FALLBACK_WIN11_UBR = 9725
+FALLBACK_WIN11_UBR = 9974
 PREVIEW_ENV = "MAGIC_WIN11_PREVIEW"
 FALLBACK_EXCLUDED = ("26H1",)
 # Current x64 consumer id, then older ids used only if the page and the first id fail.
@@ -112,6 +115,32 @@ def strip_html(html: str) -> str:
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
     text = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), text)
     return re.sub(r"[ \t]+", " ", text)
+
+
+def parse_end_of_updates(html: str) -> set[str]:
+    """Versions whose summary row says End of updates for every edition column.
+
+    24H2 is end of updates for Home and Pro and still serviced for Enterprise,
+    so a date in any End of updates column keeps that version out of this set.
+    23H2 is in the set: both edition columns say End of updates.
+    """
+    found: set[str] = set()
+    for _start, rows in _html_tables_at(html or ""):
+        header = rows[0]
+        if "version" not in " | ".join(header).lower():
+            continue
+        ver_idx = _column(header, "version")
+        end_cols = [i for i, cell in enumerate(header) if "end of updates" in cell.lower()]
+        if ver_idx is None or len(end_cols) < 2:
+            continue
+        for row in rows[1:]:
+            ver = _VERSION_RE.search(row[ver_idx] if ver_idx < len(row) else "")
+            if not ver:
+                continue
+            cells = [(row[i] if i < len(row) else "").lower() for i in end_cols]
+            if cells and all("end of updates" in cell for cell in cells):
+                found.add(ver.group(1).upper())
+    return found
 
 
 def parse_excluded_versions(text: str) -> set[str]:
@@ -411,6 +440,17 @@ def select_latest(
     )
 
 
+def _same_version_behind_floor(live: ReleaseTarget, floor: ReleaseTarget) -> bool:
+    """True when the page names the floor's version but an older cumulative."""
+    if live.source == "host-branch":
+        return False
+    if version_key(live.version) != version_key(floor.version):
+        return False
+    if live.major != floor.major:
+        return live.major < floor.major
+    return live.ubr < floor.ubr
+
+
 def merge_release(
     *,
     live: ReleaseTarget | None,
@@ -418,9 +458,16 @@ def merge_release(
     floor: ReleaseTarget,
     parsed_versions: set[str],
 ) -> ReleaseTarget:
-    """Prefer a confident live result. Never adopt a truncated page over the floor."""
+    """Prefer a confident live result. Never adopt a truncated page over the floor.
+
+    A page that still lists this version, but only an older B/OOB/preview than
+    the shipped floor, does not lower the target. The device-scoped host branch
+    is returned as parsed.
+    """
     if live is not None and live.source == "host-branch":
         return live
+    if live is not None and _same_version_behind_floor(live, floor):
+        live = None
     if live is not None:
         truncated = version_key(live.version) < version_key(floor.version) and (
             floor.version.upper() not in {v.upper() for v in parsed_versions}
