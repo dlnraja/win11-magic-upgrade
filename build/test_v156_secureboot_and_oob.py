@@ -44,6 +44,8 @@ from engine.secureboot_certs import (  # noqa: E402
     CN_WINDOWS_PCA_2011,
     CN_WINDOWS_UEFI_CA_2023,
     OFFICIAL_DBX_URLS,
+    RUFUS_416_DBX_X64_URL,
+    dbx_request_headers,
     SIGNER_WINDOWS_PCA_2011,
     SIGNER_WINDOWS_UEFI_CA_2023,
     BootRewriteDecision,
@@ -448,8 +450,14 @@ def test_ca2023_replacement_file_is_part_of_media_check():
 
 
 def test_dbx_url_fallback_does_not_fail_offline():
+    assert OFFICIAL_DBX_URLS[0] == RUFUS_416_DBX_X64_URL
+    assert "api.github.com" in OFFICIAL_DBX_URLS[0]
     assert OFFICIAL_DBX_URLS[0].endswith("SignedByKEK2023/dbx_x64.efiauth2")
-    assert any(url.endswith("DBX/amd64/DBXUpdate.bin") for url in OFFICIAL_DBX_URLS)
+    assert OFFICIAL_DBX_URLS[1].endswith("SignedByKEK2023/dbx_x64.efiauth2")
+    assert "raw.githubusercontent.com" in OFFICIAL_DBX_URLS[1]
+    assert dbx_request_headers(OFFICIAL_DBX_URLS[0])["Accept"] == "application/vnd.github.v3.raw"
+    assert all("DBXUpdate.bin" not in url for url in OFFICIAL_DBX_URLS[:2])
+    assert any(url.endswith("DBX/amd64/DBXUpdate.bin") for url in OFFICIAL_DBX_URLS[2:])
     seen: list[str] = []
 
     def fetch(url: str) -> bytes:
@@ -464,6 +472,16 @@ def test_dbx_url_fallback_does_not_fail_offline():
 
     assert fetch_official_dbx(fetch) == b"\x00" * 32
     assert seen[:3] == list(OFFICIAL_DBX_URLS[:3])
+    seen.clear()
+
+    def kek_raw(url: str) -> bytes:
+        seen.append(url)
+        if url == OFFICIAL_DBX_URLS[1]:
+            return b"\x00" * 32
+        raise OSError("kek api down")
+
+    assert fetch_official_dbx(kek_raw) == b"\x00" * 32
+    assert seen == list(OFFICIAL_DBX_URLS[:2])
     assert fetch_official_dbx(lambda _url: (_ for _ in ()).throw(OSError("offline"))) == b""
 
 

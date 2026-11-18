@@ -511,6 +511,8 @@ def test_authorize_write_refusals():
     assert described.bus == "usb" and described.boot_disk is False
     script = diskpart_create_gpt_fat32(1, "E")
     assert "clean" in script and "convert gpt" in script and "format fs=fat32" in script
+    assert "create partition efi" not in script.lower()
+    assert "create partition primary\n" in script
 
 
 def test_stage_tree_leaves_windows_bless_empty():

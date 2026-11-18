@@ -10,9 +10,46 @@ November 10, 2026 Patch Tuesday, checked against the public release-health page 
 - 26H1 (new devices only, not the in-place target): **28000.3501**, [KB5132059](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132059-windows-11-26h1-security-update).
 - 23H2 is end of updates for every edition on the release-health summary (both edition columns). [KB5131087](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5131087-windows-11-23h2-security-update) (2026-11-10, build 22631.7711) says that security update is the last one for Enterprise and Education. The later build is **22631.7714** (2026-11-13, [KB5136483](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5136483-windows-11-22h2-23h2-update), non-security out-of-band, all editions). The planner sends a 23H2 PC to the 26H2 floor.
 - Both November KBs say there is no December 2026 non-security preview. Next regular servicing is January 2027. The floor stays 26300.9974 until a newer B or security OOB is published.
-- DBX URLs, verified on `microsoft/secureboot_objects` `main` the same day, and unchanged between [Rufus 4.16 BETA](https://github.com/pbatard/rufus/releases/tag/v4.16_BETA) and [4.16 BETA 2](https://github.com/pbatard/rufus/releases/tag/v4.16_BETA2): current file `PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2`, legacy fallback `PostSignedObjects/DBX/amd64/DBXUpdate.bin`. The lookup tries both and returns nothing when offline. Firmware `dbx` is not written.
-- CA 2023 media: Rufus commit `f8ab5bbb11` (`[md5sum] fix CA 2023 replacement files not being re-computed for MD5Sum`) adds the `*_EX.efi` files to the hash check after they replace the stock loaders. This tree does not hash a USB image. It does include those `*_EX.efi` files in the signer check.
-- AMI NTFS: [AmiNtfsBug](https://github.com/pbatard/AmiNtfsBug) affects UEFI firmware that reads NTFS. ESP-loaded files here stay on FAT32 (`bcdboot_ready`). BIOS System Reserved stays NTFS and is not loaded by that UEFI driver. No Rufus-style re-read workaround was added.
+- Rufus 4.16 final (2026-11-17) is reviewed in the next section. DBX lookup, CA 2023 media checks, the AMI NTFS decision, and ESP sizing are recorded there. Firmware `dbx` is still not written. Windows build pins are unchanged.
+
+## Rufus 4.16 final, checked 2026-11-18
+
+[Rufus 4.16](https://github.com/pbatard/rufus/releases/tag/v4.16) was published 2026-11-17 (tag `v4.16`, commit `bed2c33669048a432c7135441d8cbcae72fd315f`). The notes that matter here are the AMI NTFS workaround, the CA 2023 media-validation fix, the "Write as ESP" size regression, the DBX URL update, and embedded GRUB 2.16. Windows 11 build pins in this repo were left as they were.
+
+### DBX URLs
+
+Rufus 4.15 (`res/dbx/dbx_update.sh` on tag `v4.15`) downloaded `PostSignedObjects/DBX/<arch>/DBXUpdate.bin` from the GitHub contents API. Tag `v4.16` downloads `PostSignedObjects/SignedByKEK2023/dbx_<arch>.efiauth2` from the same API, with `Accept: application/vnd.github.v3.raw`. The x64 entry in `res/dbx/dbx_info.h` is:
+
+`https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2`
+
+That URL is the first entry in `OFFICIAL_DBX_URLS`. On 2026-11-18 the API URL and `https://raw.githubusercontent.com/microsoft/secureboot_objects/main/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2` both returned 17256 bytes and the same first 16 bytes. `PostSignedObjects/DBX/amd64/DBXUpdate.bin` still returned 200 and was 24629 bytes, so it is not the same object. It stays a last resort, which is the Rufus 4.15 path, not the 4.16 path. Tags `v4.16_BETA` and `v4.16_BETA2` already used the KEK 2023 API URLs; the final tag did not change `dbx_update.sh`. Nothing is written to firmware `dbx`. A failed download returns empty bytes.
+
+### CA 2023 and SVN
+
+Commit [f8ab5bbb11](https://github.com/pbatard/rufus/commit/f8ab5bbb11e237ebd806970d0b2daea9d1e78283) (`[md5sum] fix CA 2023 replacement files not being re-computed for MD5Sum`, 2026-10-26) is an ancestor of tag `v4.16` (GitHub compare status `ahead`). On that tag, `src/wue.c` still subtracts and adds `md5sum_totalbytes` when `EFI_EX\bootmgfw_EX.efi` and `bootmgr_EX.efi` replace the stock loaders, and `UpdateMD5Sum` in `src/hash.c` rewrites those names in the checksum file. This tree does not hash a USB image. `setup_media_block_reason` still checks the stock loader and any `*_EX.efi` copy, and the SVN marker is still `BOOTMGRSECURITYVERSIONNUMBER`.
+
+### AMI NTFS driver: not applied here
+
+[AmiNtfsBug](https://github.com/pbatard/AmiNtfsBug) describes the AMI UEFI NTFS driver version `0x10000`, used in firmware from vendors such as ASUS, Gigabyte, Dell, and Intel. A file whose data is split across more than one NTFS run can be read correctly in one call and incorrectly in the next call when the first read ends exactly at the end of a run. The driver then returns clusters that are not part of the file. Rufus hit this while validating MD5 hashes from the UEFI environment (`uefi-md5sum`) of an NTFS install stick. The 4.16 workaround is `CreatePreallocatedFile` in `src/stdio.c`: `SetFilePointerEx` to the file size, `SetEndOfFile`, then seek back to 0, so the file has one run when the volume can allocate it. `src/wue.c` also writes an updated `boot.wim` with `WIMLIB_WRITE_FLAG_UNSAFE_COMPACT` for the same reason.
+
+That path is not used here:
+
+- UEFI boot files (`bootx64.efi`, `bootmgfw.efi`, the OpenDuet bridge) are written to a FAT32 ESP. `bcdboot_ready` refuses a UEFI target that is not FAT32. The AMI driver reads NTFS, not FAT32.
+- This project does not embed `uefi-ntfs` and does not run a UEFI MD5 check of an NTFS volume. Media checks run in this process, on Windows, against the loader files. They do not ask AMI firmware to read the file.
+- The BIOS System Reserved partition can stay NTFS. Legacy `bootmgr` is not loaded by the AMI UEFI NTFS driver.
+- The OpenDuet stick is a FAT32 volume. It is not an NTFS UEFI:NTFS chain.
+
+A detection step that looked for AMI firmware and then preallocated NTFS runs would not change any boot file this program writes. The safe layout is already the FAT32 ESP. No extra workaround was added.
+
+### "Write as ESP" size
+
+Rufus 4.16 notes a regression where "Write as ESP" used the whole drive instead of a 1 GB partition. On tag `v4.16`, `MAX_ISO_TO_ESP_SIZE` in `src/rufus.h` is `1 * GB`, and `src/drive.c` sets `main_size = min(main_size, MAX_ISO_TO_ESP_SIZE)` when `write_as_esp` is set. Diskpart has the same class of mistake: `create partition efi` with no `size=` uses the remaining disk.
+
+`efi_create_diskpart_script` always emits `create partition efi size=<MB>`. `bounded_esp_size_mb` clamps the request to `MAX_BOOT_CREATE_MB` (2048) and, when the disk size is known, to one megabyte under that disk. The PowerShell Storage create path uses the same clamp before `New-Partition -Size`. 2048 MB is the existing Windows boot-partition ceiling. It is not Rufus's 1 GB ISO-to-ESP limit; a Windows ESP here is a boot partition, not a copy of a small ISO. The OpenDuet script still uses `create partition primary` with no size because that stick is one FAT32 volume, not an EFI system partition, and writes above 128 GiB stay refused.
+
+### GRUB 2.16
+
+`res/grub2/grub2_version.h` on tag `v4.16` sets `GRUB2_PACKAGE_VERSION` to `"2.16"`. This repository does not embed that binary. An existing Linux EFI directory on the ESP is left in place.
 
 "Coverage" is based on a grep/read of `README.md`, `docs/` and `python/engine/` in the local clone. **Covered** = code exists; **Partial** = something exists but the gap described is real; **Missing** = nothing found.
 
