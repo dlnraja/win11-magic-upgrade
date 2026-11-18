@@ -38,7 +38,7 @@ Source: [0xc000000e](https://learn.microsoft.com/en-us/troubleshoot/windows-serv
 
 Windows 11 boot requires the Windows UEFI CA 2023 in `db`. `dbx` is checked before `db`. Event 1801 and `UEFICA2023` mark a device that still needs the 2023 certificates. Event 1808 is the completion signal described in Microsoft Q&A and the certificate-update article. SBAT and `dbx` failures, including event 1796, do not justify clearing `dbx`.
 
-The published revocation lists were checked on 2026-11-16. The current x64 file is [dbx_x64.efiauth2](https://github.com/microsoft/secureboot_objects/blob/main/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2) (KEK 2023). The older [DBXUpdate.bin](https://github.com/microsoft/secureboot_objects/blob/main/PostSignedObjects/DBX/amd64/DBXUpdate.bin) path still exists and is only a fallback. Rufus 4.16 BETA and 4.16 BETA 2 use the same KEK 2023 URLs. This project does not write either file into firmware `dbx`. A failed download, including offline, leaves the local firmware variable as the only `dbx` input.
+The published revocation lists were checked on 2026-11-18. The current x64 file is [dbx_x64.efiauth2](https://github.com/microsoft/secureboot_objects/blob/main/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2) (KEK 2023). [Rufus 4.16](https://github.com/pbatard/rufus/releases/tag/v4.16) downloads that object from the GitHub contents API (`res/dbx/dbx_update.sh` on tag `v4.16`). The raw GitHub URL is the same file. The older [DBXUpdate.bin](https://github.com/microsoft/secureboot_objects/blob/main/PostSignedObjects/DBX/amd64/DBXUpdate.bin) path still exists, is a different file, and is only a fallback after both KEK 2023 URLs fail. Rufus 4.15 used that older path. This project does not write either file into firmware `dbx`. A failed download, including offline, leaves the local firmware variable as the only `dbx` input.
 
 `0xc0430001` means Secure Boot rejected installation media whose `boot.stl` is missing or does not match the image. KB5132061 tells image maintainers to keep that file when they apply a dynamic update. In-place Setup is not blocked on a missing `boot.stl` alone when a boot loader already passed the signer check; the warning is still logged.
 
@@ -61,7 +61,7 @@ No source from these projects is copied into this repository. The list records w
 | TestDisk | GPL-2.0-only | Manual partition-table recovery. Not launched automatically. [COPYING](https://github.com/cgsecurity/testdisk/blob/master/COPYING) |
 | ms-sys | GPL-2.0-only | Not shipped. Windows `bootsect` is used instead, because ms-sys embeds boot records whose copyright is disputed. [ms-sys](https://ms-sys.sourceforge.net/) and [ms-sys-free](https://sourceforge.net/projects/ms-sys-free/) |
 | EasyBCD | NeoSmart freeware, not open source | A menu entry and a one-time boot sequence. No EasyBCD files are included. |
-| Rufus | GPL-3.0-only | A USB is bootable only after the boot files verify. [Rufus](https://github.com/pbatard/rufus/) |
+| Rufus | GPL-3.0-only | A USB is bootable only after the boot files verify. Checked against [Rufus 4.16](https://github.com/pbatard/rufus/releases/tag/v4.16). |
 
 ## reagentc
 

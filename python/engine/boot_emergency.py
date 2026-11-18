@@ -291,7 +291,10 @@ def ps_storage_create_esp(
             "$diskN = $sys.DiskNumber; "
         )
 
+    from .partition_smart import bounded_esp_size_mb
+
     gpt_type = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}"  # EFI System
+    size_mb = bounded_esp_size_mb(size_mb)
     size_bytes = int(size_mb) * 1024 * 1024
 
     script = f"""

@@ -1,18 +1,50 @@
 """Logic checks for partition_smart parameter validation + planner (no disk mutation)."""
 from __future__ import annotations
 
+import ctypes
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
 
+if not hasattr(ctypes, "windll"):
+    class _Dll:
+        def __getattr__(self, _name):
+            return self
+
+        def __call__(self, *_a, **_k):
+            return self
+
+    ctypes.windll = _Dll()  # type: ignore[attr-defined]
+
+if "winreg" not in sys.modules:
+    try:
+        import winreg  # noqa: F401
+    except ModuleNotFoundError:
+        _winreg = types.ModuleType("winreg")
+        _winreg.HKEY_LOCAL_MACHINE = 1
+
+        def _open_key(*_a, **_k):
+            raise OSError("winreg stub")
+
+        _winreg.OpenKey = _open_key
+        _winreg.QueryValueEx = lambda *_a, **_k: (0, 1)
+        _winreg.CloseKey = lambda *_a, **_k: None
+        sys.modules["winreg"] = _winreg
+
+from engine.diskpart_safe import lint_diskpart_script  # noqa: E402
 from engine.partition_smart import (  # noqa: E402
+    MAX_BOOT_CREATE_MB,
+    TARGET_BOOT_MB,
     _letter_root,
     _norm_letter,
     _valid_disk,
     _valid_mb,
     _valid_part,
+    bounded_esp_size_mb,
+    efi_create_diskpart_script,
     plan_smart_layout,
 )
 
@@ -242,10 +274,37 @@ def test_plan_noop() -> None:
     print("plan noop OK")
 
 
+def test_efi_create_size_is_not_the_whole_disk() -> None:
+    """Rufus 4.16 fixed "Write as ESP" using the whole drive instead of 1 GB.
+
+    Our ESP scripts always pass an explicit size, capped at MAX_BOOT_CREATE_MB,
+    and smaller than the disk when that size is known. A bare
+    ``create partition efi`` (diskpart's whole-remaining-space form) is rejected.
+    """
+    disk_mb = 2 * 1024 * 1024
+    size = bounded_esp_size_mb(disk_mb, disk_mb=disk_mb)
+    assert size == MAX_BOOT_CREATE_MB
+    assert size < disk_mb
+    assert bounded_esp_size_mb(512) == 512
+    assert bounded_esp_size_mb(None) == TARGET_BOOT_MB
+    assert bounded_esp_size_mb(0) == TARGET_BOOT_MB
+    script = efi_create_diskpart_script(0, disk_mb, "S", disk_mb=disk_mb, detail=True)
+    assert f"create partition efi size={size}" in script
+    assert "create partition efi\n" not in script
+    assert lint_diskpart_script(script, style="GPT") == []
+    bare = "select disk 0\ncreate partition efi\nformat fs=fat32 quick label=ESP\nassign letter=S\nexit"
+    assert lint_diskpart_script(bare, style="GPT")
+    small_disk = bounded_esp_size_mb(512, disk_mb=400)
+    assert small_disk == 399
+    assert small_disk < 400
+    print("efi size cap OK")
+
+
 if __name__ == "__main__":
     test_validators()
     test_plan_extend()
     test_plan_extend_huge_free_capped()
     test_plan_shrink_c()
     test_plan_noop()
+    test_efi_create_size_is_not_the_whole_disk()
     print("ALL partition_smart logic checks passed")

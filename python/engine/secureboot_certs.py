@@ -24,10 +24,11 @@ and ``MicWinProPCA2011_2011-10-19.der``). The SVN marker
 Microsoft SVN revocation (https://github.com/pbatard/rufus/issues/2244).
 
 The published DBX files are not applied to firmware. ``fetch_official_dbx``
-can read one for an advisory check. The first URL is the KEK 2023 x64 list
-Rufus 4.16 BETA and 4.16 BETA 2 use. The older ``DBX/amd64/DBXUpdate.bin``
-path is the fallback Microsoft restored on 2026-09-09. Every failure,
-including offline, returns empty bytes.
+can read one for an advisory check. The first URL is the x64 KEK 2023 list
+from Rufus 4.16 final (tag ``v4.16``, ``res/dbx/dbx_update.sh``). The raw
+GitHub URL is the same blob. The older ``DBX/amd64/DBXUpdate.bin`` path is
+what Rufus 4.15 fetched; it is a different file and is tried only after both
+KEK 2023 URLs fail. Every failure, including offline, returns empty bytes.
 
 Legacy BIOS, CSM, and 32-bit paths are not gated: Secure Boot is off or does
 not check ``bootmgr``. The gate refuses a UEFI rewrite only when Secure Boot
@@ -74,17 +75,26 @@ _SVN_UTF16_PREFIX = "BOOTMGRSECURITYVERSIONNUMBER,0x".encode("utf-16le")
 _MEDIA_NAMES = ("bootmgfw.efi", "bootmgr.efi", "bootx64.efi")
 # CA 2023 copies shipped beside the stock names (bootmgfw_EX.efi and the same
 # pattern for bootmgr / bootx64). Rufus 4.16 copies these over the stock files
-# and must include the replacements in its media hash check. We do not rewrite
-# the media; the check has to see the replacement as well as the stock file.
+# and must include the replacements in its media hash check
+# (commit f8ab5bbb11, still present on tag v4.16). We do not rewrite the
+# media; the check has to see the replacement as well as the stock file.
 _CA2023_MEDIA_NAMES = ("bootmgfw_ex.efi", "bootmgr_ex.efi", "bootx64_ex.efi")
 
-# Verified 2026-11-16 on github.com/microsoft/secureboot_objects main.
-# Order is the lookup order. The boot path does not call this.
+# Checked 2026-11-18 against Rufus tag v4.16 (res/dbx/dbx_info.h) and
+# microsoft/secureboot_objects main. The first URL is the one Rufus downloads
+# for x64. The raw URL returned the same 17256-byte body that day. The
+# DBXUpdate.bin URLs are the Rufus 4.15 paths; they still resolve and are a
+# different 24629-byte file, so they stay last. Order is the lookup order.
+# The boot path does not call this.
+RUFUS_416_DBX_X64_URL = (
+    "https://api.github.com/repos/microsoft/secureboot_objects/contents/"
+    "PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2"
+)
 OFFICIAL_DBX_URLS = (
+    RUFUS_416_DBX_X64_URL,
     "https://raw.githubusercontent.com/microsoft/secureboot_objects/main/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2",
-    "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2",
-    "https://raw.githubusercontent.com/microsoft/secureboot_objects/main/PostSignedObjects/DBX/amd64/DBXUpdate.bin",
     "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/amd64/DBXUpdate.bin",
+    "https://raw.githubusercontent.com/microsoft/secureboot_objects/main/PostSignedObjects/DBX/amd64/DBXUpdate.bin",
 )
 
 
@@ -500,14 +510,24 @@ def _looks_like_dbx(body: bytes) -> bool:
     return head not in (b"{", b"[", b"<")
 
 
+def dbx_request_headers(url: str) -> dict[str, str]:
+    """Headers for one DBX download.
+
+    Rufus 4.16 ``res/dbx/dbx_update.sh`` sends
+    ``Accept: application/vnd.github.v3.raw`` so a missing API object is not
+    replaced by an HTML 404 page.
+    """
+    headers = {"User-Agent": "Win11MagicUpgrade", "Accept": "application/octet-stream"}
+    if "api.github.com" in url:
+        headers["Accept"] = "application/vnd.github.v3.raw"
+    return headers
+
+
 def _fetch_dbx_bytes(url: str, timeout: int = 5) -> bytes:
     import ssl
     import urllib.request
 
-    headers = {"User-Agent": "Win11MagicUpgrade", "Accept": "application/octet-stream"}
-    if "api.github.com" in url:
-        headers["Accept"] = "application/vnd.github.raw"
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, headers=dbx_request_headers(url))
     with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=timeout) as resp:
         return resp.read()
 

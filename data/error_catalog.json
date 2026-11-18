@@ -895,11 +895,11 @@
       "name": "Rufus",
       "license": "GPL-3.0-only",
       "reuse": false,
-      "does": "Writes a bootable USB stick. Idea used here: do not treat media as bootable until the partition type and boot files verify. No Rufus code is included.",
+      "does": "Writes a bootable USB stick. Checked against Rufus 4.16 (2026-11-17). Idea used here: do not treat media as bootable until the partition type and boot files verify. No Rufus code is included.",
       "maps_to": [
         "verify-boot-files"
       ],
-      "source": "https://github.com/pbatard/rufus/"
+      "source": "https://github.com/pbatard/rufus/releases/tag/v4.16"
     }
   ]
 }

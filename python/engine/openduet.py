@@ -340,7 +340,13 @@ def describe_target(list_text: str, detail_text: str, number: int) -> TargetDisk
 
 
 def diskpart_create_gpt_fat32(disk: int, letter: str) -> str:
-    """Destructive GPT+FAT32 layout. Only run after authorize_write says commit."""
+    """Destructive GPT+FAT32 layout. Only run after authorize_write says commit.
+
+    This is one primary partition for a dedicated OpenDuet stick, not an EFI
+    system partition. ``create partition primary`` with no ``size=`` uses the
+    stick. A Windows ESP uses ``efi_create_diskpart_script``, which always
+    passes a bounded ``size=``. Partitioning above 128 GiB stays refused.
+    """
     letter = letter.upper()[:1]
     return (
         f"select disk {int(disk)}\n"

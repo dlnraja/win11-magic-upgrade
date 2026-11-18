@@ -142,6 +142,60 @@ def _cap_boot_create_mb(size_mb: int) -> int:
     return max(MIN_BOOT_MB, min(n, MAX_BOOT_CREATE_MB, MAX_BOOT_GROW_MB))
 
 
+def bounded_esp_size_mb(requested_mb: int | None = None, *, disk_mb: int | None = None) -> int:
+    """ESP size in MB. Never the whole disk.
+
+    Rufus 4.16 caps "Write as ESP" at 1 GB after a regression that used the
+    remaining drive (``src/drive.c``, ``MAX_ISO_TO_ESP_SIZE``). Diskpart
+    ``create partition efi`` with no ``size=`` also consumes the rest of the
+    disk. This project creates a Windows boot ESP, so the ceiling stays
+    ``MAX_BOOT_CREATE_MB`` (2048), which is still far below a data disk.
+    When ``disk_mb`` is known, the result is also strictly smaller than it.
+    """
+    try:
+        requested = int(requested_mb) if requested_mb is not None else TARGET_BOOT_MB
+    except (TypeError, ValueError):
+        requested = TARGET_BOOT_MB
+    if requested <= 0:
+        requested = TARGET_BOOT_MB
+    size = _cap_boot_create_mb(requested)
+    if disk_mb is not None:
+        try:
+            disk = int(disk_mb)
+        except (TypeError, ValueError):
+            disk = 0
+        if disk > 1:
+            size = min(size, disk - 1)
+    return int(size)
+
+
+def efi_create_diskpart_script(
+    disk: int,
+    size_mb: int | None,
+    letter: str,
+    *,
+    disk_mb: int | None = None,
+    detail: bool = False,
+) -> str:
+    """Diskpart text that creates one FAT32 EFI partition of a bounded size."""
+    size = bounded_esp_size_mb(size_mb, disk_mb=disk_mb)
+    letter_n = str(letter or "S").strip().upper()[:1] or "S"
+    lines = [f"select disk {int(disk)}"]
+    if detail:
+        lines.append("detail disk")
+    lines.extend(
+        [
+            f"create partition efi size={int(size)}",
+            "format fs=fat32 quick label=ESP",
+            f"assign letter={letter_n}",
+        ]
+    )
+    if detail:
+        lines.append("detail partition")
+    lines.append("exit")
+    return "\n".join(lines) + "\n"
+
+
 def _enabled() -> bool:
     return os.environ.get("MAGIC_SMART_PARTITION", "1").strip().lower() not in (
         "0",
@@ -1098,10 +1152,8 @@ def create_boot_in_unallocated(
     from .diskpart_safe import ensure_select_disk, free_letter, run_diskpart
 
     disk_n = _valid_disk(disk)
-    size = _valid_mb(size_mb, minimum=100, maximum=MAX_BOOT_CREATE_MB)
-    if size is not None:
-        size = _cap_boot_create_mb(size)
-    if disk_n is None or size is None:
+    size = bounded_esp_size_mb(size_mb)
+    if disk_n is None:
         log(f"create_boot_in_unallocated bad params disk={disk!r} size_mb={size_mb!r}", "ERROR")
         return None
 
@@ -1123,13 +1175,7 @@ def create_boot_in_unallocated(
         log("Disk is MBR — creating primary system partition (not EFI)", "INFO")
 
     if use_efi:
-        script = (
-            f"select disk {int(disk_n)}\n"
-            f"create partition efi size={int(size)}\n"
-            "format fs=fat32 quick label=ESP\n"
-            f"assign letter={letter}\n"
-            "exit\n"
-        )
+        script = efi_create_diskpart_script(int(disk_n), size, letter)
     else:
         script = (
             f"select disk {int(disk_n)}\n"
@@ -1315,10 +1361,8 @@ def run_smart_partition_magic(
                         break
                     shrunk = True
                 elif op == "create_boot":
-                    size = _cap_boot_create_mb(
-                        _valid_mb(step.get("size_mb"), minimum=100, maximum=MAX_BOOT_CREATE_MB)
-                        or target
-                    )
+                    raw_size = step.get("size_mb")
+                    size = bounded_esp_size_mb(raw_size if raw_size is not None else target)
                     root = None
                     if shrunk or plan["strategy"] == "create_in_free":
                         root = create_boot_in_unallocated(

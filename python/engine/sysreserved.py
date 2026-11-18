@@ -335,15 +335,10 @@ def create_larger_esp(
             "WARN",
         )
         return None
-    log(f"Creating new {size_mb} MB EFI System Partition (opt-in, shrink C:, no data wipe)...", "STEP")
-    try:
-        from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
+    from .partition_smart import bounded_esp_size_mb, efi_create_diskpart_script
 
-        size_mb = _cap_boot_create_mb(int(size_mb))
-        if int(size_mb) > MAX_BOOT_GROW_MB:
-            size_mb = MAX_BOOT_GROW_MB
-    except Exception:
-        size_mb = min(int(size_mb), 2048)
+    size_mb = bounded_esp_size_mb(int(size_mb))
+    log(f"Creating new {size_mb} MB EFI System Partition (opt-in, shrink C:, no data wipe)...", "STEP")
     letter = _free_letter()
     if not letter:
         return None
@@ -368,15 +363,7 @@ def create_larger_esp(
         log(f"Abort ESP expand: cannot select disk {disk_n}: {sel_out[-160:]}", "ERROR")
         return None
 
-    script = (
-        f"select disk {int(disk_n)}\n"
-        f"detail disk\n"
-        f"create partition efi size={int(size_mb)}\n"
-        "format fs=fat32 quick label=ESP\n"
-        f"assign letter={letter}\n"
-        "detail partition\n"
-        "exit\n"
-    )
+    script = efi_create_diskpart_script(int(disk_n), size_mb, letter, detail=True)
     ok, create_out = run_diskpart(script)
     log(create_out[-500:] if create_out else "create done")
     if not ok:
@@ -455,15 +442,10 @@ def create_larger_system_reserved_mbr(
             "WARN",
         )
         return None
-    log(f"Creating new {size_mb} MB System partition (opt-in MBR/BIOS path)...", "STEP")
-    try:
-        from .partition_smart import MAX_BOOT_GROW_MB, _cap_boot_create_mb
+    from .partition_smart import bounded_esp_size_mb
 
-        size_mb = _cap_boot_create_mb(int(size_mb))
-        if int(size_mb) > MAX_BOOT_GROW_MB:
-            size_mb = MAX_BOOT_GROW_MB
-    except Exception:
-        size_mb = min(int(size_mb), 2048)
+    size_mb = bounded_esp_size_mb(int(size_mb))
+    log(f"Creating new {size_mb} MB System partition (opt-in MBR/BIOS path)...", "STEP")
     letter = _free_letter()
     if not letter:
         return None
