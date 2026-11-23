@@ -55,6 +55,16 @@ def _device_branch(display_version: str, build: int) -> bool:
     return (display_version or "").upper() == "26H1" or int(build or 0) >= DEVICE_BRANCH_BUILD
 
 
+def _recognized_preview_note(build: int, ubr: int, target_build: int, target_ubr: int) -> str:
+    """Prefix for a PC already on a recognized D preview. Empty for every other build."""
+    from .win11_release import view_host_build
+
+    view = view_host_build(build, ubr, target_major=target_build, target_ubr=target_ubr)
+    if view.role != "recognized-only" or not view.note or view.warning:
+        return ""
+    return view.note + " "
+
+
 def decide_oneclick(
     *,
     build: int,
@@ -71,10 +81,11 @@ def decide_oneclick(
         )
     host_key = _version_key(display_version)
     target_key = _version_key(target_version)
+    recognized = _recognized_preview_note(build, ubr, target_build, target_ubr)
     if _device_branch(display_version, build) and (display_version or "").upper() != (target_version or "").upper():
         return OneClickPlan(
             path="health_check_only",
-            reason="This PC is on a device-only Windows 11 branch. No in-place move to the consumer release.",
+            reason=recognized + "This PC is on a device-only Windows 11 branch. No in-place move to the consumer release.",
         )
     if host_key > target_key or (
         host_key == target_key and host_key != (0, 0) and int(build) > int(target_build)
@@ -82,10 +93,11 @@ def decide_oneclick(
         return OneClickPlan(path="health_check_only", reason="Already newer than the release pin.")
     if int(build) == int(target_build):
         if int(ubr or 0) <= 0 or int(ubr) >= int(target_ubr):
-            return OneClickPlan(
-                path="health_check_only",
-                reason="Already on the latest Windows 11 build from the release pin.",
-            )
+            if recognized:
+                reason = recognized + "Health check only."
+            else:
+                reason = "Already on the latest Windows 11 build from the release pin."
+            return OneClickPlan(path="health_check_only", reason=reason)
         return OneClickPlan(
             path="cumulative_update",
             reason="Same Windows 11 feature build; only the cumulative update is behind.",
@@ -93,7 +105,8 @@ def decide_oneclick(
     if host_key and target_key and host_key < target_key or int(build) < int(target_build):
         return OneClickPlan(
             path="inplace_least",
-            reason="Windows 11 feature update via official setup /auto upgrade. No bypass, disk, or boot changes.",
+            reason=recognized
+            + "Windows 11 feature update via official setup /auto upgrade. No bypass, disk, or boot changes.",
         )
     return OneClickPlan(path="health_check_only", reason="No newer in-place Windows 11 target.")
 

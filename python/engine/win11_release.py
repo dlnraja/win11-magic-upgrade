@@ -13,12 +13,15 @@ and drops versions the page says are not offered in place. A PC already on that
 device-scoped branch stays there and only tracks its own cumulative.
 
 The built-in floor is the last consumer security baseline known when this file
-shipped (monthly B release, or a later out-of-band security update). Optional
-D-week previews are parsed and ignored unless ``MAGIC_WIN11_PREVIEW=1``.
+shipped (monthly B release, or a later out-of-band security update). That floor
+is the default target. Optional D-week previews are recognized so a PC already
+on one is not treated as an unknown or outdated build, and they are not a
+NO-GO. They stay off the default target unless ``MAGIC_WIN11_PREVIEW=1``.
 A successful parse of a newer in-place version replaces the floor. A failed or
 truncated page never lowers the target below the floor or a newer cached result.
 A cached cumulative that is older than the floor on the same version does not
-hide the floor.
+hide the floor. With the preview opt-in, a shipped recognized D revision can
+raise the same-version target when the page is older or missing.
 """
 from __future__ import annotations
 
@@ -38,11 +41,13 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Win11MagicUpgrade"
 )
 
-# Last consumer security baseline verified against release health (2026-11-16).
-# 26H2 November B is 26300.9974 (KB5132061, 2026-11-10) and is the floor.
-# The 2026-10-26 OOB is 26300.9725 (KB5134133). The 26300.9818 row is the
-# optional 2026-10 D preview (KB5127936) and is not the floor. There is no
-# December 2026 non-security preview; the next regular servicing is January 2027.
+# Last consumer security baseline verified against release health (2026-11-23).
+# 26H2 November B is 26300.9974 (KB5132061, 2026-11-10) and is the default target.
+# The optional 2026-11 D preview is 26300.10075 (KB5132057, 2026-11-19). It is
+# recognized-only: known, not the floor. The same split is 26200.10075 on 25H2
+# and 28000.3620 (KB5132265) on 26H1. 24H2 stayed on the November B build
+# 26100.9974. There is no December 2026 non-security preview; the next regular
+# servicing is January 2027.
 # 26H1 / 28000 is intentionally not the floor: it is not an in-place target.
 # 23H2 (22631) is end of updates for every edition. Its last build is the
 # 2026-11-13 OOB 22631.7714, not an in-place target.
@@ -53,6 +58,36 @@ PREVIEW_ENV = "MAGIC_WIN11_PREVIEW"
 FALLBACK_EXCLUDED = ("26H1",)
 # Current x64 consumer id, then older ids used only if the page and the first id fail.
 FALLBACK_EDITION_IDS = (3813, 3816, 3321, 3324)
+
+# Two roles, and only two:
+#   default-target — a monthly security B build, or a later security OOB.
+#     The consumer in-place floor is the 26H2 row. Other rows are the known
+#     servicing head for that version (26H1 only when the PC is already on it).
+#     23H2 is end of updates and is not an in-place destination.
+#   recognized-only — an optional D preview. A PC already running it is current
+#     for that version. It is not the default target. MAGIC_WIN11_PREVIEW=1
+#     is what selects it.
+@dataclass(frozen=True)
+class RecognizedBuild:
+    version: str
+    major: int
+    ubr: int
+    role: str
+    update_class: str
+    kb: str
+    released: str
+
+
+RECOGNIZED_BUILDS: tuple[RecognizedBuild, ...] = (
+    RecognizedBuild("26H2", 26300, 9974, "default-target", "security", "KB5132061", "2026-11-10"),
+    RecognizedBuild("25H2", 26200, 9974, "default-target", "security", "KB5132061", "2026-11-10"),
+    RecognizedBuild("24H2", 26100, 9974, "default-target", "security", "KB5132061", "2026-11-10"),
+    RecognizedBuild("26H1", 28000, 3501, "default-target", "security", "KB5132059", "2026-11-10"),
+    RecognizedBuild("23H2", 22631, 7714, "default-target", "oob", "KB5136483", "2026-11-13"),
+    RecognizedBuild("26H2", 26300, 10075, "recognized-only", "preview", "KB5132057", "2026-11-19"),
+    RecognizedBuild("25H2", 26200, 10075, "recognized-only", "preview", "KB5132057", "2026-11-19"),
+    RecognizedBuild("26H1", 28000, 3620, "recognized-only", "preview", "KB5132265", "2026-11-19"),
+)
 
 _EXCLUSION_PHRASE = re.compile(
     r"not designed as a feature update|not offered as an in-place update|scoped to support new devices",
@@ -365,6 +400,166 @@ def _preview_allowed(flag: bool | None) -> bool:
     return os.environ.get(PREVIEW_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
+def _pin_recognized_row(item: Any) -> RecognizedBuild | None:
+    """A pin may add a recognized-only preview. It cannot redefine the floor."""
+    if not isinstance(item, dict):
+        return None
+    role = str(item.get("role") or "recognized-only")
+    if role != "recognized-only":
+        return None
+    try:
+        return RecognizedBuild(
+            version=str(item["version"]).upper(),
+            major=int(item["build"]),
+            ubr=int(item["ubr"]),
+            role="recognized-only",
+            update_class=str(item.get("class") or item.get("update_class") or "preview"),
+            kb=str(item.get("kb") or ""),
+            released=str(item.get("released") or ""),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def recognized_builds() -> tuple[RecognizedBuild, ...]:
+    """Builtin catalog, plus recognized-only rows from pins/release_pins.json.
+
+    A pin whose role is default-target is ignored. The floor stays win11_floor.
+    """
+    rows = list(RECOGNIZED_BUILDS)
+    index = {(row.version.upper(), row.major, row.ubr): pos for pos, row in enumerate(rows)}
+    try:
+        from .self_update import load_pins
+
+        extra = load_pins().get("win11_recognized") or []
+    except Exception:
+        extra = []
+    for item in extra:
+        row = _pin_recognized_row(item)
+        if row is None:
+            continue
+        key = (row.version.upper(), row.major, row.ubr)
+        if key in index:
+            rows[index[key]] = row
+        else:
+            index[key] = len(rows)
+            rows.append(row)
+    return tuple(rows)
+
+
+def recognized_preview_ubr(version: str, major: int) -> int:
+    """Highest shipped D preview for this version, or 0 when none is known."""
+    best = 0
+    for row in recognized_builds():
+        if row.role != "recognized-only":
+            continue
+        if row.version.upper() == (version or "").upper() and row.major == int(major) and row.ubr > best:
+            best = row.ubr
+    return best
+
+
+def branch_baseline(major: int) -> RecognizedBuild | None:
+    """Newest default-target row for this OS build, or None."""
+    found: RecognizedBuild | None = None
+    for row in recognized_builds():
+        if row.role != "default-target" or row.major != int(major):
+            continue
+        if found is None or row.ubr > found.ubr:
+            found = row
+    return found
+
+
+@dataclass(frozen=True)
+class HostBuildView:
+    """How an installed revision compares with the shipped catalog.
+
+    ``warning`` stays empty for a recognized D preview. Those builds are not
+    reported as outdated, unknown, or NO-GO.
+    """
+
+    status: str
+    role: str
+    version: str
+    major: int
+    ubr: int
+    kb: str
+    released: str
+    note: str
+    warning: str
+
+
+def view_host_build(
+    major: int,
+    ubr: int,
+    *,
+    target_major: int = 0,
+    target_ubr: int = 0,
+) -> HostBuildView:
+    """Classify an installed build. Recognized D previews get an empty warning."""
+    major_i = int(major or 0)
+    ubr_i = int(ubr or 0)
+    match: RecognizedBuild | None = None
+    for row in recognized_builds():
+        if row.major == major_i and row.ubr == ubr_i:
+            match = row
+            break
+    baseline = branch_baseline(major_i)
+    behind = bool(target_major) and major_i == int(target_major) and int(target_ubr or 0) > 0 and ubr_i < int(target_ubr)
+    if match is None:
+        status = "behind" if behind else ("unlisted" if ubr_i <= 0 else "ahead")
+        return HostBuildView(status, "", "", major_i, ubr_i, "", "", "", "")
+    if match.role == "recognized-only":
+        base_text = (
+            f"{baseline.major}.{baseline.ubr}"
+            if baseline is not None
+            else "the monthly security baseline"
+        )
+        note = (
+            f"{match.version} {match.major}.{match.ubr} is a recognized optional preview "
+            f"({match.kb}, released {match.released}). "
+            f"The default target for {match.version} stays {base_text}. "
+            f"{PREVIEW_ENV}=1 selects this preview."
+        )
+        status = "behind" if behind else "recognized-preview"
+        return HostBuildView(
+            status,
+            match.role,
+            match.version,
+            match.major,
+            match.ubr,
+            match.kb,
+            match.released,
+            note,
+            "",
+        )
+    status = "behind" if behind else "baseline"
+    return HostBuildView(
+        status,
+        match.role,
+        match.version,
+        match.major,
+        match.ubr,
+        match.kb,
+        match.released,
+        "",
+        "",
+    )
+
+
+def apply_preview_recognition(target: ReleaseTarget, *, allow_preview: bool | None) -> ReleaseTarget:
+    """Raise an opted-in target to a shipped D preview on the same version.
+
+    The default target is unchanged. A page that already selected this preview
+    keeps its own source.
+    """
+    if not _preview_allowed(allow_preview):
+        return target
+    extra = recognized_preview_ubr(target.version, target.major)
+    if extra <= int(target.ubr or 0):
+        return target
+    return replace(target, ubr=extra, source="recognized-preview")
+
+
 def _best_row(rows: list[ServicingRow]) -> ServicingRow | None:
     if not rows:
         return None
@@ -560,7 +755,12 @@ def refresh_latest_win11(
     state: dict[str, Any] | None = None,
     allow_preview: bool | None = None,
 ) -> ReleaseTarget:
-    """Query Microsoft, merge with cache and the floor, optionally persist."""
+    """Query Microsoft, merge with cache and the floor, optionally persist.
+
+    The default result stays on the monthly security baseline. When the preview
+    opt-in is set, a shipped recognized-only D revision can raise that result
+    on the same version if the page is missing or older.
+    """
     fetch = fetch_text or _fetch_url
     health = _safe_fetch(fetch, RELEASE_HEALTH_URL)
     page = _safe_fetch(fetch, DOWNLOAD_PAGE_URL)
@@ -585,6 +785,7 @@ def refresh_latest_win11(
         edition_ids=editions,
         excluded=tuple(sorted(set(chosen.excluded) | set(excluded))),
     )
+    chosen = apply_preview_recognition(chosen, allow_preview=allow_preview)
     if save:
         try:
             remember_release(chosen)
