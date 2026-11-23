@@ -177,11 +177,16 @@ def test_october_2026_rows_prefer_oob_over_d_preview():
     assert target.ubr == FALLBACK_WIN11_UBR
     assert target.source == "builtin-floor"
     assert "26H1" in target.excluded
+    # The October page itself does not beat the November security floor.
+    # The opt-in then applies the shipped recognized-only November D pin
+    # (26300.10075), which is newer than that floor on the same version.
     preview = refresh_latest_win11(
         fetch_text=fetch, save=False, state={}, allow_preview=True
     )
     assert preview.version == "26H2"
-    assert preview.ubr == FALLBACK_WIN11_UBR
+    assert preview.major == 26300
+    assert preview.ubr == 10075
+    assert preview.source == "recognized-preview"
     host = refresh_latest_win11(
         host_build=28000, fetch_text=fetch, save=False, state={}
     )
@@ -380,16 +385,21 @@ def test_november_2026_b_is_the_floor():
             return NOVEMBER
         return ""
 
+    page_preview = select_latest(rows, excluded, allow_preview=True)
+    assert page_preview is not None and page_preview.ubr == 9974
     target = refresh_latest_win11(fetch_text=fetch, save=False, state={})
     assert target.version == "26H2"
     assert target.major == 26300
     assert target.ubr == 9974
     assert target.ubr == FALLBACK_WIN11_UBR
     assert target.source == "release-health"
+    # The 2026-11-16 page's D row is still the October preview, below this B
+    # build. The opt-in uses the shipped 2026-11-19 recognized preview instead.
     preview = refresh_latest_win11(
         fetch_text=fetch, save=False, state={}, allow_preview=True
     )
-    assert preview.ubr == 9974
+    assert preview.ubr == 10075
+    assert preview.source == "recognized-preview"
     host = refresh_latest_win11(host_build=28000, fetch_text=fetch, save=False, state={})
     assert host.version == "26H1"
     assert host.ubr == 3501

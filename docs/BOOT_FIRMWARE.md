@@ -23,9 +23,26 @@ Release health has two shapes of table:
 - The summary table's **Latest build** is the newest row Microsoft published, including the optional preview.
 - The history tables label each row. **B** is the monthly security release, **OOB** is an out-of-band security update, and **D** is the optional non-security preview from the fourth week of the month.
 
-The default target is the newest **B or OOB** row on the newest in-place version. D previews are parsed and stored as their own class so a higher preview revision cannot replace that baseline. As of the 2026-11-16 release-health page, that choice is 26H2 **26300.9974**. The October D preview 26300.9818 (KB5127936) is lower than the November security revision, so it stays unused. The 2026-11-02 fixture is still parsed in tests to prove a higher D preview does not replace a lower OOB row.
+The default target is the newest **B or OOB** row on the newest in-place version. D previews are parsed and stored as their own class so a higher preview revision cannot replace that baseline. As of the 2026-11-23 release-health page, that choice is still 26H2 **26300.9974** (KB5132061, 2026-11-10). The summary table's Latest build is the newer optional preview; the history table still has the B row, and the default follows the B row.
 
-`MAGIC_WIN11_PREVIEW=1` opts in to D previews. On the November page the B revision is already higher, so the opt-in stays 26300.9974. A PC already on the device-scoped 26H1 branch stays there and tracks that branch's B/OOB cumulative (28000.3501, KB5132059). The October D revision 28000.3365 is not selected.
+Two roles are shipped in `RECOGNIZED_BUILDS` and `pins/release_pins.json`:
+
+| Role | Meaning |
+|------|---------|
+| default-target | Monthly security B, or a later security OOB. This is what the app offers. The consumer floor is 26H2 26300.9974. |
+| recognized-only | Optional D preview. The build is known. A PC already running it is current for that version: no outdated warning, no unknown-build warning, and no NO-GO from the build check. It is not the default target. |
+
+Recognized-only builds checked on 2026-11-23:
+
+| Version | Build | Update | KB | Released |
+|---------|-------|--------|----|----------|
+| 26H2 | 26300.10075 | 2026-11 D | KB5132057 | 2026-11-19 |
+| 25H2 | 26200.10075 | 2026-11 D | KB5132057 | 2026-11-19 |
+| 26H1 | 28000.3620 | 2026-11 D | KB5132265 | 2026-11-19 |
+
+24H2 did not move. It is still **26100.9974** (2026-11 B, KB5132061). 23H2 is still end of updates at **22631.7714** (2026-11 OOB). Neither D row replaces those.
+
+`MAGIC_WIN11_PREVIEW=1` opts in to D previews. On the 2026-11-23 page that selects 26H2 **26300.10075**. A PC already on the device-scoped 26H1 branch stays there. Without the opt-in it tracks that branch's B cumulative (28000.3501, KB5132059). With the opt-in it tracks 28000.3620. The October D revision 26300.9818 stays below the November B build, so the 2026-11-02 fixture still proves a higher D preview does not replace a lower OOB row. A page older than the shipped D pin does not hide that pin once the opt-in is on. The default path never uses the pin.
 
 Same feature build with a lower update revision (UBR) asks the built-in `UsoClient.exe` to scan and download once. That is not a new ISO. UBR `0` means unknown and does not trigger the nudge. An ISO whose file name is behind the detected feature build is still installed, then the cumulative step runs after reboot.
 

@@ -55,7 +55,7 @@ Secondary GUI buttons (Diagnose / Patch / …) are optional only — One-Click a
 | Compat engine | LabConfig + MoSetup + HwReqChk spoof + CompatData soften + SetupConfig.ini |
 | Preventives | Durable pack installed on the PC (`--install-patches`) |
 | ISO | Official Microsoft CDN via urllib (Fido-compatible API). No API key |
-| Latest Win11 | Release-health page picks the newest in-place feature update (26H2 over 26H1). Floor 26H2 26300.9974 (KB5132061) if the page fails. 23H2 is end of updates. Cumulative via `UsoClient` |
+| Latest Win11 | Release-health page picks the newest in-place feature update (26H2 over 26H1). Default target is the monthly security B floor 26H2 26300.9974 (KB5132061). November 2026 D previews (26300.10075 / 26200.10075 / 28000.3620) are recognized-only unless `MAGIC_WIN11_PREVIEW=1`. 23H2 is end of updates. Cumulative via `UsoClient` |
 | MBR→GPT | `mbr2gpt` without wipe only when the PC can boot UEFI afterwards. Legacy-only BIOS keeps MBR |
 | ESP / SRP | Cleanup + enlarge (~512 MB) — idempotent, resume-safe |
 | Boot 32/64 | PE detect; bcdboot repair; **hybrid CSMWrap** for IA32-only UEFI; optional **OpenDuet** stick for legacy-only BIOS |

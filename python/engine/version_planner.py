@@ -21,7 +21,7 @@ from .chain import ChainStep, WIN10_22H2_BUILD, WIN11_24H2_BUILD, mapped_version
 from .detect import Report
 from .legacy_os import is_legacy_host, os_family_from_build, inplace_notes_for_legacy
 from .logutil import log, load_state, save_state
-from .win11_release import FALLBACK_WIN11_BUILD, latest_win11_ubr_from_state
+from .win11_release import FALLBACK_WIN11_BUILD, latest_win11_ubr_from_state, view_host_build
 
 # Known retail baselines. The live target comes from win11_release (release health).
 # 28000 is 26H1 (new devices only) and is intentionally not the default.
@@ -215,6 +215,16 @@ def evaluate_host(report: Report, *, latest_win11: int | None = None) -> Version
     target_label = target_label_for(latest)
     target_ubr = latest_win11_ubr_from_state()
     needs_cu = needs_cumulative_update(report, latest)
+    host_view = view_host_build(
+        report.build,
+        int(getattr(report, "ubr", 0) or 0),
+        target_major=latest,
+        target_ubr=target_ubr,
+    )
+    if host_view.role == "recognized-only" and host_view.note:
+        notes.append(host_view.note)
+    if host_view.warning:
+        notes.append(host_view.warning)
     if needs_cu:
         notes.append(
             f"Feature build {latest} is installed; cumulative {latest}.{target_ubr} "

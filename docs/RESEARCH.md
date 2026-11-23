@@ -10,6 +10,15 @@ November 10, 2026 Patch Tuesday, checked against the public release-health page 
 - 26H1 (new devices only, not the in-place target): **28000.3501**, [KB5132059](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132059-windows-11-26h1-security-update).
 - 23H2 is end of updates for every edition on the release-health summary (both edition columns). [KB5131087](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5131087-windows-11-23h2-security-update) (2026-11-10, build 22631.7711) says that security update is the last one for Enterprise and Education. The later build is **22631.7714** (2026-11-13, [KB5136483](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5136483-windows-11-22h2-23h2-update), non-security out-of-band, all editions). The planner sends a 23H2 PC to the 26H2 floor.
 - Both November KBs say there is no December 2026 non-security preview. Next regular servicing is January 2027. The floor stays 26300.9974 until a newer B or security OOB is published.
+
+## Servicing watch, 2026-11-23
+
+Checked the same release-health page again. The November optional previews are published. The monthly security floor did not move.
+
+- Default target stays 26H2 **26300.9974**, 25H2 **26200.9974**, 24H2 **26100.9974**, [KB5132061](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132061-windows-11-24h2-25h2-26h2-security-update) (2026-11-10). 24H2 has no November D row.
+- Recognized-only, not the default target: 26H2 **26300.10075** and 25H2 **26200.10075**, [KB5132057](https://support.microsoft.com/help/5132057) (2026-11 D, released 2026-11-19). 26H1 **28000.3620**, [KB5132265](https://support.microsoft.com/help/5132265) (2026-11 D). A PC already on one of these is a known build. The health check does not call it outdated, and it does not NO-GO.
+- `MAGIC_WIN11_PREVIEW=1` is what selects those D revisions. 26H1 still is not an in-place target for other PCs. Its default branch cumulative remains **28000.3501**, [KB5132059](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/11/kb5132059-windows-11-26h1-security-update).
+- 23H2 is unchanged: end of updates, last build **22631.7714** (2026-11-13 OOB, KB5136483). The planner still sends that PC to the 26H2 floor.
 - Rufus 4.16 final (2026-11-17) is reviewed in the next section. DBX lookup, CA 2023 media checks, the AMI NTFS decision, and ESP sizing are recorded there. Firmware `dbx` is still not written. Windows build pins are unchanged.
 
 ## Rufus 4.16 final, checked 2026-11-18

@@ -98,9 +98,21 @@ def build_version_chain(r: Report) -> list[ChainStep]:
     # Already on the detected feature update (state / floor). A higher build
     # (device-scoped 26H1) is not pulled backwards. Same build + older UBR
     # only needs the cumulative nudge.
-    from .version_planner import latest_win11_build_from_state, needs_cumulative_update
+    from .version_planner import latest_win11_build_from_state, latest_win11_ubr_from_state, needs_cumulative_update
+    from .win11_release import view_host_build
 
     latest_target = latest_win11_build_from_state()
+    host_view = view_host_build(
+        r.build,
+        int(getattr(r, "ubr", 0) or 0),
+        target_major=latest_target,
+        target_ubr=latest_win11_ubr_from_state(),
+    )
+
+    def _current_note(fallback: str) -> str:
+        if host_view.role == "recognized-only" and host_view.note and not host_view.warning:
+            return host_view.note
+        return fallback
 
     # ARM64: honest stop — no x64 ISO inplace chain
     if getattr(r, "is_arm64", False) or getattr(r, "architecture", "") == "arm64":
@@ -119,7 +131,9 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 id="done",
                 label=f"Already on Windows 11 {mapped_version(r.build)}",
                 kind="done",
-                note=f"Current {cur} build {r.build} is newer than target {latest_target}",
+                note=_current_note(
+                    f"Current {cur} build {r.build} is newer than target {latest_target}"
+                ),
             )
         ]
     if r.is_win11 and r.build == latest_target:
@@ -137,7 +151,7 @@ def build_version_chain(r: Report) -> list[ChainStep]:
                 id="done",
                 label=f"Already on Windows 11 {mapped_version(latest_target)}",
                 kind="done",
-                note=f"Current {cur} build {r.build}",
+                note=_current_note(f"Current {cur} build {r.build}"),
             )
         ]
 
